@@ -22,7 +22,12 @@ while ($true) {
         } else {
             # Verify the output is actual SQL (starts with CREATE, ALTER, DO, etc.)
             $trimmed = $diffOutput.Trim()
-            if ($trimmed -match '^(CREATE|ALTER|DO|DROP|REVOKE|GRANT|INSERT|UPDATE|DELETE|SET|COMMENT)') {
+            # Skip diffs that contain function definitions with temp tables or
+            # other dangerous patterns that break when replayed as migrations
+            $isDangerous = $trimmed -match '_active_deds' -or
+                           $trimmed -match 'CREATE TEMP TABLE' -or
+                           $trimmed -match 'CREATE OR REPLACE FUNCTION.*\$function\$'
+            if ($trimmed -match '^(CREATE|ALTER|DO|DROP|REVOKE|GRANT|INSERT|UPDATE|DELETE|SET|COMMENT)' -and -not $isDangerous) {
                 $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
                 $migFile = Join-Path $projectDir "supabase\migrations\${timestamp}_studio_sync.sql"
 
@@ -38,6 +43,8 @@ $trimmed
 
                 # Apply immediately
                 supabase migration up --local 2>&1 | Out-File $logFile -Append
+            } elseif ($isDangerous) {
+                "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Dangerous diff detected (temp tables/functions), skipping." | Out-File $logFile -Append
             } else {
                 "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Diff output is not valid SQL, skipping." | Out-File $logFile -Append
                 "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Output preview: $($trimmed.Substring(0, [Math]::Min(200, $trimmed.Length)))" | Out-File $logFile -Append
