@@ -3,9 +3,9 @@ import { X, ChevronLeft, ChevronRight, Printer, ShieldAlert, ShieldCheck, Landma
 import { supabase, fetchAll } from '@/lib/supabase';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
-import type { Employee, PayrollEntry, PayPeriod, PayrollDeduction, DeductionCode, UndeductedObligation } from '@/types/payroll';
+import type { Employee, PayrollEntry, PayPeriod, PayrollDeduction, DeductionCode } from '@/types/payroll';
 import { computePayrollDeductions } from '@/lib/payroll';
-import { NTHP_THRESHOLD } from '@/lib/nthp';
+import { processEmployeeDeductions, NTHP_THRESHOLD } from '@/lib/nthp';
 import { currency } from '@/lib/reports';
 
 interface Props {
@@ -41,7 +41,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const [fullEmployee, setFullEmployee] = useState<Employee | null>(null);
   const [empDeds, setEmpDeds] = useState<PayrollDeduction[]>([]);
   const [dedCodes, setDedCodes] = useState<DeductionCode[]>([]);
-  const [undeductedObs, setUndeductedObs] = useState<UndeductedObligation[]>([]);
+
   const { lookup: lookupPosition } = usePositions();
   const { lookup: lookupSalary, meta: schedMeta } = useSalarySchedule();
 
@@ -53,14 +53,12 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
         supabase.from('employees').select('*').eq('id', initialEmployee.id).single(),
         supabase.from('payroll_deductions').select('*').eq('employee_id', initialEmployee.id).neq('status', 'Terminated'),
         fetchAll(() => supabase.from('deduction_codes').select('*')),
-        entry
-          ? supabase.from('undeducted_obligations').select('*').eq('payroll_entry_id', entry.id)
-          : Promise.resolve({ data: null, error: null }),
+        Promise.resolve({ data: null, error: null }),
       ]);
       setFullEmployee((empRes.data as Employee) ?? null);
       setEmpDeds((dedRes.data as PayrollDeduction[]) ?? []);
       setDedCodes(codeRes as DeductionCode[]);
-      setUndeductedObs((undedRes.data as UndeductedObligation[]) ?? []);
+
     })();
   }, [initialEmployee.id, entry?.id]);
 
@@ -71,31 +69,45 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
     basicSalary, e.pera ?? 0, e.aca ?? 0, e.rata ?? 0, e.ontop ?? 0, e.long ?? 0, 0,
   );
 
-  const nthpStatus = entry?.nthp_status ?? 'PASS';
 
-  // Build a set of (dedcode + amount) pairs that are undeducted obligations
-  const undeductedKeys = new Set(
-    undeductedObs.map((u) => `${u.deduction_code}::${Number(u.scheduled_amount || u.undeducted_amount).toFixed(2)}`)
-  );
 
-  // Filter out undeducted deductions from the detail display —
-  // only show deductions that were ACTUALLY applied (deducted from net pay)
-  const appliedDeds = empDeds.filter((d) => !undeductedKeys.has(`${d.dedcode}::${Number(d.dedamt).toFixed(2)}`));
+
 
   const gross = entry ? Number(entry.gross_pay) : computed.gross;
   // Always compute from individual components to stay consistent with the displayed rows
   const mandatoryDed = Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
-  // Sum only APPLIED deductions (not undeducted ones)
-  const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
-  // Total Deductions = Mandatory Deductions + Total Loan Deductions Applied (excludes undeducted)
-  const totalDed = Math.round((mandatoryDed + loanDedsDisplay) * 100) / 100;
-  // NET PAY = Gross Compensation - Total Deductions
-  const netPay = Math.round((gross - totalDed) * 100) / 100;
-  // NTHP computed values (always fresh, not from stale entry fields)
   const netPayBeforeLoans = Math.round((gross - mandatoryDed) * 100) / 100;
+
+  // ── NTHP Compliance Engine ──
+  // Run the real NTHP processor: applies loans in priority order,
+  // stops when Net Pay would fall below ₱5,000 NTHP threshold.
+  const nthpResult = processEmployeeDeductions(
+    netPayBeforeLoans, empDeds, dedCodeMap, e.stacode ?? '',
+  );
+
+  // Split processed deductions into applied (deducted) vs undeducted
+  const nthpApplied = nthpResult.processedDeductions.filter((d) => d.deducted_amount > 0);
+  const nthpUndeducted = nthpResult.processedDeductions.filter((d) => d.undeducted_amount > 0);
+
+  // Build the set of undeducted keys for display filtering
+  const nthpUndeductedKeys = new Set(
+    nthpUndeducted.map((d) => `${d.deduction_code}::${d.scheduled_amount.toFixed(2)}`),
+  );
+
+  // Loan deductions that are actually applied (within NTHP capacity)
+  const appliedDedsNthp = empDeds.filter((d) => {
+    const amt = Number(d.dedamt) || 0;
+    return amt > 0 && !nthpUndeductedKeys.has(`${d.dedcode}::${amt.toFixed(2)}`);
+  });
+
+  const loanDedsDisplay = appliedDedsNthp.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
+  const totalDed = Math.round((mandatoryDed + loanDedsDisplay) * 100) / 100;
+  const netPay = Math.round((gross - totalDed) * 100) / 100;
   const actualLoanDeductionsApplied = loanDedsDisplay;
-  const totalUndeductedAmount = undeductedObs.reduce((s, u) => s + Number(u.undeducted_amount || 0), 0);
-  const finalNetPay = Math.round((netPayBeforeLoans - actualLoanDeductionsApplied) * 100) / 100;
+  const totalUndeductedAmount = nthpUndeducted.reduce((s, d) => s + d.undeducted_amount, 0);
+  const finalNetPay = nthpResult.finalNetPay;
+  // Use computed NTHP status, not stale entry value
+  const nthpStatus = nthpResult.nthpStatus;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
@@ -299,14 +311,14 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
             </div>
 
             {/* Loan Deductions Detail — only applied (deducted) deductions */}
-            {appliedDeds.length > 0 && (
+            {appliedDedsNthp.length > 0 && (
               <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5 text-slate-400" />
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({appliedDeds.length} records)</p>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({appliedDedsNthp.length} records)</p>
                 </div>
                 <div className="divide-y divide-slate-100 max-h-52 overflow-y-auto">
-                  {appliedDeds.map((d) => {
+                  {appliedDedsNthp.map((d) => {
                     const codeInfo = dedCodeMap.get(d.dedcode);
                     return (
                       <div key={d.id} className="px-4 py-2.5 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center hover:bg-slate-50 transition-colors">
@@ -323,7 +335,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                 </div>
                 <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center">
                   <span className="col-span-3 font-semibold text-slate-600">Total Loan Deductions Applied:</span>
-                  <span className="font-bold text-slate-800 text-right tabular">{currency(appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0))}</span>
+                  <span className="font-bold text-slate-800 text-right tabular">{currency(appliedDedsNthp.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0))}</span>
                 </div>
               </div>
             )}
@@ -355,19 +367,19 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </div>
               <p className="text-xs text-slate-400 mt-3">NTHP Floor: ₱{NTHP_THRESHOLD.toFixed(2)} — loan deductions are skipped if they would bring net pay below this threshold.</p>
 
-              {undeductedObs.length > 0 && (
+              {nthpUndeducted.length > 0 && (
                 <div className="mt-4 pt-3 border-t border-amber-200">
                   <p className="text-xs font-semibold text-amber-700 mb-2 uppercase tracking-wider">
-                    Undeducted Obligations ({undeductedObs.length} items)
+                    Undeducted Obligations ({nthpUndeducted.length} items)
                   </p>
                   <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                    {undeductedObs.map((u) => (
-                      <div key={u.id} className="flex items-center justify-between text-xs bg-white/60 rounded-lg px-3 py-2">
+                    {nthpUndeducted.map((d, i) => (
+                      <div key={`${d.deduction_code}-${i}`} className="flex items-center justify-between text-xs bg-white/60 rounded-lg px-3 py-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono font-semibold text-amber-700 shrink-0">{u.deduction_code}</span>
-                          <span className="text-slate-600 truncate">{u.deduction_description}</span>
+                          <span className="font-mono font-semibold text-amber-700 shrink-0">{d.deduction_code}</span>
+                          <span className="text-slate-600 truncate">{d.deduction_description}</span>
                         </div>
-                        <span className="font-bold text-amber-600 tabular shrink-0 ml-2">{currency(u.undeducted_amount)}</span>
+                        <span className="font-bold text-amber-600 tabular shrink-0 ml-2">{currency(d.undeducted_amount)}</span>
                       </div>
                     ))}
                   </div>
