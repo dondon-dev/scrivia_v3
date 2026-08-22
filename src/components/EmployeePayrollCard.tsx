@@ -94,10 +94,10 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const mandatoryDed = Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
   // Sum only APPLIED deductions (not undeducted ones)
   const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
-  // Use the engine's stored total (mandatory + applied loans) — consistent with net_pay
-  const totalDed = entry ? Number(entry.total_deductions ?? 0) : (computed.mandatoryDeductions + totalActualLoans);
-  // Use the engine-computed net_pay when available — it already accounts for NTHP floor
-  const netPay = entry ? Number(entry.net_pay ?? 0) : nthpResult.finalNetPay;
+  // Total Deductions = Mandatory + Applied Loan Deductions (excludes undeducted)
+  const totalDed = Math.round((mandatoryDed + loanDedsDisplay) * 100) / 100;
+  // NET PAY = Gross - Total Deductions (compute fresh, not from stale entry.net_pay)
+  const netPay = Math.round((gross - totalDed) * 100) / 100;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
@@ -349,7 +349,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <NthpMetric label="Net Pay Before Loans" value={currency(entry ? (Number(entry.gross_pay ?? 0) - Number(entry.mandatory_deductions ?? 0)) : computed.netBeforeLoans)} />
+                <NthpMetric label="Net Pay Before Loans" value={currency(Math.round((gross - mandatoryDed) * 100) / 100)} />
                 <NthpMetric label="Actual Loan Deductions" value={currency(storedActualLoans)} />
                 <NthpMetric label="Undeducted Obligations" value={currency(storedUndeducted)} color="text-amber-600" />
                 <NthpMetric label="Final Net Pay" value={currency(netPay)} color={netPay >= 5000 ? 'text-emerald-600' : 'text-rose-600'} bold />
