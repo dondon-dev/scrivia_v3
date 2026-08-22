@@ -12,7 +12,13 @@
  *   { actualLoanDeductions, mandatoryLoanDeductions, undeductedObligations,
  *     nthpStatus, finalNetPay, availableBalance, loanDeductionCapacity }
  */
-CREATE OR REPLACE FUNCTION public._pd_compute(
+DROP FUNCTION IF EXISTS public._pd_compute(
+    numeric,
+    jsonb,
+    numeric,
+    text
+);
+CREATE FUNCTION public._pd_compute(
   p_available numeric,
   p_sorted    jsonb,
   p_mandatory_loans numeric DEFAULT 0,
