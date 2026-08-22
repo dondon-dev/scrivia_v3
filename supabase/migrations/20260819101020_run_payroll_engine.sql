@@ -324,6 +324,7 @@ BEGIN
   -- Large runs exceed the caller's (30s) statement_timeout — give this engine
   -- room to finish. Bounded so a genuinely stuck run still aborts.
   SET LOCAL statement_timeout = '10 min';
+  SET LOCAL lock_timeout = '10 min';
 
   -- Suppress per-row audit + per-statement dashboard refreshes for this run
   PERFORM set_config('app.skip_audit', 'on', true);
