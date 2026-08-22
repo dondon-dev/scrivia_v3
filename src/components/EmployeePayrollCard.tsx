@@ -80,11 +80,21 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const storedUndeducted = entry ? Number(entry.undeducted_amount ?? 0) : totalUndeducted;
   const storedActualLoans = entry ? Number(entry.actual_loan_deductions ?? entry.other_deductions ?? 0) : totalActualLoans;
 
-  const gross = entry ? entry.gross_pay : computed.gross;
+  // Build a set of (dedcode + amount) pairs that are undeducted obligations
+  const undeductedKeys = new Set(
+    undeductedObs.map((u) => `${u.deduction_code}::${Number(u.scheduled_amount || u.undeducted_amount).toFixed(2)}`)
+  );
+
+  // Filter out undeducted deductions from the detail display —
+  // only show deductions that were ACTUALLY applied (deducted from net pay)
+  const appliedDeds = empDeds.filter((d) => !undeductedKeys.has(`${d.dedcode}::${Number(d.dedamt).toFixed(2)}`));
+
+  const gross = entry ? Number(entry.gross_pay) : computed.gross;
   const mandatoryDed = entry ? Number(entry.mandatory_deductions ?? 0) : computed.mandatoryDeductions;
-  const totalDed = entry ? entry.total_deductions : (computed.mandatoryDeductions + totalActualLoans);
-  const netPay = entry ? entry.net_pay : nthpResult.finalNetPay;
-  const loanDedsDisplay = storedActualLoans;
+  // Sum only APPLIED deductions (not undeducted ones)
+  const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
+  const totalDed = entry ? (mandatoryDed + loanDedsDisplay) : (computed.mandatoryDeductions + totalActualLoans);
+  const netPay = entry ? Math.max(0, gross - totalDed) : nthpResult.finalNetPay;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
@@ -286,15 +296,15 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </span>
             </div>
 
-            {/* Loan Deductions Detail */}
-            {empDeds.length > 0 && (
+            {/* Loan Deductions Detail — only applied (deducted) deductions */}
+            {appliedDeds.length > 0 && (
               <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5 text-slate-400" />
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({empDeds.length} records)</p>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({appliedDeds.length} records)</p>
                 </div>
                 <div className="divide-y divide-slate-100 max-h-52 overflow-y-auto">
-                  {empDeds.map((d) => {
+                  {appliedDeds.map((d) => {
                     const codeInfo = dedCodeMap.get(d.dedcode);
                     return (
                       <div key={d.id} className="px-4 py-2.5 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center hover:bg-slate-50 transition-colors">

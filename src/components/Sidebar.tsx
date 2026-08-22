@@ -5,7 +5,7 @@ import {
   Star, LogOut, Code2, LayoutDashboard, Clock,
   type LucideIcon,
 } from 'lucide-react';
-import { ScriviaLogo, ScriviaWordmark } from '@/components/ScriviaLogo';
+
 import type { UserProfile } from '@/types/auth';
 import { ROLE_LABELS } from '@/types/auth';
 import { usePermissions } from '@/lib/permissions';
@@ -166,11 +166,14 @@ export default function Sidebar(props: SidebarProps) {
       style={{ fontFamily: '"Inter", "Segoe UI", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}
     >
       {/* Logo */}
-      <div className={`flex items-center gap-3 h-16 border-b border-white/10 shrink-0 relative overflow-hidden ${collapsed ? 'lg:px-3 px-5' : 'px-5'}`}>
+      <div className={`flex items-center gap-3 h-16 border-b border-gray-300 shrink-0 relative overflow-hidden ${collapsed ? 'lg:px-3 px-5' : 'px-5'}`} style={{ backgroundColor: '#D9D9DB' }}>
         <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-nexora-500/20 blur-2xl" />
-        <ScriviaLogo light className="w-10 h-10 shrink-0 relative" />
+        <img src="/scrivia_logo.png" alt="SCRIVIA CLOUD" className="w-10 h-10 shrink-0 relative object-contain" />
         {!collapsed && (
-          <ScriviaWordmark light size="sm" className="flex-1 min-w-0 overflow-hidden relative" />
+          <div className="flex flex-col flex-1 min-w-0 overflow-hidden relative">
+            <span className="font-bold text-sm tracking-wide leading-tight" style={{ color: '#000000' }}>SCRIVIA™ CLOUD</span>
+            <span className="text-[8px] tracking-[0.1em] leading-tight" style={{ color: '#333333' }}>SMART PAYROLL. SECURE FUTURE.</span>
+          </div>
         )}
         <button
           onClick={onCloseMobile}

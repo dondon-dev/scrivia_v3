@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Eye, EyeOff, ArrowRight, ShieldCheck, Clock, AlertCircle } from 'lucide-react';
-import { ScriviaLogo, ScriviaWordmark } from '@/components/ScriviaLogo';
+
 import { useAuth, PENDING_SIGNUP_EMAIL_KEY } from '@/lib/auth';
 import { turnstileEnabled } from '@/lib/turnstile';
 import { TurnstileWidget, type TurnstileWidgetHandle } from '@/components/TurnstileWidget';
@@ -50,8 +50,11 @@ export default function Login({ onSwitch }: { onSwitch: (view: 'login' | 'signup
       <div className="login-card bg-white shadow-2xl">
           <div className="bg-slate-900 px-8 pt-8 pb-6">
             <div className="flex items-center gap-3 mb-4">
-              <ScriviaLogo light className="w-10 h-10 shrink-0" />
-              <ScriviaWordmark light />
+              <img src="/scrivia_logo.png" alt="SCRIVIA CLOUD" className="w-10 h-10 shrink-0 object-contain" />
+              <div className="flex flex-col">
+                <span className="text-white font-bold text-lg tracking-wide leading-tight">SCRIVIA™ CLOUD</span>
+                <span className="text-white/60 text-[10px] tracking-[0.15em] leading-tight mt-0.5">SMART PAYROLL. SECURE FUTURE.</span>
+              </div>
             </div>
             <h2 className="text-lg font-semibold text-white">Sign In</h2>
             <p className="text-sm text-slate-400 mt-1">Enter your credentials to access the system</p>

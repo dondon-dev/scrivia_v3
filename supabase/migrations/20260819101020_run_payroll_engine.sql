@@ -36,20 +36,17 @@ AS $fn$
       AND upper(COALESCE(p_type, '')) NOT IN ('L', 'LOAN') THEN 5
     WHEN upper(COALESCE(p_agency, '')) IN ('HDMF', 'PAGIBIG', 'PAG-IBIG')
       AND upper(COALESCE(p_type, '')) IN ('L', 'LOAN') THEN 6
-    WHEN upper(COALESCE(p_type, '')) IN ('C', 'COOPERATIVE') THEN 7
-    WHEN upper(COALESCE(p_dedcode, '')) LIKE '%MBA%' THEN 8
+    WHEN upper(COALESCE(p_dedcode, '')) = '0068' THEN 7
+    WHEN upper(COALESCE(p_dedcode, '')) = '0216' THEN 8
+    WHEN upper(COALESCE(p_dedcode, '')) = '0136' THEN 9
+    WHEN upper(COALESCE(p_type, '')) IN ('C', 'COOPERATIVE') THEN 10
+    WHEN upper(COALESCE(p_dedcode, '')) LIKE '%MBA%' THEN 11
     WHEN upper(COALESCE(p_dedcode, '')) LIKE '%PROVIDENT%'
       OR upper(COALESCE(p_dedcode, '')) LIKE '%PF%'
-      OR upper(COALESCE(p_type, '')) IN ('P', 'PROVIDENT', 'SAVINGS') THEN 9
-    WHEN upper(COALESCE(p_agency, '')) = 'DEPED'
-      AND upper(COALESCE(p_type, '')) IN ('L', 'LOAN') THEN 9
-    WHEN upper(COALESCE(p_type, '')) = 'INSURANCE'
-      OR (upper(COALESCE(p_type, '')) IN ('P', 'PROVIDENT', 'SAVINGS')
-          AND upper(COALESCE(p_agency, '')) = 'OTHER') THEN 11
-    WHEN upper(COALESCE(p_type, '')) IN ('L', 'LOAN')
-      AND upper(COALESCE(p_agency, '')) = 'OTHER' THEN 13
-    WHEN upper(COALESCE(p_type, '')) IN ('P', 'PROVIDENT', 'SAVINGS') THEN 11
-    ELSE 13
+      OR upper(COALESCE(p_type, '')) IN ('P', 'PROVIDENT', 'SAVINGS') THEN 12
+    WHEN upper(COALESCE(p_type, '')) = 'INSURANCE' THEN 13
+    WHEN upper(COALESCE(p_type, '')) IN ('L', 'LOAN') THEN 14
+    ELSE 15
   END;
 $fn$;
 
