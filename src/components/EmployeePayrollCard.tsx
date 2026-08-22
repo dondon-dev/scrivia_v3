@@ -272,8 +272,8 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                 <div className="p-4 space-y-2 text-sm">
                   <AmountRow label="GSIS Life & Ret" value={currency(computed.dedlnr)} />
                   <AmountRow label="MEDICARE" value={currency(computed.dedmed)} />
-                  <AmountRow label="PAG-IBIG" value={currency(computed.dedpag)} />
                   <AmountRow label="W/holding Tax" value={currency(computed.dedtax)} />
+                  <AmountRow label="PAG-IBIG" value={currency(computed.dedpag)} />
                   <div className="border-t border-slate-200 pt-2 mt-1">
                     <AmountRow label="Mandatory Deductions" value={currency(mandatoryDed)} bold valueColor="text-brand-700" />
                   </div>

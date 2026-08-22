@@ -374,7 +374,7 @@ BEGIN
       WHEN v_taxable <= 666667 THEN 33541.67 + (v_taxable - 166667) * 0.30
       ELSE 183541.67 + (v_taxable - 666667) * 0.35
     END, 2);
-    v_mandatory := round(v_dedlnr + v_dedmed + v_dedpag + v_dedtax, 2);
+    v_mandatory := round(v_dedlnr + v_dedmed + v_dedtax + v_dedpag, 2);
     v_available := round(v_gross - v_mandatory, 2);
 
     -- Check if employee is EXCLUDED for this pay period
