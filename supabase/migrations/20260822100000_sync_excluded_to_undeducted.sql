@@ -366,7 +366,8 @@ BEGIN
           AND NOT _pd_mandatory(d.agency, c.type)
           AND NOT _pd_mandatory_loan(d.agency, c.type)
         ORDER BY
-          _pd_priority(c.agency, c.type, d.dedcode),
+          -- EXCLUDED deductions are least priority (100+) — sorted by effective date
+          100 + _pd_priority(c.agency, c.type, d.dedcode),
           ((CASE WHEN COALESCE(d.effyy,0) < 100 THEN 2000 + d.effyy ELSE d.effyy END) * 100 + COALESCE(d.effmm, 0)),
           d.dedcode
       LOOP
