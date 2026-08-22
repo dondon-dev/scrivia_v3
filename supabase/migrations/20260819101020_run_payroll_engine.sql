@@ -320,6 +320,10 @@ BEGIN
   v_paymm := v_period.month;
   v_paydate := v_period.pay_date;
 
+  -- Large runs exceed the caller's (30s) statement_timeout — give this engine
+  -- room to finish. Bounded so a genuinely stuck run still aborts.
+  SET LOCAL statement_timeout = '10 min';
+
   -- Suppress per-row audit + per-statement dashboard refreshes for this run
   PERFORM set_config('app.skip_audit', 'on', true);
 
@@ -382,7 +386,7 @@ BEGIN
              'dedname', COALESCE(c.dedname, d.dedcode)
            )), '[]'::jsonb)
     INTO v_deds
-    FROM _active_deds d
+    FROM payroll_deductions d
     LEFT JOIN deduction_codes c ON c.dedcode = d.dedcode
     WHERE (d.employee_id = r_emp.id OR (d.employee_id IS NULL AND btrim(COALESCE(d.empno, '')) = r_emp.empno AND r_emp.empno <> ''))
       AND upper(COALESCE(d.status, '')) NOT IN ('TERMINATED', 'T')
