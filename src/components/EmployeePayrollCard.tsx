@@ -5,7 +5,7 @@ import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import type { Employee, PayrollEntry, PayPeriod, PayrollDeduction, DeductionCode, UndeductedObligation } from '@/types/payroll';
 import { computePayrollDeductions } from '@/lib/payroll';
-import { processEmployeeDeductions, NTHP_THRESHOLD } from '@/lib/nthp';
+import { NTHP_THRESHOLD } from '@/lib/nthp';
 import { currency } from '@/lib/reports';
 
 interface Props {
@@ -71,14 +71,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
     basicSalary, e.pera ?? 0, e.aca ?? 0, e.rata ?? 0, e.ontop ?? 0, e.long ?? 0, 0,
   );
 
-  const nthpResult = processEmployeeDeductions(
-    computed.netBeforeLoans, empDeds, dedCodeMap, e.stacode ?? '',
-  );
-  const totalActualLoans = nthpResult.actualLoanDeductions + nthpResult.mandatoryLoanDeductions;
-  const totalUndeducted = nthpResult.undeductedObligations.reduce((s, u) => s + u.undeducted_amount, 0);
-  const nthpStatus = entry?.nthp_status ?? nthpResult.nthpStatus;
-  const storedUndeducted = entry ? Number(entry.undeducted_amount ?? 0) : totalUndeducted;
-  const storedActualLoans = entry ? Number(entry.actual_loan_deductions ?? entry.other_deductions ?? 0) : totalActualLoans;
+  const nthpStatus = entry?.nthp_status ?? 'PASS';
 
   // Build a set of (dedcode + amount) pairs that are undeducted obligations
   const undeductedKeys = new Set(
@@ -94,10 +87,15 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const mandatoryDed = Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
   // Sum only APPLIED deductions (not undeducted ones)
   const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
-  // Total Deductions = Mandatory + Applied Loan Deductions (excludes undeducted)
+  // Total Deductions = Mandatory Deductions + Total Loan Deductions Applied (excludes undeducted)
   const totalDed = Math.round((mandatoryDed + loanDedsDisplay) * 100) / 100;
-  // NET PAY = Gross - Total Deductions (compute fresh, not from stale entry.net_pay)
+  // NET PAY = Gross Compensation - Total Deductions
   const netPay = Math.round((gross - totalDed) * 100) / 100;
+  // NTHP computed values (always fresh, not from stale entry fields)
+  const netPayBeforeLoans = Math.round((gross - mandatoryDed) * 100) / 100;
+  const actualLoanDeductionsApplied = loanDedsDisplay;
+  const totalUndeductedAmount = undeductedObs.reduce((s, u) => s + Number(u.undeducted_amount || 0), 0);
+  const finalNetPay = Math.round((netPayBeforeLoans - actualLoanDeductionsApplied) * 100) / 100;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
@@ -283,6 +281,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                   )}
                   <div className="border-t border-slate-200 pt-2 mt-1">
                     <AmountRow label="Total Deductions" value={currency(totalDed)} bold valueColor="text-rose-600" />
+                    <p className="text-[10px] text-slate-400 mt-0.5">Mandatory ({currency(mandatoryDed)}) + Loans ({currency(loanDedsDisplay)})</p>
                   </div>
                 </div>
               </div>
@@ -349,23 +348,20 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <NthpMetric label="Net Pay Before Loans" value={currency(Math.round((gross - mandatoryDed) * 100) / 100)} />
-                <NthpMetric label="Actual Loan Deductions" value={currency(storedActualLoans)} />
-                <NthpMetric label="Undeducted Obligations" value={currency(storedUndeducted)} color="text-amber-600" />
-                <NthpMetric label="Final Net Pay" value={currency(netPay)} color={netPay >= 5000 ? 'text-emerald-600' : 'text-rose-600'} bold />
+                <NthpMetric label="Net Pay Before Loans" value={currency(netPayBeforeLoans)} />
+                <NthpMetric label="Actual Loan Deductions" value={currency(actualLoanDeductionsApplied)} />
+                <NthpMetric label="Undeducted Obligations" value={currency(totalUndeductedAmount)} color="text-amber-600" />
+                <NthpMetric label="Final Net Pay" value={currency(finalNetPay)} color={finalNetPay >= 5000 ? 'text-emerald-600' : 'text-rose-600'} bold />
               </div>
               <p className="text-xs text-slate-400 mt-3">NTHP Floor: ₱{NTHP_THRESHOLD.toFixed(2)} — loan deductions are skipped if they would bring net pay below this threshold.</p>
 
-              {(undeductedObs.length > 0 || nthpResult.undeductedObligations.length > 0) && (
+              {undeductedObs.length > 0 && (
                 <div className="mt-4 pt-3 border-t border-amber-200">
                   <p className="text-xs font-semibold text-amber-700 mb-2 uppercase tracking-wider">
-                    Undeducted Obligations ({undeductedObs.length || nthpResult.undeductedObligations.length} items)
+                    Undeducted Obligations ({undeductedObs.length} items)
                   </p>
                   <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                    {(undeductedObs.length > 0 ? undeductedObs : nthpResult.undeductedObligations.map((u, i) => ({
-                      id: String(i), payroll_entry_id: '', employee_id: e.id, pay_period_id: '',
-                      ...u, created_at: '',
-                    }))).map((u) => (
+                    {undeductedObs.map((u) => (
                       <div key={u.id} className="flex items-center justify-between text-xs bg-white/60 rounded-lg px-3 py-2">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="font-mono font-semibold text-amber-700 shrink-0">{u.deduction_code}</span>
