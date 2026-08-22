@@ -436,16 +436,47 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
 
   const resolvedPeriod = periodName || 'Unknown Period';
 
-  const rows: Record<string, unknown>[] = filtered.map((rec) => ({
-    empno: str(rec, 'EMPNO'),
-    stacode: str(rec, 'STACODE'),
-    divcode: str(rec, 'DIVCODE'),
-    regcode: str(rec, 'REGCODE'),
-    payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
-    reason: str(rec, 'REASON') || str(rec, 'REMARKS') || str(rec, 'REMARK'),
-    remarks: str(rec, 'REMARKS') || str(rec, 'REMARK'),
-    updated_at: new Date().toISOString(),
-  })).filter((r) => r.empno);
+  // Group by empno to collect deduction-level data
+  const byEmp = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[] }>();
+  for (const rec of filtered) {
+    const empno = str(rec, 'EMPNO');
+    if (!empno) continue;
+    const dedcode = str(rec, 'DEDCODE') || str(rec, 'CODE');
+    const dedamt = num(rec, 'DEDAMT') || num(rec, 'AMOUNT') || 0;
+    const effyy = Math.floor(num(rec, 'EFFYY') || 0);
+    const effmm = Math.floor(num(rec, 'EFFMM') || 0);
+    if (!byEmp.has(empno)) {
+      byEmp.set(empno, {
+        stacode: str(rec, 'STACODE'),
+        divcode: str(rec, 'DIVCODE'),
+        regcode: str(rec, 'REGCODE'),
+        payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
+        reason: str(rec, 'REASON') || str(rec, 'REMARKS') || str(rec, 'REMARK') || 'EXCLUDED FROM PAYROLL',
+        deductions: [],
+      });
+    }
+    if (dedcode && dedamt > 0) {
+      byEmp.get(empno)!.deductions.push({ dedcode, dedamt, effyy, effmm });
+    }
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  for (const [empno, data] of byEmp) {
+    // Store deduction-level data as JSON in reason field
+    const reasonJson = data.deductions.length > 0
+      ? JSON.stringify({ base: data.reason, deds: data.deductions })
+      : data.reason;
+    rows.push({
+      empno,
+      stacode: data.stacode,
+      divcode: data.divcode,
+      regcode: data.regcode,
+      payperiod: data.payperiod,
+      reason: reasonJson,
+      remarks: '',
+      updated_at: new Date().toISOString(),
+    });
+  }
 
   const result = await upsertTable('dbf_excluded', rows, ['empno'], (r) => `${r.empno}|${r.payperiod}`, 'id,empno,payperiod');
 
@@ -502,10 +533,31 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
     const empId = empIdMap.get(r.empno);
     const periodId = periodIdMap.get(r.payperiod);
     if (!empId || !periodId) continue;
+
+    // Parse JSON reason to get deduction-level data
+    let excDeds: { dedcode: string; dedamt: number }[] = [];
+    let baseReason = r.reason;
+    try {
+      const parsed = JSON.parse(r.reason);
+      if (parsed.deds && Array.isArray(parsed.deds)) {
+        excDeds = parsed.deds;
+        baseReason = parsed.base || 'EXCLUDED FROM PAYROLL';
+      }
+    } catch {
+      // Not JSON — treat as employee-level (all deductions excluded)
+    }
+
     for (const d of activeDeds as { employee_id: string; dedcode: string; dedamt: number }[]) {
       if (d.employee_id !== empId) continue;
       const amount = Number(d.dedamt) || 0;
       if (amount <= 0) continue;
+
+      // If deduction-level data exists, only match specific deductions
+      if (excDeds.length > 0) {
+        const match = excDeds.find((e) => e.dedcode === d.dedcode && Math.abs(e.dedamt - amount) < 0.01);
+        if (!match) continue; // Not in EXCLUDED list — skip
+      }
+
       toInsert.push({
         employee_id: empId,
         pay_period_id: periodId,
@@ -514,7 +566,7 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
         undeducted_amount: amount,
         scheduled_amount: amount,
         station_code: r.stacode || '',
-        reason: r.reason,
+        reason: baseReason,
       });
     }
   }
