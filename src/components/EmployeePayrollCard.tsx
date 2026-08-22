@@ -90,7 +90,8 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const appliedDeds = empDeds.filter((d) => !undeductedKeys.has(`${d.dedcode}::${Number(d.dedamt).toFixed(2)}`));
 
   const gross = entry ? Number(entry.gross_pay) : computed.gross;
-  const mandatoryDed = entry ? Number(entry.mandatory_deductions ?? 0) : computed.mandatoryDeductions;
+  // Always compute from individual components to stay consistent with the displayed rows
+  const mandatoryDed = Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
   // Sum only APPLIED deductions (not undeducted ones)
   const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
   // Use the engine's stored total (mandatory + applied loans) — consistent with net_pay
@@ -272,8 +273,8 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                 <div className="p-4 space-y-2 text-sm">
                   <AmountRow label="GSIS Life & Ret" value={currency(computed.dedlnr)} />
                   <AmountRow label="MEDICARE" value={currency(computed.dedmed)} />
-                  <AmountRow label="W/holding Tax" value={currency(computed.dedtax)} />
                   <AmountRow label="PAG-IBIG" value={currency(computed.dedpag)} />
+                  <AmountRow label="W/holding Tax" value={currency(computed.dedtax)} />
                   <div className="border-t border-slate-200 pt-2 mt-1">
                     <AmountRow label="Mandatory Deductions" value={currency(mandatoryDed)} bold valueColor="text-brand-700" />
                   </div>
