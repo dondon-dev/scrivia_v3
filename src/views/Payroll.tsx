@@ -214,7 +214,8 @@ export default function Payroll({ profile }: PayrollProps) {
   const totalOtherDeds = rows.reduce((s, r) => s + r.loansApplied, 0);
   const totalDeductions = rows.reduce((s, r) => s + r.totalDeductions, 0);
   const totalNet = rows.reduce((s, r) => s + r.netPay, 0);
-  const totalUndeducted = rows.reduce((s, r) => s + r.undeducted, 0);
+  // Compute undeducted from undeducted_obligations table (not stale entry fields)
+  const totalUndeducted = undeductedObs.reduce((s, u) => s + Number(u.undeducted_amount || 0), 0);
   const nthpFails = rows.filter((r) => r.nthpStatus === 'FAIL').length;
 
   const undeductedByEmp = new Map<string, UndeductedObligation[]>();
