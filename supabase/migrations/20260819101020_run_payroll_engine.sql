@@ -248,6 +248,7 @@ DECLARE
   v_actual_total numeric;
   v_unded_amount numeric;
   v_paydate timestamptz;
+  v_is_excluded boolean;
 BEGIN
   SELECT lower(btrim(role)) INTO v_caller_role
   FROM profiles WHERE id = auth.uid();
@@ -375,6 +376,13 @@ BEGIN
     v_mandatory := round(v_dedlnr + v_dedmed + v_dedpag + v_dedtax, 2);
     v_available := round(v_gross - v_mandatory, 2);
 
+    -- Check if employee is EXCLUDED for this pay period
+    SELECT EXISTS (
+      SELECT 1 FROM dbf_excluded ex
+      WHERE ex.empno = r_emp.empno
+        AND trim(ex.payperiod) = trim(v_period.period_name)
+    ) INTO v_is_excluded;
+
     -- active deductions for this employee (empno fallback like the client)
     SELECT COALESCE(jsonb_agg(jsonb_build_object(
              'dedcode', d.dedcode,
@@ -402,7 +410,8 @@ BEGIN
     FROM jsonb_array_elements(v_deds) x
     WHERE _pd_mandatory_loan(x->>'agency', x->>'type');
 
-    -- APDS deductions sorted by priority, then FIFO (effective date), then code
+    -- Sort non-mandatory deductions
+    -- EXCLUDED employees get priority 99 (always last), others use _pd_priority
     SELECT COALESCE(jsonb_agg(j), '[]'::jsonb) INTO v_sorted
     FROM (
       SELECT jsonb_build_object(
@@ -419,7 +428,7 @@ BEGIN
       WHERE NOT _pd_mandatory(x.agency, x.type)
         AND NOT _pd_mandatory_loan(x.agency, x.type)
       ORDER BY
-        _pd_priority(x.agency, x.type, x.dedcode),
+        CASE WHEN v_is_excluded THEN 99 ELSE _pd_priority(x.agency, x.type, x.dedcode) END,
         ((CASE WHEN x.effyy < 100 THEN 2000 + x.effyy ELSE x.effyy END) * 100 + x.effmm),
         x.dedcode
     ) s;
