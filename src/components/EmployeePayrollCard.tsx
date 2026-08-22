@@ -93,8 +93,10 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const mandatoryDed = entry ? Number(entry.mandatory_deductions ?? 0) : computed.mandatoryDeductions;
   // Sum only APPLIED deductions (not undeducted ones)
   const loanDedsDisplay = appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
-  const totalDed = entry ? (mandatoryDed + loanDedsDisplay) : (computed.mandatoryDeductions + totalActualLoans);
-  const netPay = entry ? Math.max(0, gross - totalDed) : nthpResult.finalNetPay;
+  // Use the engine's stored total (mandatory + applied loans) — consistent with net_pay
+  const totalDed = entry ? Number(entry.total_deductions ?? 0) : (computed.mandatoryDeductions + totalActualLoans);
+  // Use the engine-computed net_pay when available — it already accounts for NTHP floor
+  const netPay = entry ? Number(entry.net_pay ?? 0) : nthpResult.finalNetPay;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
@@ -321,7 +323,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                 </div>
                 <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center">
                   <span className="col-span-3 font-semibold text-slate-600">Total Loan Deductions Applied:</span>
-                  <span className="font-bold text-slate-800 text-right tabular">{currency(storedActualLoans)}</span>
+                  <span className="font-bold text-slate-800 text-right tabular">{currency(appliedDeds.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0))}</span>
                 </div>
               </div>
             )}
@@ -346,7 +348,7 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <NthpMetric label="Net Pay Before Loans" value={currency(computed.netBeforeLoans)} />
+                <NthpMetric label="Net Pay Before Loans" value={currency(entry ? (Number(entry.gross_pay ?? 0) - Number(entry.mandatory_deductions ?? 0)) : computed.netBeforeLoans)} />
                 <NthpMetric label="Actual Loan Deductions" value={currency(storedActualLoans)} />
                 <NthpMetric label="Undeducted Obligations" value={currency(storedUndeducted)} color="text-amber-600" />
                 <NthpMetric label="Final Net Pay" value={currency(netPay)} color={netPay >= 5000 ? 'text-emerald-600' : 'text-rose-600'} bold />

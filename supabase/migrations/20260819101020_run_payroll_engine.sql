@@ -382,7 +382,7 @@ BEGIN
              'dedname', COALESCE(c.dedname, d.dedcode)
            )), '[]'::jsonb)
     INTO v_deds
-    FROM payroll_deductions d
+    FROM _active_deds d
     LEFT JOIN deduction_codes c ON c.dedcode = d.dedcode
     WHERE (d.employee_id = r_emp.id OR (d.employee_id IS NULL AND btrim(COALESCE(d.empno, '')) = r_emp.empno AND r_emp.empno <> ''))
       AND upper(COALESCE(d.status, '')) NOT IN ('TERMINATED', 'T')
