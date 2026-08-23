@@ -97,18 +97,18 @@ export function KpiCard({
       custom={delay}
       whileHover={onClick ? { y: -6 } : { y: -3 }}
       onClick={onClick}
-      className={`nexora-card nexora-card-hover p-4 group relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
+      className={`nexora-card nexora-card-hover p-3 group relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
     >
       {/* hover glow wash */}
       <div className="pointer-events-none absolute -top-16 -right-16 w-40 h-40 rounded-full bg-gradient-to-br from-nexora-500/0 to-nexora-500/10 dark:from-nexora-500/0 dark:to-nexora-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
       <div className="flex items-start justify-between gap-3 relative">
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</p>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1 tabular truncate leading-tight">{display}</p>
+          <p className="text-xl font-bold text-slate-900 dark:text-white mt-0.5 tabular truncate leading-tight">{display}</p>
           {sublabel && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{sublabel}</p>}
         </div>
-        <div className={`w-10 h-10 rounded-xl ${colors.iconBg} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300`}>
-          <Icon className={`w-5 h-5 ${colors.iconColor}`} />
+        <div className={`w-8 h-8 rounded-lg ${colors.iconBg} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300`}>
+          <Icon className={`w-4 h-4 ${colors.iconColor}`} />
         </div>
       </div>
 
@@ -186,7 +186,7 @@ export function HeroHeader({ greeting, title, date, chips, actions, metric, live
       <div className="hero-blob w-48 h-48 -top-16 -right-10 bg-aurora-500/20" style={{ animationDelay: '0s' }} />
       <div className="hero-blob w-40 h-40 -bottom-20 -left-8 bg-nexora-400/20" style={{ animationDelay: '-3s' }} />
 
-      <div className="relative p-4 sm:p-5">
+      <div className="relative p-3 sm:p-4">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -201,15 +201,15 @@ export function HeroHeader({ greeting, title, date, chips, actions, metric, live
                 </span>
               )}
             </div>
-            <h1 className="text-xl sm:text-2xl font-bold mt-2 leading-tight tracking-tight">
+            <h1 className="text-lg sm:text-xl font-bold mt-1.5 leading-tight tracking-tight">
               {greeting}
               <span className="ml-2 inline-flex items-center gap-1 align-middle">
                 <Sparkles className="w-5 h-5 text-aurora-300" />
               </span>
             </h1>
-            {title && <p className="text-[13px] text-white/70 mt-1.5 max-w-2xl leading-relaxed">{title}</p>}
+            {title && <p className="text-[12px] text-white/70 mt-1 max-w-2xl leading-snug">{title}</p>}
             {chips && chips.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-3">
+              <div className="flex flex-wrap gap-1.5 mt-2">
                 {chips.map((c, i) => {
                   const ChipIcon = c.icon;
                   return (
