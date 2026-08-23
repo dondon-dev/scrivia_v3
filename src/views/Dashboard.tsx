@@ -437,19 +437,6 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
       {/* ── RIGHT SIDEBAR (1/3) ── */}
       <div className="space-y-4">
 
-      {/* Calendar / Notification */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">
-        <div className="flex items-center gap-2 mb-3">
-          <Clock className="w-4 h-4 text-slate-500" />
-          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Calendar</span>
-          <span className="ml-auto text-sm font-semibold text-slate-700 dark:text-slate-200">Notification</span>
-        </div>
-        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 text-center">
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-300">{new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
-          <p className="text-xs text-slate-400 mt-1">{data.currentPeriod ? `Payroll: ${data.currentPeriod.period_name}` : 'No active period'}</p>
-        </div>
-      </div>
-
       {/* Payroll Groups */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">
         <SectionHeader title="Payroll Groups" icon={School} />
