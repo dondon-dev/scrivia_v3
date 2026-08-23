@@ -300,14 +300,9 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
   // ── Quick Actions (filtered by role) ──
   const allActions: { label: string; desc: string; icon: LucideIcon; color: string; view: View; show: boolean }[] = [
     { label: 'Run Payroll', desc: 'Process a pay period', icon: Calculator, color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', view: 'payroll', show: can('payroll') },
-    { label: 'Smart Import', desc: 'Sync DBF files (10 tables)', icon: Database, color: 'bg-deped-100 text-deped-700 dark:bg-deped-900/40 dark:text-deped-300', view: 'importbackup', show: canImport },
-    { label: 'DBF Import Center', desc: 'Restore legacy DBF data', icon: HardDriveDownload, color: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300', view: 'importbackup', show: canImport },
-    { label: 'Generate Reports', desc: 'Payroll & remittance', icon: FileSpreadsheet, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', view: 'reports', show: can('reports') },
     { label: 'Manage Masterfile', desc: 'Add or edit employees', icon: Users, color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', view: 'employees', show: can('employees') },
-    { label: 'STACODE Validation', desc: 'Check & correct invalid', icon: ShieldAlert, color: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300', view: 'stacode', show: can('stacode') },
-    { label: 'Audit Trail', desc: 'View system activity', icon: ScrollText, color: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', view: 'audit', show: can('audit_logs') },
+    { label: 'Generate Reports', desc: 'Payroll & remittance', icon: FileSpreadsheet, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', view: 'reports', show: can('reports') },
     { label: 'Users & Roles', desc: 'Manage user accounts', icon: UserCog, color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', view: 'users', show: can('user_management') },
-    { label: 'SCRIVIA Intelligence', desc: 'Auto-detected payroll exceptions', icon: Brain, color: 'bg-aurora-100 text-aurora-700 dark:bg-aurora-900/40 dark:text-aurora-300', view: 'ai_center', show: can('dashboard') },
   ];
   const quickActions = allActions.filter((a) => a.show);
 
@@ -402,6 +397,12 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         ))}
       </motion.div>
 
+      {/* ══ 2-COLUMN LAYOUT: main content + right sidebar ══ */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      {/* ── LEFT COLUMN (2/3) ── */}
+      <div className="lg:col-span-2 space-y-6">
+
       {/* Payroll Operations Center — workflow timeline */}
       {data.currentPeriod && (
         <PayrollOpsTimeline
@@ -413,301 +414,8 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         />
       )}
 
-      {/* Current Period Banner + Payroll Groups */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {data.currentPeriod && (
-          <div className="lg:col-span-2 rounded-xl bg-gradient-to-r from-deped-800 via-deped-700 to-deped-600 p-6 text-white shadow-premium relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-64 h-64 -mr-16 -mt-16 rounded-full bg-white/5" />
-            <div className="absolute bottom-0 right-12 w-40 h-40 -mb-12 rounded-full bg-white/5" />
-            <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 text-deped-200 text-xs font-medium uppercase tracking-wider">
-                  <Receipt className="w-3.5 h-3.5" />
-                  Current Pay Period
-                </div>
-                <p className="text-xl font-bold mt-1.5">{data.currentPeriod.period_name}</p>
-                <p className="text-sm text-deped-200 mt-1">
-                  {data.currentPeriod.start_date} → {data.currentPeriod.end_date} · Pay date: {data.currentPeriod.pay_date || 'TBD'}
-                </p>
-              </div>
-              <div className="flex items-center gap-6">
-                <div className="text-right">
-                  <p className="text-xs text-deped-200">Net Pay This Period</p>
-                  <p className="text-2xl font-bold text-white tabular">{currency(data.periodNet)}</p>
-                </div>
-                <span className={`px-3 py-1.5 rounded-full text-xs font-semibold ${
-                  data.currentPeriod.status === 'open' ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30' :
-                  data.currentPeriod.status === 'draft' ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30' :
-                  'bg-slate-500/20 text-slate-300 ring-1 ring-slate-400/30'
-                }`}>
-                  {data.currentPeriod.status.toUpperCase()}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {/* Payroll Group Stats */}
-        <div className="card-base p-5">
-          <SectionHeader title="Payroll Groups" icon={School} />
-          <div className="space-y-2.5">
-            {data.groupStats.map((g) => (
-              <div key={g.id} className="flex items-center justify-between text-sm cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg px-2 py-1 -mx-2 transition-colors" onClick={() => onNavigate('employees')}>
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="px-1.5 py-0.5 rounded bg-deped-50 dark:bg-deped-900/40 text-deped-700 dark:text-deped-300 font-mono font-semibold text-xs shrink-0 tabular">
-                    {String(g.stacode_min ?? 0).padStart(3, '0')}–{String(g.stacode_max ?? 0).padStart(3, '0')}
-                  </span>
-                  <span className="text-slate-600 dark:text-slate-300 truncate">{g.group_name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="tabular font-semibold text-slate-700 dark:text-slate-200 shrink-0 ml-2">{g.count}</span>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" />
-                </div>
-              </div>
-            ))}
-            {data.unassignedCount > 0 && (
-              <div className="flex items-center justify-between text-sm pt-2 border-t border-amber-100 dark:border-amber-900/40">
-                <span className="text-amber-600 dark:text-amber-400 font-medium">Unassigned (invalid STACODE)</span>
-                <span className="tabular font-semibold text-amber-600 dark:text-amber-400">{data.unassignedCount}</span>
-              </div>
-            )}
-            <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-100 dark:border-slate-800 font-semibold">
-              <span className="text-slate-800 dark:text-slate-100">Total Active</span>
-              <span className="tabular text-slate-800 dark:text-slate-100">{data.activeEmployees}</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Initial Payroll Summary */}
-      <InitialPayrollSummary onNavigate={onNavigate} />
-
-      {/* Secondary KPIs: Net, Mandatory, Loans */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="kpi-card cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('payroll')}>
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-2">
-              <Wallet className="w-4 h-4 text-emerald-500" />
-              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Total Net Payroll</p>
-            </div>
-            <ArrowRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" />
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white tabular">{currency(data.totalNet)}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">All periods</p>
-        </div>
-        <div className="kpi-card cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('dedmaster')}>
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-2">
-              <Calculator className="w-4 h-4 text-deped-600 dark:text-deped-400" />
-              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Mandatory Deductions</p>
-            </div>
-            <ArrowRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" />
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white tabular">{currency(data.totalMandatory)}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">GSIS + PhilHealth + Pag-IBIG + W/Tax</p>
-        </div>
-        <div className="kpi-card cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('dedmaster')}>
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-2">
-              <Landmark className="w-4 h-4 text-rose-500" />
-              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Loan Deductions</p>
-            </div>
-            <ArrowRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" />
-          </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white tabular">{currency(data.totalLoanDeds)}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{data.activeLoanAccounts} active loan accounts</p>
-        </div>
-      </div>
-
-      {/* Deduction Chart + Recent Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Deduction Totals Bar Chart */}
-        <div className="card-base p-5">
-          <SectionHeader
-            title="Deduction Totals by Code"
-            icon={BarChart3}
-            action={
-              <button onClick={() => onNavigate('reports')} className="text-xs text-deped-600 dark:text-deped-400 hover:text-deped-700 dark:hover:text-deped-300 font-medium flex items-center gap-1 transition-colors">
-                Full Report <ChevronRight className="w-3 h-3" />
-              </button>
-            }
-          />
-          <div className="space-y-3">
-            {data.dedTotalsByCode.length === 0 ? (
-              <div className="text-center py-8 text-slate-400 dark:text-slate-500 text-sm">
-                <BarChart3 className="w-8 h-8 mx-auto mb-2 text-slate-200 dark:text-slate-700" />
-                No active deductions.
-              </div>
-            ) : (
-              data.dedTotalsByCode.slice(0, 8).map((d) => (
-                <div key={d.code} className="group cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 rounded-lg px-2 py-1 -mx-2 transition-colors" onClick={() => onNavigate('dedmaster')}>
-                  <div className="flex items-center justify-between text-sm mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="px-1.5 py-0.5 rounded bg-deped-50 dark:bg-deped-900/40 text-deped-700 dark:text-deped-300 font-mono font-semibold text-xs shrink-0">{d.code}</span>
-                      <span className="text-slate-600 dark:text-slate-300 truncate">{d.name}</span>
-                    </div>
-                    <span className="tabular font-semibold text-slate-700 dark:text-slate-200 shrink-0 ml-2">{currency(d.total)}</span>
-                  </div>
-                  <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-deped-400 to-deped-600 transition-all duration-500 group-hover:from-deped-500 group-hover:to-deped-700"
-                      style={{ width: `${(d.total / maxDedTotal) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Recent Activities */}
-        <div className="card-base p-5">
-          <SectionHeader
-            title="Recent Activities"
-            icon={Clock}
-            action={
-              can('audit_logs') ? (
-                <button onClick={() => onNavigate('audit')} className="text-xs text-deped-600 dark:text-deped-400 hover:text-deped-700 dark:hover:text-deped-300 font-medium flex items-center gap-1 transition-colors">
-                  View All <ChevronRight className="w-3 h-3" />
-                </button>
-              ) : undefined
-            }
-          />
-          {recentActivity.length === 0 ? (
-            <div className="text-center py-8 text-slate-400 dark:text-slate-500 text-sm">
-              <Clock className="w-8 h-8 mx-auto mb-2 text-slate-200 dark:text-slate-700" />
-              No recent activity.
-            </div>
-          ) : (
-            <div className="space-y-2.5">
-              {recentActivity.map((a) => {
-                const Icon = a.icon;
-                const actNav = activityNavigate(a.action);
-                return (
-                  <div key={a.id} className={`flex items-start gap-3 py-2 ${actNav ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg px-2 -mx-2 transition-colors' : ''}`} onClick={actNav ? () => onNavigate(actNav) : undefined}>
-                    <div className={`w-8 h-8 rounded-lg ${a.color} flex items-center justify-center shrink-0`}>
-                      <Icon className="w-4 h-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{a.label}</p>
-                      <p className="text-xs text-slate-400 dark:text-slate-500">
-                        {a.user_email ?? 'System'} · {timeAgo(a.created_at)}
-                      </p>
-                    </div>
-                    {actNav && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0 mt-1" />}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* STACODE Validation + Upload Stats */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* STACODE Validation Status */}
-        <div className={`card-base p-5 ${data.unassignedCount > 0 ? 'border-amber-300 dark:border-amber-700' : ''}`}>
-          <SectionHeader
-            title="STACODE Validation Status"
-            icon={data.unassignedCount > 0 ? ShieldAlert : ShieldCheck}
-          />
-          <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800/40">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                <span className="text-sm text-slate-700 dark:text-slate-200 font-medium">Valid Employees</span>
-              </div>
-              <span className="tabular font-bold text-emerald-600 dark:text-emerald-400 text-lg">{(data.activeEmployees - data.unassignedCount).toLocaleString()}</span>
-            </div>
-            <div className={`flex items-center justify-between p-3 rounded-lg border ${data.unassignedCount > 0 ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-100 dark:border-amber-800/40' : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800'}`}>
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="w-5 h-5 text-amber-500" />
-                <span className="text-sm text-slate-700 dark:text-slate-200 font-medium">Invalid Employees</span>
-              </div>
-              <span className={`tabular font-bold text-lg ${data.unassignedCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>{data.unassignedCount.toLocaleString()}</span>
-            </div>
-            {data.unassignedCount > 0 && (
-              <button onClick={() => onNavigate('stacode')} className="w-full mt-2 px-3 py-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-sm font-medium hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors border border-amber-200 dark:border-amber-800/40 flex items-center justify-center gap-2">
-                View Details & Correct <ArrowRight className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Upload Statistics */}
-        {uploadStats && (
-          <div className="card-base p-5 cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('importbackup')}>
-            <SectionHeader
-              title="Upload Statistics"
-              icon={Upload}
-              action={<ChevronRight className="w-4 h-4 text-slate-400 dark:text-slate-500" />}
-            />
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatTile label="Today's Uploads" value={uploadStats.todayCount} />
-              <StatTile label="Monthly Uploads" value={uploadStats.monthCount} />
-              <StatTile label="GSIS Today" value={uploadStats.gsisToday} color="text-deped-600 dark:text-deped-400" />
-              <StatTile label="PLI Today" value={uploadStats.pliToday} color="text-deped-700 dark:text-deped-300" />
-              <StatTile label="Newly Added" value={uploadStats.addedToday} color="text-emerald-600 dark:text-emerald-400" />
-              <StatTile label="Updated" value={uploadStats.updatedToday} color="text-amber-600 dark:text-amber-400" />
-              <StatTile label="Terminated" value={uploadStats.terminatedToday} color="text-rose-600 dark:text-rose-400" />
-              <StatTile label="Failed" value={uploadStats.failedToday} color={uploadStats.failedToday > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-300 dark:text-slate-600'} />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Position Management Summary */}
-      <div className="card-base p-5 cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('positionmgmt')}>
-        <SectionHeader
-          title="Position Management"
-          icon={Award}
-          action={<ChevronRight className="w-4 h-4 text-slate-400 dark:text-slate-500" />}
-        />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatTile label="Total Positions" value={positionList.length} />
-          <StatTile label="Teaching" value={positionList.filter(p => p.personnel_category === 'Teaching').length} color="text-emerald-600 dark:text-emerald-400" />
-          <StatTile label="Teaching Related" value={positionList.filter(p => p.personnel_category === 'Teaching Related').length} color="text-blue-600 dark:text-blue-400" />
-          <StatTile label="Non-Teaching" value={positionList.filter(p => p.personnel_category === 'Non-Teaching').length} color="text-amber-600 dark:text-amber-400" />
-        </div>
-      </div>
-
-      {/* Salary Schedule Summary */}
-      <div className="card-base p-5 cursor-pointer hover:shadow-md transition-shadow" onClick={() => onNavigate('salary')}>
-        <SectionHeader
-          title="Salary Schedule"
-          icon={Table2}
-          action={<ChevronRight className="w-4 h-4 text-slate-400 dark:text-slate-500" />}
-        />
-        {schedMeta ? (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <StatTile label="Salary Grades" value={new Set(schedEntries.map(e => e.grade)).size} />
-              <StatTile label="Total Entries" value={schedEntries.length} />
-              <StatTile label="Max Grade" value={Math.max(...schedEntries.map(e => e.grade), 0)} />
-              <StatTile label="Steps" value={8} />
-            </div>
-            <div className="mt-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-              <Table2 className="w-3.5 h-3.5" />
-              {schedMeta.tranche} · {schedMeta.circular_no} · Effective {schedMeta.effective_date}
-            </div>
-          </>
-        ) : (
-          <p className="text-sm text-slate-400 flex items-center gap-2">
-            <ScriviaLogo className="w-4 h-4 animate-pulse" />
-            Loading salary schedule…
-          </p>
-        )}
-      </div>
-
-      {/* Quick Actions */}
-      <div>
-        <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-3 uppercase tracking-wider">Quick Actions</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          {quickActions.slice(0, 8).map((a, i) => (
-            <QuickAction key={a.label} {...a} onClick={() => onNavigate(a.view)} delay={i * 50} />
-          ))}
-        </div>
-      </div>
 
       {/* Recent Employees */}
       <div className="card-base overflow-hidden">
@@ -753,6 +461,69 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
           </div>
         )}
       </div>
+
+      </div>{/* end left column */}
+
+      {/* ── RIGHT SIDEBAR (1/3) ── */}
+      <div className="space-y-6">
+
+      {/* Calendar / Notification */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-3">
+          <Clock className="w-4 h-4 text-slate-500" />
+          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Calendar</span>
+          <span className="ml-auto text-sm font-semibold text-slate-700 dark:text-slate-200">Notification</span>
+        </div>
+        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 text-center">
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-300">{new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</p>
+          <p className="text-xs text-slate-400 mt-1">{data.currentPeriod ? `Payroll: ${data.currentPeriod.period_name}` : 'No active period'}</p>
+        </div>
+      </div>
+
+      {/* Payroll Groups */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">
+        <SectionHeader title="Payroll Groups" icon={School} />
+        <div className="space-y-2.5 mt-3">
+          {data.groupStats.map((g) => (
+            <div key={g.id} className="flex items-center justify-between text-sm cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg px-2 py-1.5 -mx-2 transition-colors" onClick={() => onNavigate('employees')}>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="px-1.5 py-0.5 rounded bg-deped-50 dark:bg-deped-900/40 text-deped-700 dark:text-deped-300 font-mono font-semibold text-xs shrink-0">
+                  {String(g.stacode_min ?? 0).padStart(3, '0')}–{String(g.stacode_max ?? 0).padStart(3, '0')}
+                </span>
+                <span className="text-slate-600 dark:text-slate-300 truncate">{g.group_name}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="tabular font-semibold text-slate-700 dark:text-slate-200 shrink-0 ml-2">{g.count}</span>
+                <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" />
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-100 dark:border-slate-800 font-semibold">
+            <span className="text-slate-800 dark:text-slate-100">Total Active</span>
+            <span className="tabular text-slate-800 dark:text-slate-100">{data.activeEmployees}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Actions */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">
+        <SectionHeader title="Quick Actions" icon={Zap} />
+        <div className="space-y-2 mt-3">
+          {quickActions.map((a, i) => (
+            <button key={a.label} onClick={() => onNavigate(a.view)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-left group">
+              <div className={`w-9 h-9 rounded-lg ${a.color} flex items-center justify-center shrink-0`}>  <a.icon className="w-4.5 h-4.5" /></div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100 group-hover:text-deped-600 dark:group-hover:text-deped-400 transition-colors">{a.label}</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate">{a.desc}</p>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 ml-auto shrink-0 group-hover:text-deped-500 transition-colors" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      </div>{/* end right sidebar */}
+      </div>{/* end 2-column grid */}
     </div>
   );
 }

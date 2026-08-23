@@ -28,6 +28,10 @@ export interface PayrollComputation {
   loanDeductionCapacity: number;
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 const TAX_BRACKETS = [
   { max: 20833, base: 0, rate: 0 },
   { max: 33333, base: 0, rate: 0.15 },
@@ -152,11 +156,14 @@ export function computePayrollDeductions(
 
   // STEP 2 — Mandatory Deductions (statutory premiums + mandatory loans)
   const dedlnr = basic * 0.09;
-  const dedmed = basic * 0.0249998422961678;
+  // PhilHealth: basic × 5% total, ceiling ₱100K → ₱5,000 total
+  // Employee = floor(total/2), Government = total − employee (preserves exact sum)
+  const totalPhilHealth = basic >= 100000 ? 5000.0 : round2(basic * 0.05);
+  const dedmed = Math.floor(totalPhilHealth * 100 / 2) / 100;
+  const govtmed = Math.round((totalPhilHealth - dedmed) * 100) / 100;
   const dedpag = 200.0;
   const govtlnr = basic * 0.12;
   const govtecc = 100.0;
-  const govtmed = basic * 0.0250001577038322;
   const govtpag = 200.0;
 
   const taxableIncome = Math.max(0, basic - dedlnr - dedmed - dedpag);

@@ -58,6 +58,10 @@ const OmniDevAi = lazyRetry(() => import('@/views/OmniDevAi'));
 const PayrollDefinitions = lazyRetry(() => import('@/views/PayrollDefinitions'));
 const Notifications = lazyRetry(() => import('@/views/Notifications'));
 const HelpCenter = lazyRetry(() => import('@/views/HelpCenter'));
+const GsisDashboard = lazyRetry(() => import('@/views/GsisDashboard'));
+const W2TaxAnnual = lazyRetry(() => import('@/views/W2TaxAnnual'));
+const GovPayrollCalculator = lazyRetry(() => import('@/views/GovPayrollCalculator'));
+const PolicyLibrary = lazyRetry(() => import('@/views/PolicyLibrary'));
 
 // Organization.tsx exposes named exports — map each to a default export for lazyRetry()
 const ElementarySchools = lazyRetry(() => import('@/views/Organization').then(m => ({ default: m.ElementarySchools })));
@@ -349,7 +353,7 @@ export default function App() {
       case 'initial_payroll': return <InitialPayroll profile={profile} />;
       case 'signatories': return <SignatoryManagement />;
       case 'taxcalc': return <TaxCalculator />;
-      case 'reports': return <Reports profile={profile} initialTab={viewTab as 'exports' | 'payrollHistory' | 'payrollRegister' | 'deductionSummary' | 'loanLedger' | 'nthp' | 'undeducted' | 'gsis' | 'philhealth' | 'pagibig' | 'salarySummary' | 'netPaySummary' | 'unassigned' | 'overpayment' | 'bankAdvice' | 'payslip' | undefined} />;
+      case 'reports': return <Reports profile={profile} initialTab={viewTab as 'exports' | 'payrollHistory' | 'payrollRegister' | 'deductionSummary' | 'loanLedger' | 'nthp' | 'undeducted' | 'gsis' | 'philhealth' | 'pagibig' | 'salarySummary' | 'netPaySummary' | 'unassigned' | 'overpayment' | 'bankAdvice' | 'payslip' | 'w2' | undefined} />;
       case 'users': return <UserManagement initialTab={viewTab as 'all' | 'pending_approval' | 'approved' | 'rejected' | 'disabled' | undefined} />;
       case 'audit': return <AuditLogs />;
       case 'backup': return <BackupRestore />;
@@ -377,6 +381,10 @@ export default function App() {
       case 'payroll_defs': return <PayrollDefinitions />;
       case 'notifications': return <Notifications initialTab={viewTab as 'activity' | 'alerts' | 'tasks' | 'system' | undefined} onNavigate={(v) => handleNavigate(v, null)} />;
       case 'help': return <HelpCenter initialTab={viewTab as 'guide' | 'docs' | 'faqs' | 'contact' | undefined} />;
+      case 'govt_gsis': return <GsisDashboard />;
+      case 'govt_w2': return <W2TaxAnnual />;
+      case 'govt_calculator': return <GovPayrollCalculator />;
+      case 'policy_library': return <PolicyLibrary />;
       case 'coming_soon': return <ComingSoon title={viewLabel} icon={viewIcon} />;
       default: return <ComingSoon title={viewLabel} icon={viewIcon} />;
     }

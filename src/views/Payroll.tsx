@@ -463,8 +463,8 @@ export default function Payroll({ profile }: PayrollProps) {
   return (
     <div className="space-y-4">
       {/* Toolbar */}
-      <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 shadow-sm space-y-3">
-        {/* Row 1: period selector + status badge */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 px-6 py-5 shadow-sm space-y-4">
+        {/* Row 1: period selector + status badge + group filter */}
         <div className="flex items-center gap-3">
           <select
             value={periodId}
@@ -476,7 +476,7 @@ export default function Payroll({ profile }: PayrollProps) {
                 setPeriodId(e.target.value);
               }
             }}
-            className="px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 min-w-[210px] cursor-pointer"
+            className="px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm font-medium text-slate-800 bg-slate-50/80 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 min-w-[210px] cursor-pointer"
           >
             {periods.length === 0 && <option>No pay periods yet</option>}
             {periods.map((p) => <option key={p.id} value={p.id}>{p.period_name} ({p.status})</option>)}
@@ -485,10 +485,10 @@ export default function Payroll({ profile }: PayrollProps) {
             )}
           </select>
           {currentPeriod && (
-            <span className={`px-2.5 py-0.5 rounded text-[11px] font-bold tracking-widest uppercase ${
-              currentPeriod.status === 'open' ? 'bg-emerald-50 text-emerald-700' :
-              currentPeriod.status === 'draft' ? 'bg-amber-50 text-amber-600' :
-              'bg-slate-100 text-slate-400'
+            <span className={`px-3 py-1 rounded-full text-[11px] font-bold tracking-widest uppercase ${
+              currentPeriod.status === 'open' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' :
+              currentPeriod.status === 'draft' ? 'bg-amber-50 text-amber-600 ring-1 ring-amber-200' :
+              'bg-slate-100 text-slate-400 ring-1 ring-slate-200'
             }`}>{currentPeriod.status}</span>
           )}
           <div className="ml-auto">
@@ -496,100 +496,115 @@ export default function Payroll({ profile }: PayrollProps) {
           </div>
         </div>
 
-        {/* Row 2: action buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setShowNewPeriod(true)}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4" /> New Monthly Period
-          </button>
-
-          {scopedEntries.length > 0 && (
-            <button
-              onClick={() => setShowPyentModal(true)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-amber-300 bg-amber-50 text-sm font-semibold text-amber-800 hover:bg-amber-100 active:bg-amber-200 transition-colors shadow-sm"
-            >
-              <FileDown className="w-4 h-4" /> PYENT DBF Export
-            </button>
-          )}
-
-          {scopedEntries.length > 0 && (
-            <>
+        {/* Row 2: premium grouped action buttons */}
+        <div className="flex items-stretch gap-3">
+          {/* ── Operations Group ── */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-bold tracking-widest uppercase text-slate-400 pl-1">Operations</span>
+            <div className="flex items-center gap-1.5 bg-slate-50/80 rounded-xl border border-slate-200/60 p-1.5">
               <button
-                onClick={exportDbf}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm"
+                onClick={() => setShowNewPeriod(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-slate-200 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 active:bg-slate-100 transition-all shadow-sm"
               >
-                <Download className="w-4 h-4" /> Export DBF
+                <Plus className="w-3.5 h-3.5" /> New Period
               </button>
+
               <button
-                onClick={exportCsv}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm"
+                onClick={runPayroll}
+                disabled={!periodId || scopedEmployees.length === 0 || hasPosted || running}
+                title={hasPosted ? 'This division has posted (locked) entries for this period — reverse them first' : 'Compute payroll for the selected period'}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 text-white text-[13px] font-semibold hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-emerald-600/20"
               >
-                <Download className="w-4 h-4" /> Export CSV
+                {running ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <Play className="w-3.5 h-3.5 fill-white" />}
+                {running ? 'Running…' : gf.groupId || category ? `Run ${gf.label}` : 'Run Payroll'}
               </button>
-            </>
+
+              {scopedEntries.length > 0 && !hasPosted && (
+                <button
+                  onClick={syncDeductionsFromMaster}
+                  disabled={syncing || running}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 text-white text-[13px] font-semibold hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-blue-600/20"
+                  title="Re-apply current deduction masterfile to this payroll run"
+                >
+                  {syncing ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                  {syncing ? 'Syncing…' : 'Sync'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ── Export Group ── */}
+          {scopedEntries.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold tracking-widest uppercase text-slate-400 pl-1">Export</span>
+              <div className="flex items-center gap-1.5 bg-amber-50/50 rounded-xl border border-amber-200/50 p-1.5">
+                <button
+                  onClick={() => setShowPyentModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 text-white text-[13px] font-semibold hover:bg-amber-600 active:bg-amber-700 transition-all shadow-sm shadow-amber-500/20"
+                >
+                  <FileDown className="w-3.5 h-3.5" /> PYENT DBF
+                </button>
+                <button
+                  onClick={exportDbf}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-slate-200 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 active:bg-slate-100 transition-all shadow-sm"
+                >
+                  <Download className="w-3.5 h-3.5" /> DBF
+                </button>
+                <button
+                  onClick={exportCsv}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-slate-200 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 active:bg-slate-100 transition-all shadow-sm"
+                >
+                  <Download className="w-3.5 h-3.5" /> CSV
+                </button>
+              </div>
+            </div>
           )}
 
-          <button
-            onClick={runPayroll}
-            disabled={!periodId || scopedEmployees.length === 0 || hasPosted || running}
-            title={hasPosted ? 'This division has posted (locked) entries for this period — reverse them first' : 'Compute payroll for the selected period'}
-            className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-          >
-            {running ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Play className="w-4 h-4 fill-white" />}
-            {running ? 'Running…' : gf.groupId || category ? `Run ${gf.label} Payroll` : 'Run Payroll'}
-          </button>
+          {/* ── Admin Group ── */}
+          {scopedEntries.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold tracking-widest uppercase text-slate-400 pl-1">Admin</span>
+              <div className="flex items-center gap-1.5 bg-rose-50/40 rounded-xl border border-rose-200/40 p-1.5">
+                {!divisionPosted && (
+                  <button
+                    onClick={postPayroll}
+                    disabled={!canPost || posting}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[13px] font-semibold transition-all shadow-sm ${
+                      canPost ? 'bg-slate-800 text-white hover:bg-slate-900 active:bg-black shadow-slate-800/20' : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {posting ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : canPost ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                    {posting ? 'Posting…' : canPost ? (pendingCount > 0 ? `Post (${pendingCount})` : 'Post') : 'Blocked'}
+                  </button>
+                )}
 
-          {scopedEntries.length > 0 && !hasPosted && (
-            <button
-              onClick={syncDeductionsFromMaster}
-              disabled={syncing || running}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-              title="Re-apply current deduction masterfile to this payroll run"
-            >
-              {syncing ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCcw className="w-4 h-4" />}
-              {syncing ? 'Syncing…' : 'Sync Deductions'}
-            </button>
-          )}
+                {isSuperAdminRole(profile?.role) && currentPeriod && currentPeriod.status !== 'draft' && (
+                  <button
+                    onClick={reversePayroll}
+                    disabled={reversing}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 text-white text-[13px] font-semibold hover:bg-rose-700 active:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-rose-600/20"
+                    title="Un-post this period's payroll server-side and reopen it for editing (super admin)"
+                  >
+                    {reversing ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                    {reversing ? 'Reversing…' : 'Reverse'}
+                  </button>
+                )}
 
-          {scopedEntries.length > 0 && !divisionPosted && (
-            <button
-              onClick={postPayroll}
-              disabled={!canPost || posting}
-              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-semibold transition-colors shadow-sm ${
-                canPost ? 'bg-slate-800 hover:bg-slate-900 active:bg-black' : 'bg-slate-400 cursor-not-allowed'
-              }`}
-            >
-              {posting ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : canPost ? <CheckCircle2 className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-              {posting ? 'Posting…' : canPost ? (pendingCount > 0 ? `Post (${pendingCount})` : 'Post') : 'Blocked (NTHP)'}
-            </button>
-          )}
-
-          {isSuperAdminRole(profile?.role) && currentPeriod && currentPeriod.status !== 'draft' && (
-            <button
-              onClick={reversePayroll}
-              disabled={reversing}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-semibold bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-              title="Un-post this period's payroll server-side and reopen it for editing (super admin)"
-            >
-              {reversing ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCcw className="w-4 h-4" />}
-              {reversing ? 'Reversing…' : 'Reverse'}
-            </button>
-          )}
-
-          {scopedEntries.length > 0 && (!hasPosted || isSuperAdminRole(profile?.role)) && (
-            <button
-              onClick={deleteDivisionPayroll}
-              disabled={deleting}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-rose-300 bg-rose-50 text-sm font-semibold text-rose-700 hover:bg-rose-100 active:bg-rose-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-              title={hasPosted
-                ? 'Delete this division\'s posted payroll permanently (super admin only). This cannot be undone.'
-                : "Delete this division's computed payroll entries for the selected period. Other divisions are unaffected."}
-            >
-              {deleting ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Trash2 className="w-4 h-4" />}
-              {deleting ? 'Deleting…' : hasPosted ? 'Delete Posted Payroll' : 'Delete Division Entries'}
-            </button>
+                {(!hasPosted || isSuperAdminRole(profile?.role)) && (
+                  <button
+                    onClick={deleteDivisionPayroll}
+                    disabled={deleting}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-rose-200 bg-white text-[13px] font-semibold text-rose-600 hover:bg-rose-50 hover:border-rose-300 active:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+                    title={hasPosted
+                      ? 'Delete this division\'s posted payroll permanently (super admin only). This cannot be undone.'
+                      : "Delete this division's computed payroll entries for the selected period. Other divisions are unaffected."}
+                  >
+                    {deleting ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    {deleting ? 'Deleting…' : hasPosted ? 'Delete Posted' : 'Delete'}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

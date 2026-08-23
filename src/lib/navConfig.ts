@@ -24,7 +24,9 @@ export type ViewKey =
   | 'positionmgmt' | 'positionimport' | 'plantilla' | 'nonplantilla'
   | 'namevalidation' | 'initial_payroll' | 'ips_system' | 'signatories' | 'coming_soon'
   | 'ca_dashboard' | 'my_access' | 'ai_center' | 'omnidev_ai' | 'payroll_defs'
-  | 'notifications' | 'help';
+  | 'notifications' | 'help'
+  | 'govt_gsis' | 'govt_w2' | 'govt_calculator'
+  | 'policy_library';
 
 export interface NavItem {
   id: string;
@@ -140,6 +142,9 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: Landmark,
         items: [
           { id: 'ded_gsis', label: 'GSIS', icon: Landmark, permission: 'dbf_restore', viewKey: 'gsisimport' },
+      { id: 'govt_gsis', label: 'GSIS Dashboard', icon: Shield, permission: 'dedengine', viewKey: 'govt_gsis' },
+      { id: 'govt_w2', label: 'W-2 Annual Tax', icon: FileText, permission: 'taxcalc', viewKey: 'govt_w2' },
+      { id: 'govt_calculator', label: 'Gov Payroll Calculator', icon: Calculator, permission: 'taxcalc', viewKey: 'govt_calculator' },
           { id: 'ded_philhealth', label: 'PhilHealth', icon: HeartPulse, permission: 'dedmaster', viewKey: 'dedmaster' },
           { id: 'ded_pagibig', label: 'Pag-IBIG', icon: Home, permission: 'dedmaster', viewKey: 'dedmaster' },
           { id: 'ded_bir_tax', label: 'BIR Tax', icon: Receipt, permission: 'taxcalc', viewKey: 'taxcalc' },
@@ -206,6 +211,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'rep_bank_advice', label: 'Bank Credit Advice', icon: Building, permission: 'reports', viewKey: 'reports', tab: 'bankAdvice' },
       { id: 'rep_payslip', label: 'Payslip', icon: ClipboardList, permission: 'reports', viewKey: 'reports', tab: 'payslip' },
       { id: 'rep_unassigned', label: 'Unassigned STACODE', icon: AlertCircle, permission: 'reports', viewKey: 'reports', tab: 'unassigned' },
+      { id: 'rep_w2', label: 'W-2 Annual Tax', icon: FileText, permission: 'reports', viewKey: 'reports', tab: 'w2' },
     ],
   },
 
@@ -271,7 +277,18 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
 
-  // ── 12. HELP & SUPPORT ──
+  // ── 12. POLICY & REGULATION LIBRARY ──
+  {
+    id: 'policy_library_section',
+    label: 'Policy Library',
+    icon: BookOpen,
+    leaf: true,
+    items: [
+      { id: 'lib_policies', label: 'Policy Library', icon: BookOpen, permission: 'dashboard', viewKey: 'policy_library' },
+    ],
+  },
+
+  // ── 13. HELP & SUPPORT ──
   {
     id: 'help',
     label: 'Help & Support',

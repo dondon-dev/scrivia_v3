@@ -14,12 +14,13 @@ import type { Employee, Deduction, PayPeriod, PayrollEntry, PayrollDeduction, De
 import FoxproRegister from '@/views/FoxproRegister';
 import FoxproPayslip from '@/views/FoxproPayslip';
 import { classifyByStacode } from '@/lib/stacodeClassify';
+import { computeW2Tax } from '@/lib/govPayrollComputation';
 import { inCategory, type PayrollCategory } from '@/lib/categories';
 import { getEmployeeFilter } from '@/lib/authz';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import type { UserProfile } from '@/types/auth';
 
-type ReportTab = 'exports' | 'payrollHistory' | 'payrollRegister' | 'deductionSummary' | 'loanLedger' | 'nthp' | 'undeducted' | 'gsis' | 'philhealth' | 'pagibig' | 'salarySummary' | 'netPaySummary' | 'unassigned' | 'overpayment' | 'bankAdvice' | 'payslip';
+type ReportTab = 'exports' | 'payrollHistory' | 'payrollRegister' | 'deductionSummary' | 'loanLedger' | 'nthp' | 'undeducted' | 'gsis' | 'philhealth' | 'pagibig' | 'salarySummary' | 'netPaySummary' | 'unassigned' | 'overpayment' | 'bankAdvice' | 'payslip' | 'w2';
 
 interface HistoryMonth {
   period_id: string | null;
@@ -368,6 +369,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
     { id: 'bankAdvice', label: 'Bank Credit Advice', icon: Building },
     { id: 'payslip', label: 'Payslip', icon: Printer },
     { id: 'unassigned', label: 'Unassigned STACODE', icon: AlertCircle },
+    { id: 'w2', label: 'W-2 Annual Tax', icon: FileText },
   ];
 
   const registerTotal = registerRows.reduce(
@@ -428,8 +430,59 @@ export default function Reports({ category, profile, initialTab }: { category?: 
         ecc: pe.govtecc,
         total: pe.dedlnr + pe.govtlnr + pe.govtecc,
       };
-    }).sort((a, b) => a.empno.localeCompare(b.empno));
+    }).sort((a, b) => a.empno.localeCompare(b.empno));  }, [tab, scopedEntries, empMap]);
+
+  // ── W-2 Annual Tax Report data ──
+  // Groups ALL entries for the selected year by employee and computes annual
+  // withholding tax reconciliation (COMPUTAX.PRG / W2SUM.PRG).
+  const w2Report = useMemo(() => {
+    if (tab !== 'w2') return [];
+    // Group entries by employee across ALL periods for the year
+    const empEntries = new Map<string, PayrollEntry[]>();
+    for (const pe of scopedEntries) {
+      const list = empEntries.get(pe.employee_id) || [];
+      list.push(pe);
+      empEntries.set(pe.employee_id, list);
+    }
+    const results: {
+      empno: string; name: string; tin: string; totalIncome: number;
+      exemption: number; totalDeductions: number; taxableIncome: number;
+      annualTaxDue: number; totalTaxPaid: number; taxPayable: number; isRefund: boolean;
+    }[] = [];
+    for (const [empId, empRecords] of empEntries) {
+      const e = empMap.get(empId);
+      const w2 = computeW2Tax(
+        empRecords.map(r => ({
+          basic: Number(r.gross_pay) || 0,
+          trans: 0,
+          aca: 0,
+          dedLnr: Number(r.dedlnr) || 0,
+          dedMed: Number(r.dedmed) || 0,
+          dedPag: Number(r.dedpag) || 0,
+          dedTax: Number(r.dedtax) || 0,
+          taxCode: '01',
+        }))
+      );
+      results.push({
+        empno: e?.empno || e?.employee_number || empId,
+        name: e ? `${e.lname || e.last_name}, ${e.fname || e.first_name}` : 'Unknown',
+        tin: (e as any)?.tin || '',
+        totalIncome: w2.totalBasic,
+        exemption: w2.exemption,
+        totalDeductions: w2.totalLnr + w2.totalMed + w2.totalPag,
+        taxableIncome: w2.taxableIncome,
+        annualTaxDue: w2.annualTaxDue,
+        totalTaxPaid: w2.totalTaxPaid,
+        taxPayable: w2.taxPayable,
+        isRefund: w2.isRefund,
+      });
+    }
+    return results.sort((a, b) => a.empno.localeCompare(b.empno));
   }, [tab, scopedEntries, empMap]);
+
+  const w2Pag = usePagination(tab === 'w2' ? w2Report : [], 15, `${periodId}-w2`);
+
+
 
   // ── PhilHealth Report data ──
   const philhealthReport = useMemo(() => {
@@ -444,8 +497,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
         govtShare: pe.govtmed,
         total: pe.dedmed + pe.govtmed,
       };
-    }).sort((a, b) => a.empno.localeCompare(b.empno));
-  }, [tab, scopedEntries, empMap]);
+    }).sort((a, b) => a.empno.localeCompare(b.empno));  }, [tab, scopedEntries, empMap]);
 
   // ── Pag-IBIG Report data ──
   const pagibigReport = useMemo(() => {
@@ -460,8 +512,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
         govtShare: pe.govtpag,
         total: pe.dedpag + pe.govtpag,
       };
-    }).sort((a, b) => a.empno.localeCompare(b.empno));
-  }, [tab, scopedEntries, empMap]);
+    }).sort((a, b) => a.empno.localeCompare(b.empno));  }, [tab, scopedEntries, empMap]);
 
   // ── Undeducted Report data ──
   const undeductedReport = useMemo(() => {
@@ -590,8 +641,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
           net: pe.net_pay,
         };
       })
-      .sort((a, b) => (a.bank || 'ZZZ').localeCompare(b.bank || 'ZZZ') || a.empno.localeCompare(b.empno));
-  }, [tab, scopedEntries, empMap]);
+      .sort((a, b) => (a.bank || 'ZZZ').localeCompare(b.bank || 'ZZZ') || a.empno.localeCompare(b.empno));  }, [tab, scopedEntries, empMap]);
 
   function exportBankAdviceCsv() {
     const rows = bankAdvice.map((r) => [r.bank || 'N/A', r.empno, r.name, r.account || 'N/A', r.net]);
@@ -1759,6 +1809,76 @@ export default function Reports({ category, profile, initialTab }: { category?: 
             </div>
           )}
           <Pagination page={unassignedPag.page} totalPages={unassignedPag.totalPages} total={unassignedPag.total} onPageChange={unassignedPag.setPage} label="employees" />
+        </div>
+      ) : tab === 'w2' ? (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <div>
+              <h3 className="font-semibold text-slate-800 text-sm">W-2 Annual Tax Computation — {currentPeriod?.year ?? '—'}</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Annual withholding tax reconciliation per COMPUTAX.PRG / W2SUM.PRG</p>
+            </div>
+          </div>
+          {w2Report.length === 0 ? (
+            <div className="px-5 py-12 text-center text-sm text-slate-400">No payroll entries found for this period.</div>
+          ) : (
+            <>
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+                <div><div className="text-xs text-slate-500">Employees</div><div className="text-lg font-bold text-slate-800">{w2Report.length}</div></div>
+                <div><div className="text-xs text-slate-500">Total Tax Due</div><div className="text-lg font-bold text-rose-600">{currency(w2Report.reduce((s, r) => s + r.annualTaxDue, 0))}</div></div>
+                <div><div className="text-xs text-slate-500">Total Tax Paid</div><div className="text-lg font-bold text-emerald-600">{currency(w2Report.reduce((s, r) => s + r.totalTaxPaid, 0))}</div></div>
+                <div><div className="text-xs text-slate-500">Still Payable</div><div className="text-lg font-bold text-rose-600">{currency(w2Report.filter(r => !r.isRefund).reduce((s, r) => s + r.taxPayable, 0))}</div></div>
+                <div><div className="text-xs text-slate-500">Total Refunds</div><div className="text-lg font-bold text-emerald-600">{currency(w2Report.filter(r => r.isRefund).reduce((s, r) => s + Math.abs(r.taxPayable), 0))}</div></div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                      <th className="text-left px-3 py-3 font-medium">EMPNO</th>
+                      <th className="text-left px-3 py-3 font-medium">Employee Name</th>
+                      <th className="text-right px-3 py-3 font-medium">Total Income</th>
+                      <th className="text-right px-3 py-3 font-medium">Exemption</th>
+                      <th className="text-right px-3 py-3 font-medium">Deductions</th>
+                      <th className="text-right px-3 py-3 font-medium">Taxable Income</th>
+                      <th className="text-right px-3 py-3 font-medium">Tax Due</th>
+                      <th className="text-right px-3 py-3 font-medium">Tax Paid</th>
+                      <th className="text-right px-3 py-3 font-medium">Payable / (Refund)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {w2Pag.pagedItems.map((r) => (
+                      <tr key={r.empno} className="hover:bg-slate-50">
+                        <td className="px-3 py-3 font-mono text-xs text-slate-600">{r.empno}</td>
+                        <td className="px-3 py-3 text-slate-800">{r.name}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-slate-700">{currency(r.totalIncome)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-slate-600">{currency(r.exemption)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-slate-600">{currency(r.totalDeductions)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums font-medium text-slate-700">{currency(r.taxableIncome)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-rose-600">{currency(r.annualTaxDue)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-emerald-600">{currency(r.totalTaxPaid)}</td>
+                        <td className={`px-3 py-3 text-right tabular-nums font-bold ${r.isRefund ? 'text-emerald-600' : 'text-rose-600'}`}>
+                          {currency(Math.abs(r.taxPayable))} {r.isRefund ? '(Refund)' : ''}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-100 font-semibold text-slate-800">
+                      <td className="px-3 py-3" colSpan={2}>TOTAL ({w2Report.length} employees)</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{currency(w2Report.reduce((s, r) => s + r.totalIncome, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{currency(w2Report.reduce((s, r) => s + r.exemption, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{currency(w2Report.reduce((s, r) => s + r.totalDeductions, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{currency(w2Report.reduce((s, r) => s + r.taxableIncome, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-rose-600">{currency(w2Report.reduce((s, r) => s + r.annualTaxDue, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-emerald-600">{currency(w2Report.reduce((s, r) => s + r.totalTaxPaid, 0))}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{currency(w2Report.filter(r => !r.isRefund).reduce((s, r) => s + r.taxPayable, 0))}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <Pagination page={w2Pag.page} totalPages={w2Pag.totalPages} total={w2Pag.total} onPageChange={w2Pag.setPage} label="employees" />
+            </>
+          )}
         </div>
       ) : null}
 
