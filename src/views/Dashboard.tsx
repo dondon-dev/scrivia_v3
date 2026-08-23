@@ -333,34 +333,6 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         </div>
       )}
 
-      {/* Division Dashboard identity — REGCODE + DIVCODE are the unique
-          reference for one division's payroll. Shown whenever a specific
-          division is in scope (selected by the super admin or a division
-          admin's own assignment). */}
-      {scopedCodes && scopedCodes.length > 0 && (
-        <div className="rounded-xl border border-deped-200 bg-gradient-to-r from-deped-50 to-white dark:from-deped-900/30 dark:to-slate-900 dark:border-deped-800 px-5 py-4 flex flex-wrap items-center gap-x-6 gap-y-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-deped-700 text-white flex items-center justify-center shrink-0">
-              <Building className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-deped-500 dark:text-deped-300">Division Dashboard</p>
-              <p className="text-sm font-bold text-slate-800 dark:text-white">
-                {selectedDivision?.division_name ?? 'Selected Division'}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{selectedRegion?.region_name ?? ''}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 ml-auto">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-deped-100 dark:bg-deped-900/40 text-deped-700 dark:text-deped-300 text-xs font-semibold font-mono">
-              <Hash className="w-3.5 h-3.5" /> REGCODE {scopedCodes[0].regcode}
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-aurora-100 dark:bg-aurora-900/40 text-aurora-700 dark:text-aurora-300 text-xs font-semibold font-mono">
-              <Hash className="w-3.5 h-3.5" /> DIVCODE {scopedCodes[0].divcode}
-            </span>
-          </div>
-        </div>
-      )}
 
       {/* Executive Command Center — hero header */}
       <HeroHeader
@@ -372,8 +344,6 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         liveLabel={data.currentPeriod ? `Cycle ${(data.currentPeriod.status || 'open').toUpperCase()}` : 'STANDBY'}
         liveTone={data.currentPeriod?.status === 'open' ? 'green' : data.currentPeriod?.status === 'draft' ? 'amber' : 'blue'}
         chips={[
-          { icon: MapPin, label: selectedRegion?.region_name ?? 'All Regions' },
-          { icon: Building, label: selectedDivision?.division_name ?? (scoped ? 'Selected Division' : 'All Divisions') },
           { icon: UserCog, label: ROLE_LABELS[role] ?? 'User' },
           { icon: Sparkles, label: data.unassignedCount > 0 ? `AI flagged ${data.unassignedCount} issue${data.unassignedCount === 1 ? '' : 's'}` : 'AI scan clean' },
         ]}
