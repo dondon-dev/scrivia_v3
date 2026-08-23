@@ -5,6 +5,7 @@ import {
   AlertCircle, Printer, Building, CalendarDays, RefreshCw,
 } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/supabase';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { usePagination, Pagination } from '@/components/Pagination';
 import {
   generateMasterfileDbf, generateMasterfileCsv, generateDeductionDbf, generatePayrollDbf,
@@ -101,7 +102,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
     if (!PD_TABS.includes(tab)) return;
     if (payrollDeds.length > 0 && pdFetchedTick.current === refreshTick) return;
     pdFetchedTick.current = refreshTick;
-    const pdCols = 'id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds';
+    const pdCols = 'id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds,stacode,created_by,created_at,updated_by,updated_at';
     (async () => {
       const pd = await fetchAll(() => supabase.from('payroll_deductions').select(pdCols).order('empno'));
       setPayrollDeds(pd as PayrollDeduction[]);
@@ -111,7 +112,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
   useEffect(() => {
     (async () => {
       const scopeFilter = profile ? getEmployeeFilter(profile) : null;
-      const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,pera,aca,rata,ontop,long,payroll_group_id,bank_name,bank_account,account,status,position,grade,step,taxcode,civilstat,taxref,tin,gsis_pn,phic_id,hdmf_id,hiredate,sex,distcode,depname1,depname2,depname3,depname4';
+      const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,trans,pera,aca,rata,ontop,long,payroll_group_id,bank_name,bank_account,account,status,position,poscode,grade,step,taxcode,civilstat,taxref,tin,gsis_pn,gsis_id,phic_id,hdmf_id,hiredate,hire_date,sex,distcode,empname,appel,paymode,dedlnr,dedmed,dedtax,dedpag,netpay,govtlnr,govtecc,govtmed,govtpag,updcode,update,paydate,editor,department,birthdate,clothing,cashallow,mid_bonus,mid_cash,end_bonus,end_cash,add_bonus,special,pib,pagcode,attend,depname1,depname2,depname3,depname4,depdate1,depdate2,depdate3,depdate4';
       const [emp, per, codes, grp, sch] = await Promise.all([
         fetchAll(() => {
           let q = supabase.from('employees').select(empCols).order('lname', { ascending: true });
@@ -216,33 +217,79 @@ export default function Reports({ category, profile, initialTab }: { category?: 
 
   // ── Export functions ──
   function exportMasterfileDbf() {
-    const content = generateMasterfileDbf(employees);
-    downloadFile({ filename: `MASTERFILE_${new Date().toISOString().slice(0, 10)}.dbf`, content, mimeType: 'application/dbf' });
+    const content = generateMasterfileDbf(scopedEmployees);
+    downloadFile({ filename: `MASTERFILE_${selectedGroupLabel.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.DBF`, content, mimeType: 'application/dbf' });
   }
   function exportMasterfileCsv() {
-    const content = generateMasterfileCsv(employees);
-    downloadFile({ filename: `MASTERFILE_${new Date().toISOString().slice(0, 10)}.csv`, content, mimeType: 'text/csv' });
+    const content = generateMasterfileCsv(scopedEmployees);
+    downloadFile({ filename: `MASTERFILE_${selectedGroupLabel.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`, content, mimeType: 'text/csv' });
   }
+  // Merge payroll_deductions (imported DEDFILE) + deductions (payroll run) into unified DEDFILE list.
+  // DEDFILE includes ALL payroll_deductions records (no scope filter) to ensure completeness.
+  const mergedDeductions = useMemo(() => {
+    // 1) ALL Payroll deductions (imported DEDFILE records) — include every record
+    const pdRows: PayrollDeduction[] = [...payrollDeds];
+    // 2) Per-period deductions from payroll runs — map to PayrollDeduction shape
+    const now = new Date();
+    const runDeds: PayrollDeduction[] = deductions
+      .filter((d) => d.amount > 0)
+      .map((d) => {
+        const e = empMap.get(d.employee_id);
+        return {
+          id: d.id,
+          employee_id: d.employee_id,
+          empno: e?.empno ?? e?.employee_number ?? '',
+          dedcode: d.deduction_code,
+          dedid: '',
+          policyno: d.reference ?? '',
+          agency: '',
+          type: (d.category ?? 'Other') as PayrollDeduction['type'],
+          status: 'Active' as const,
+          effmm: now.getMonth() + 1,
+          effyy: now.getFullYear(),
+          termm: null,
+          teryy: null,
+          dedamt: d.amount,
+          principal: 0,
+          interest: 0,
+          charges: 0,
+          proceeds: 0,
+          created_by: 'Payroll Run',
+          created_at: d.created_at ?? now.toISOString(),
+          updated_by: '',
+          updated_at: now.toISOString(),
+        };
+      });
+    // 3) Merge — dedupe by (empno + dedcode + dedamt) to avoid double-counting
+    const seen = new Set<string>();
+    const merged: PayrollDeduction[] = [];
+    for (const d of [...pdRows, ...runDeds]) {
+      const key = `${d.empno}|${d.dedcode}|${d.dedamt}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(d);
+      }
+    }
+    return merged;
+  }, [payrollDeds, deductions, empMap]);
+
   function exportDedfileDbf() {
-    const divisionIds = new Set(employees.map((e) => e.id));
-    const scopedDeds = divisionIds.size > 0
-      ? payrollDeds.filter((d) => divisionIds.has(d.employee_id ?? ''))
-      : payrollDeds;
-    const content = generateDedfileDbf(scopedDeds, employees);
-    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.dbf`, content, mimeType: 'application/dbf' });
+    // Use ALL employees (not just scoped) so empMap covers every deduction's employee
+    const content = generateDedfileDbf(mergedDeductions, employees);
+    downloadFile({ filename: `DEDFILE_${selectedGroupLabel.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.DBF`, content, mimeType: 'application/dbf' });
   }
   function exportDedfileCsv() {
-    const rows = payrollDeds.map((d) => {
+    const rows = mergedDeductions.map((d) => {
       const e = empMap.get(d.employee_id ?? '');
       return [d.empno, e ? `${e.lname || e.last_name}, ${e.fname || e.first_name}` : '', d.dedcode, dedCodeMap.get(d.dedcode)?.dedname ?? '', d.policyno, d.agency, d.type, d.status, d.effmm, d.effyy, d.termm ?? '', d.teryy ?? '', d.dedamt, d.principal, d.interest, d.charges, d.proceeds];
     });
     const content = generateCsv(['EMPNO', 'NAME', 'DEDCODE', 'DEDNAME', 'POLICYNO', 'AGENCY', 'TYPE', 'STATUS', 'EFFMM', 'EFFYY', 'TERMM', 'TERYY', 'DEDAMT', 'PRINCIPAL', 'INTEREST', 'CHARGES', 'PROCEEDS'], rows);
-    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.csv`, content, mimeType: 'text/csv' });
+    downloadFile({ filename: `DEDFILE_${selectedGroupLabel.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`, content, mimeType: 'text/csv' });
   }
   function exportPayrollDbf() {
     if (!currentPeriod) return;
-    const content = generatePayrollDbf(entries, employees, currentPeriod);
-    downloadFile({ filename: `PAYROLL_${currentPeriod.period_name.replace(/\s/g, '_')}.dbf`, content, mimeType: 'application/dbf' });
+    const content = generatePayrollDbf(scopedEntries, scopedEmployees, currentPeriod);
+    downloadFile({ filename: `PAYROLL_${selectedGroupLabel.replace(/\s/g, '_')}_${currentPeriod.period_name.replace(/\s/g, '_')}.DBF`, content, mimeType: 'application/dbf' });
   }
 
   // ── Payroll Register data ──
@@ -280,13 +327,13 @@ export default function Reports({ category, profile, initialTab }: { category?: 
   function exportPayrollRegisterCsv() {
     const rows = registerRows.map((r) => [r.empno, r.name, r.group, r.gross, r.gsis, r.philhealth, r.pagibig, r.tax, r.loans, r.undeducted, r.net, r.nthp]);
     const content = generateCsv(['EMPNO', 'Employee Name', 'Group', 'Gross Pay', 'GSIS', 'PhilHealth', 'Pag-IBIG', 'W/Tax', 'Loan Ded.', 'Undeducted', 'Net Pay', 'NTHP'], rows);
-    downloadFile({ filename: `Payroll_Register_${currentPeriod?.period_name.replace(/\s/g, '_') ?? ''}.csv`, content, mimeType: 'text/csv' });
+    downloadFile({ filename: `Payroll_Register_${selectedGroupLabel.replace(/\s/g, '_')}_${currentPeriod?.period_name.replace(/\s/g, '_') ?? ''}.csv`, content, mimeType: 'text/csv' });
   }
 
   function exportPayrollRegisterDbf() {
     if (!currentPeriod) return;
-    const content = generatePayrollDbf(entries, employees, currentPeriod);
-    downloadFile({ filename: `Payroll_Register_${currentPeriod.period_name.replace(/\s/g, '_')}.dbf`, content, mimeType: 'application/dbf' });
+    const content = generatePayrollDbf(scopedEntries, scopedEmployees, currentPeriod);
+    downloadFile({ filename: `Payroll_Register_${selectedGroupLabel.replace(/\s/g, '_')}_${currentPeriod.period_name.replace(/\s/g, '_')}.DBF`, content, mimeType: 'application/dbf' });
   }
 
   // ── Deduction Summary data (group by DEDCODE, scoped to group) ──
@@ -791,7 +838,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
             <Database className="w-6 h-6 text-emerald-400 shrink-0 mt-0.5" />
             <div>
               <h2 className="font-semibold text-sm">DBF Report Format</h2>
-              <p className="text-xs text-slate-300 mt-1">All DBF files are generated in dBASE III format — compatible with legacy DepEd payroll systems. Files download directly with a <span className="font-mono text-emerald-400">.dbf</span> extension.</p>
+              <p className="text-xs text-slate-300 mt-1">All DBF files are generated in dBASE III format — compatible with legacy DepEd payroll systems. Files download directly with a <span className="font-mono text-emerald-400">.DBF</span> extension.</p>
             </div>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -872,7 +919,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
 
           {/* Month cards */}
           {historyLoading ? (
-            <div className="py-20 text-center text-slate-400 text-sm">Loading payroll history…</div>
+            <div className="py-20 flex justify-center"><LoadingIndicator /></div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {MONTHS.map((monthName, i) => {

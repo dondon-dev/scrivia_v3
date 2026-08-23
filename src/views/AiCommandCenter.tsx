@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Sparkles, ShieldAlert, AlertTriangle, Info,
   CheckCircle2, Eye, Ban, Activity, Brain, RotateCcw,
@@ -322,7 +323,7 @@ export default function AiCommandCenter({ onNavigate }: AiCommandCenterProps) {
 
               {!result && (
                 <div className="flex items-center gap-2.5 text-xs text-slate-400 dark:text-slate-500 px-1 py-2">
-                  <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" />
+                  <LoadingIndicator size={32} />
                   Engine warming up…
                 </div>
               )}

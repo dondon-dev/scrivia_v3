@@ -3,6 +3,7 @@ import { Mail, Check, AlertCircle, RefreshCw } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import { supabase } from '@/lib/supabase';
 import { EMAIL_JUST_VERIFIED_KEY, PENDING_SIGNUP_EMAIL_KEY } from '@/lib/auth';
+import LoadingIndicator from '@/components/LoadingIndicator';
 
 export default function EmailVerification({ onSwitch }: { onSwitch: (view: 'login' | 'signup' | 'forgot' | 'verify' | 'reset') => void }) {
   const [status, setStatus] = useState<'checking' | 'verified' | 'error'>('checking');
@@ -160,7 +161,7 @@ export default function EmailVerification({ onSwitch }: { onSwitch: (view: 'logi
                   disabled={resending || !resendEmail.trim()}
                   className="w-full py-2.5 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 text-sm"
                 >
-                  {resending ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCw className="w-4 h-4" />}
+                  {resending ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />}
                   {resending ? 'Sending...' : 'Resend Verification Email'}
                 </button>
               </form>

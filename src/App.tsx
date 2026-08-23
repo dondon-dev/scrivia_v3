@@ -101,7 +101,7 @@ function roleBadge(role: UserRole): string {
 function ViewLoader() {
   return (
     <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
-      <LoadingIndicator size={48} label="Loading view..." />
+      <LoadingIndicator />
     </div>
   );
 }
@@ -268,7 +268,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex items-center justify-center">
-        <LoadingIndicator size={64} label="Loading SCRIVIA Cloud™…" />
+        <LoadingIndicator />
       </div>
     );
   }

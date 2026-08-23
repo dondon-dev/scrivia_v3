@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Upload, FileSpreadsheet, Download, X, CheckCircle2, AlertCircle,
   FileUp, Inbox,
@@ -446,7 +447,7 @@ export default function InitialEmployeeImportModal({ open, onClose, onImported }
           {/* Stage: Importing */}
           {stage === 'importing' && (
             <div className="py-12 text-center">
-              <ScriviaLogo className="w-8 h-8 animate-pulse mb-3" />
+              <LoadingIndicator size={40} />
               <p className="text-sm text-slate-600 dark:text-slate-300">Importing employees...</p>
             </div>
           )}

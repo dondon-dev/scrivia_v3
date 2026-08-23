@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Settings, Plus, Pencil, Trash2, X, Save,
   ChevronDown, ChevronRight, Calculator, BookOpen,
@@ -427,8 +428,7 @@ export default function PayrollDefinitions() {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
-        <ScriviaLogo className="w-8 h-8 animate-pulse mb-3" />
-        <span className="text-sm font-medium text-slate-500">Loading payroll definitions…</span>
+        <LoadingIndicator />
       </div>
     );
   }
@@ -860,7 +860,7 @@ export default function PayrollDefinitions() {
                   disabled={saving}
                   className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-deped-600 text-white text-sm font-semibold hover:bg-deped-700 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Save className="w-4 h-4" />}
+                  {saving ? <LoadingIndicator size={40} /> : <Save className="w-4 h-4" />}
                   {editingDef ? 'Update' : 'Create'}
                 </button>
               </div>
@@ -971,7 +971,7 @@ export default function PayrollDefinitions() {
                   disabled={saving}
                   className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Save className="w-4 h-4" />}
+                  {saving ? <LoadingIndicator size={40} /> : <Save className="w-4 h-4" />}
                   {editingFormula ? 'Update' : 'Create'}
                 </button>
               </div>
@@ -1025,7 +1025,7 @@ export default function PayrollDefinitions() {
                   disabled={saving}
                   className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-rose-600 text-white text-sm font-semibold hover:bg-rose-700 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Trash2 className="w-4 h-4" />}
+                  {saving ? <LoadingIndicator size={40} /> : <Trash2 className="w-4 h-4" />}
                   Delete
                 </button>
               </div>

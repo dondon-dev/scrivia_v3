@@ -372,7 +372,7 @@ export default function DedfileDbf() {
       const allDeds = await fetchAll(() => supabase.from('payroll_deductions').select('*').order('empno').order('dedcode'));
       const allEmps = await fetchAll(() => supabase.from('employees').select('*'));
       const data = generateDedfileDbf(allDeds, allEmps);
-      downloadFile({ filename: `DEDFILE_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.dbf`, content: data, mimeType: 'application/dbf' });
+      downloadFile({ filename: `DEDFILE_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.DBF`, content: data, mimeType: 'application/dbf' });
       await logAudit('backup_before_save', 'dedfile', `backup_${Date.now()}`);
       return true;
     } catch { return false; }
@@ -493,7 +493,7 @@ export default function DedfileDbf() {
     const allRows = await fetchAllFiltered();
     const { deds } = rowsToExportData(allRows);
     const data = generateDedfileDbf(deds, employees);
-    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.dbf`, content: data, mimeType: 'application/dbf' });
+    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.DBF`, content: data, mimeType: 'application/dbf' });
     logAudit('dedfile_export_dbf', 'dedfile', undefined, { recordCount: allRows.length });
   }
 
@@ -975,7 +975,7 @@ function UploadModal({ employees, onClose, onImported, logAudit }: UploadProps) 
             </div>
           )}
           <div className="flex items-center gap-3">
-            <input ref={fileRef} type="file" accept=".csv,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
+            <input ref={fileRef} type="file" accept=".csv,.DBF,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
             <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm font-medium text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-colors"><Upload className="w-4 h-4" /> Choose File</button>
             <span className="text-xs text-slate-400">or paste CSV below</span>
           </div>

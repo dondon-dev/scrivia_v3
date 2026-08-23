@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Building2, MapPin, Phone, Mail, Globe, Hash, FileText, Calendar,
   Pencil, Save, X, Upload, Printer, Download, Image as ImageIcon,
@@ -276,7 +277,7 @@ export default function DivisionOffice() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 text-slate-400 text-sm">
-        <ScriviaLogo className="w-6 h-6 animate-pulse mr-2" />
+        <LoadingIndicator size={32} />
         Loading Division Office...
       </div>
     );

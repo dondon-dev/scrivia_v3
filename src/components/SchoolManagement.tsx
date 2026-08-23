@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Plus, Search, Pencil, Trash2, X, Download, Upload, Printer,
   Building2, Users, GraduationCap, Briefcase, Wallet, MapPin,
@@ -344,7 +345,7 @@ export default function SchoolManagement({
               {loading ? (
                 <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">
                   <div className="inline-flex items-center gap-2">
-                    <ScriviaLogo className="w-5 h-5 animate-pulse" />
+                    <LoadingIndicator size={40} />
                     Loading...
                   </div>
                 </td></tr>

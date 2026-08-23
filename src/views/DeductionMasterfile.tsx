@@ -277,7 +277,7 @@ export default function DeductionMasterfile() {
 
   function exportDbf() {
     const data = generateDedfileDbf(deductions, employees);
-    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.dbf`, content: data, mimeType: 'application/dbf' });
+    downloadFile({ filename: `DEDFILE_${new Date().toISOString().slice(0, 10)}.DBF`, content: data, mimeType: 'application/dbf' });
   }
 
   const inputCls = 'w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500';
@@ -929,7 +929,7 @@ function UploadModal({ employees: _employees, empByNumber, onClose, onImported }
           </div>
 
           <div className="flex items-center gap-3">
-            <input ref={fileRef} type="file" accept=".csv,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
+            <input ref={fileRef} type="file" accept=".csv,.DBF,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
             <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm font-medium text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-colors">
               <Upload className="w-4 h-4" /> Choose File
             </button>

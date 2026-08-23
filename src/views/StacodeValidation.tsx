@@ -5,6 +5,7 @@ import {
   History, ChevronDown, ChevronRight, Clock, User,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { supabase, fetchAll } from '@/lib/supabase';
 import { useOrg, codeScope } from '@/lib/org';
 import { classifyByStacode } from '@/lib/stacodeClassify';
@@ -313,7 +314,7 @@ export default function StacodeValidation({ onNavigateMasterfile, onContinuePayr
               disabled={revalidating}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-white border border-amber-300 text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50"
             >
-              {revalidating ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              {revalidating ? <LoadingIndicator size={32} /> : <RefreshCw className="w-3.5 h-3.5" />}
               {revalidating ? 'Revalidating...' : 'Auto-Revalidate All'}
             </button>
             <div className="relative group">

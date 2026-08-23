@@ -643,6 +643,7 @@ function UploadCodesModal({ existingCodes, onClose, onImported }: UploadCodesPro
       const dedcode = (r['DEDCODE'] ?? '').trim().toUpperCase();
       if (!dedcode) { skipped++; errors.push(`Row ${i + 2}: Missing DEDCODE.`); continue; }
       toUpsert.push({
+        id: crypto.randomUUID(),
         dedcode,
         type: (r['TYPE'] ?? 'Other').trim() || 'Other',
         agency: (r['AGENCY'] ?? 'OTHER').trim().toUpperCase() || 'OTHER',
@@ -688,7 +689,7 @@ function UploadCodesModal({ existingCodes, onClose, onImported }: UploadCodesPro
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <input ref={fileRef} type="file" accept=".csv,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
+            <input ref={fileRef} type="file" accept=".csv,.DBF,.dbf,.txt,.prn,.dat" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} className="hidden" />
             <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm font-medium text-slate-600 hover:border-emerald-400 hover:text-emerald-600 transition-colors">
               <Upload className="w-4 h-4" /> Choose DEDTABLE.DBF
             </button>

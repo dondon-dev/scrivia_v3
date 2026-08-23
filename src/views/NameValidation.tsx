@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Search, Download, FileSpreadsheet, FileText, FileDown, X, Eye,
   CheckCircle2, AlertTriangle, UserMinus, UserX, HelpCircle, RefreshCw,
@@ -198,7 +199,7 @@ export default function NameValidation() {
             disabled={loading}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
           >
-            {loading ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCw className="w-4 h-4" />}
+            {loading ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />}
             Refresh
           </button>
           <button onClick={() => exportCsv(true)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">

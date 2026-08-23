@@ -2,6 +2,7 @@
 // Department of Education · Division of Calamba City · "Other Payroll" module.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Wallet, Users, Search, Plus, Pencil, Trash2, X, Upload, Download,
   FileSpreadsheet, AlertTriangle, ChevronRight, RefreshCw,
@@ -589,7 +590,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
 
       {loading ? (
         <div className="py-24 text-center text-slate-400 flex flex-col items-center gap-2">
-          <ScriviaLogo className="w-6 h-6 animate-pulse" /> Loading…
+          <LoadingIndicator size={40} /> Loading…
         </div>
       ) : tab === 'overview' ? (
         <OverviewTab
@@ -624,7 +625,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                   <Eye className="w-4 h-4" /> {previewing ? 'Analyzing…' : 'Preview Sync'}
                 </button>
                 <button onClick={() => void runSync()} disabled={pulling || previewing} className="btn-secondary" title="Sync employees from Employee Records (classified by STACODE) and Non-Plantilla Items">
-                  {pulling ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCw className="w-4 h-4" />} {pulling ? 'Syncing…' : 'Auto Employee Sync'}
+                  {pulling ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />} {pulling ? 'Syncing…' : 'Auto Employee Sync'}
                 </button>
                 <button onClick={() => openEmpModal()} className="btn-primary"><Plus className="w-4 h-4" /> Add Employee</button>
               </div>
@@ -822,7 +823,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
             <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
               <button onClick={() => setShowCreate(false)} className="btn-secondary">Cancel</button>
               <button onClick={() => void handleCreate()} disabled={creating} className="btn-primary">
-                {creating ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Wallet className="w-4 h-4" />}
+                {creating ? <LoadingIndicator size={40} /> : <Wallet className="w-4 h-4" />}
                 {creating ? 'Creating…' : `Generate Payroll (${selCount} employee${selCount === 1 ? '' : 's'})`}
               </button>
             </div>
@@ -930,7 +931,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                   disabled={pulling || (syncPlan.newCount + syncPlan.updateCount) === 0}
                   className="btn-primary"
                 >
-                  {pulling ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <CheckCircle2 className="w-4 h-4" />}
+                  {pulling ? <LoadingIndicator size={40} /> : <CheckCircle2 className="w-4 h-4" />}
                   {pulling ? 'Applying…' : `Apply ${syncPlan.newCount + syncPlan.updateCount} Change${syncPlan.newCount + syncPlan.updateCount === 1 ? '' : 's'}`}
                 </button>
               </div>

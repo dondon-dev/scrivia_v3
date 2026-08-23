@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Search, Download, Table2, Info, ChevronDown, ChevronUp,
   FileSpreadsheet, RefreshCw,
@@ -137,7 +138,7 @@ export default function PayrollDbfManager({ category }: { category?: PayrollCate
 
   function exportDbf() {
     const data = generatePayrollDbf(entries.filter((e) => empMap.has(e.employee_id)), employees, currentPeriod!);
-    downloadFile({ filename: `PAYROLL_${currentPeriod?.period_name?.replace(/\s/g, '_') ?? 'export'}.dbf`, content: data, mimeType: 'application/dbf' });
+    downloadFile({ filename: `PAYROLL_${currentPeriod?.period_name?.replace(/\s/g, '_') ?? 'export'}.DBF`, content: data, mimeType: 'application/dbf' });
     logAudit('payroll_dbf_export', 'pay_period', periodId, { recordCount: filtered.length, periodName: currentPeriod?.period_name });
   }
 
@@ -190,7 +191,7 @@ export default function PayrollDbfManager({ category }: { category?: PayrollCate
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => loadData()} disabled={loading} className="inline-flex items-center gap-2 px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors" title="Refresh data">
-            {loading ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCw className="w-4 h-4" />}
+            {loading ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />}
           </button>
           <div className="relative">
             <button onClick={() => setExportMenu(!exportMenu)} disabled={filtered.length === 0} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-50 transition-colors">
@@ -223,7 +224,7 @@ export default function PayrollDbfManager({ category }: { category?: PayrollCate
       {/* Grid */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
-          <div className="py-20 text-center text-slate-400 text-sm">Loading payroll data…</div>
+          <div className="py-20 flex justify-center"><LoadingIndicator /></div>
         ) : filtered.length === 0 ? (
           <div className="py-16 text-center">
             <Table2 className="w-10 h-10 mx-auto mb-3 text-slate-200" />

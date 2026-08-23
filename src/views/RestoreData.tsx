@@ -5,6 +5,7 @@ import {
   History, RefreshCw, Lock, Info,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { supabase, fetchAll, formatError } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { decodeDbf, type DbfField } from '@/lib/dbf';
@@ -415,7 +416,7 @@ export default function RestoreData() {
         <div className="flex items-center gap-3 px-4 py-3 rounded-lg text-sm bg-blue-50 text-blue-700 border border-blue-200">
           {progress.phase === 'done' ? <CheckCircle className="w-4 h-4 shrink-0" /> :
            progress.phase === 'error' ? <AlertTriangle className="w-4 h-4 shrink-0" /> :
-           <ScriviaLogo className="w-4 h-4 shrink-0 animate-pulse" />}
+           <LoadingIndicator size={24} />}
           <span className="flex-1">
             <span className="font-medium">{progress.fileName}</span> — {progress.message || `${progress.phase}...`}
           </span>
@@ -440,7 +441,7 @@ export default function RestoreData() {
         >
           <Upload className="w-4 h-4" /> Select Files
         </button>
-        <input ref={fileInputRef} type="file" multiple accept=".dbf,.cdx,.fpt,.idx" onChange={handleFileInput} className="hidden" />
+        <input ref={fileInputRef} type="file" multiple accept=".DBF,.dbf,.cdx,.fpt,.idx" onChange={handleFileInput} className="hidden" />
       </div>
 
       {/* Pending files (awaiting confirmation) */}
@@ -482,7 +483,7 @@ export default function RestoreData() {
             <h2 className="font-semibold text-slate-800">Supported Tables Status</h2>
           </div>
           <button onClick={loadHistory} disabled={loadingHistory} className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700">
-            {loadingHistory ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCw className="w-3.5 h-3.5" />} Refresh
+            {loadingHistory ? <LoadingIndicator size={32} /> : <RefreshCw className="w-3.5 h-3.5" />} Refresh
           </button>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-px bg-slate-100">
@@ -533,7 +534,7 @@ export default function RestoreData() {
         </div>
         {loadingHistory ? (
           <div className="flex items-center justify-center py-8">
-            <ScriviaLogo className="w-5 h-5 animate-pulse" />
+            <LoadingIndicator size={40} />
           </div>
         ) : history.length === 0 ? (
           <div className="py-8 text-center text-sm text-slate-400">
@@ -736,7 +737,7 @@ function InspectionModal({ data, onConfirm, onCancel, busy }: InspectionModalPro
               disabled={busy}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors"
             >
-              {busy ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <CheckCircle className="w-4 h-4" />}
+              {busy ? <LoadingIndicator size={40} /> : <CheckCircle className="w-4 h-4" />}
               {busy ? 'Restoring...' : 'Confirm Restore'}
             </button>
           </div>

@@ -97,7 +97,7 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
 
   function exportDbf(code: string) {
     const content = generateDeductionDbf(deductions, employees, code);
-    downloadFile({ filename: `DEDUCTION_${code}_${new Date().toISOString().slice(0, 10)}.dbf`, content, mimeType: 'application/dbf' });
+    downloadFile({ filename: `DEDUCTION_${code}_${new Date().toISOString().slice(0, 10)}.DBF`, content, mimeType: 'application/dbf' });
   }
 
   return (

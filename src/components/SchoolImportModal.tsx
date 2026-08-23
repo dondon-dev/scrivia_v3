@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Upload, FileSpreadsheet, Download, X, CheckCircle2, AlertCircle,
   FileUp, Inbox,
@@ -354,7 +355,7 @@ export default function SchoolImportModal({ open, onClose, schoolType, onImporte
           {/* Stage: Importing */}
           {stage === 'importing' && (
             <div className="flex flex-col items-center justify-center py-16">
-              <ScriviaLogo className="w-10 h-10 animate-pulse mb-4" />
+              <LoadingIndicator size={40} />
               <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Importing school profiles...</p>
               <p className="text-xs text-slate-400 mt-1">This may take a moment</p>
             </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Search, Download, Table2, LayoutGrid, Building2, Users,
   GraduationCap, Briefcase, MapPin, Eye, ChevronRight, X,
@@ -153,7 +154,7 @@ export function SchoolDirectory() {
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-slate-400">
-          <ScriviaLogo className="w-6 h-6 animate-pulse mr-2" />
+          <LoadingIndicator size={32} />
           Loading directory...
         </div>
       ) : filtered.length === 0 ? (

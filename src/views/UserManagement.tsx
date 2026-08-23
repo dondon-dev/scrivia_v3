@@ -5,6 +5,7 @@ import {
   Building2, Briefcase, Hash, ChevronRight, RefreshCw, ShieldCheck,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { supabase, fetchAll } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
@@ -428,7 +429,7 @@ export default function UserManagement({ initialTab }: { initialTab?: TabKey }) 
                                 className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 disabled:opacity-50"
                                 title="Validate against Masterfile"
                               >
-                                {valState?.loading ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <ShieldCheck className="w-4 h-4" />}
+                                {valState?.loading ? <LoadingIndicator size={40} /> : <ShieldCheck className="w-4 h-4" />}
                               </button>
                               <button
                                 onClick={() => handleApprove(u)}
@@ -1125,7 +1126,7 @@ function UserDetailModal({ user, currentUser, canAssignSchool, validation, regio
                   disabled={validation?.loading}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 disabled:opacity-50"
                 >
-                  {validation?.loading ? <ScriviaLogo className="w-3 h-3 animate-pulse" /> : <ShieldCheck className="w-3 h-3" />}
+                  {validation?.loading ? <LoadingIndicator size={40} /> : <ShieldCheck className="w-3 h-3" />}
                   {validation?.result ? 'Re-validate' : 'Validate'}
                 </button>
               )}
@@ -1141,7 +1142,7 @@ function UserDetailModal({ user, currentUser, canAssignSchool, validation, regio
 
             {validation?.loading && (
               <p className="text-sm text-slate-500 flex items-center gap-2">
-                <ScriviaLogo className="w-4 h-4 animate-pulse" /> Checking masterfile...
+                <LoadingIndicator size={40} /> Checking masterfile...
               </p>
             )}
 

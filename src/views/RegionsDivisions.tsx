@@ -6,6 +6,7 @@ import {
   ClipboardCopy, Table2,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import regionsDivisionsSetupSql from '../../supabase/migrations/20260809090100_create_regions_divisions.sql?raw';
 import regionsDivisionsFixSql from '../../supabase/migrations/20260809100000_fix_divisions_region_fk.sql?raw';
 
@@ -718,7 +719,7 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
                     </button>
                     {isSuper && (
                       <button onClick={syncEmployees} disabled={busy} className="btn-secondary text-sm">
-                        {busy ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RefreshCw className="w-4 h-4" />} Map Employees from Schools
+                        {busy ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />} Map Employees from Schools
                       </button>
                     )}
                   </div>

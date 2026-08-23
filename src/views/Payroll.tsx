@@ -16,6 +16,7 @@ import type { Employee, PayPeriod, PayrollEntry, Earning, Deduction, UndeductedO
 import EmployeePayrollCard from '@/components/EmployeePayrollCard';
 import PyentExportModal from '@/components/PyentExportModal';
 import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
+import LoadingIndicator from '@/components/LoadingIndicator';
 
 interface PayrollProps {
   profile?: UserProfile | null;
@@ -449,7 +450,7 @@ export default function Payroll({ profile }: PayrollProps) {
 
   function exportDbf() {
     const content = generatePayrollDbf(scopedEntries, employees, currentPeriod!);
-    downloadFile({ filename: `PAYROLL_${currentPeriod?.period_name?.replace(/\s/g, '_')}_${gf.label.replace(/\s/g, '_')}.dbf`, content, mimeType: 'application/dbf' });
+    downloadFile({ filename: `PAYROLL_${currentPeriod?.period_name?.replace(/\s/g, '_')}_${gf.label.replace(/\s/g, '_')}.DBF`, content, mimeType: 'application/dbf' });
     logAudit('dbf_upload', 'pay_period', periodId, { entries: scopedEntries.length });
   }
 
@@ -515,7 +516,7 @@ export default function Payroll({ profile }: PayrollProps) {
                 title={hasPosted ? 'This division has posted (locked) entries for this period — reverse them first' : 'Compute payroll for the selected period'}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 text-white text-[13px] font-semibold hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-emerald-600/20"
               >
-                {running ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <Play className="w-3.5 h-3.5 fill-white" />}
+                {running ? <LoadingIndicator size={32} /> : <Play className="w-3.5 h-3.5 fill-white" />}
                 {running ? 'Running…' : gf.groupId || category ? `Run ${gf.label}` : 'Run Payroll'}
               </button>
 
@@ -526,7 +527,7 @@ export default function Payroll({ profile }: PayrollProps) {
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 text-white text-[13px] font-semibold hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-blue-600/20"
                   title="Re-apply current deduction masterfile to this payroll run"
                 >
-                  {syncing ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                  {syncing ? <LoadingIndicator size={32} /> : <RefreshCcw className="w-3.5 h-3.5" />}
                   {syncing ? 'Syncing…' : 'Sync'}
                 </button>
               )}
@@ -573,7 +574,7 @@ export default function Payroll({ profile }: PayrollProps) {
                       canPost ? 'bg-slate-800 text-white hover:bg-slate-900 active:bg-black shadow-slate-800/20' : 'bg-slate-200 text-slate-500 cursor-not-allowed'
                     }`}
                   >
-                    {posting ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : canPost ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                    {posting ? <LoadingIndicator size={32} /> : canPost ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
                     {posting ? 'Posting…' : canPost ? (pendingCount > 0 ? `Post (${pendingCount})` : 'Post') : 'Blocked'}
                   </button>
                 )}
@@ -585,7 +586,7 @@ export default function Payroll({ profile }: PayrollProps) {
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 text-white text-[13px] font-semibold hover:bg-rose-700 active:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm shadow-rose-600/20"
                     title="Un-post this period's payroll server-side and reopen it for editing (super admin)"
                   >
-                    {reversing ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                    {reversing ? <LoadingIndicator size={32} /> : <RefreshCcw className="w-3.5 h-3.5" />}
                     {reversing ? 'Reversing…' : 'Reverse'}
                   </button>
                 )}
@@ -599,7 +600,7 @@ export default function Payroll({ profile }: PayrollProps) {
                       ? 'Delete this division\'s posted payroll permanently (super admin only). This cannot be undone.'
                       : "Delete this division's computed payroll entries for the selected period. Other divisions are unaffected."}
                   >
-                    {deleting ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    {deleting ? <LoadingIndicator size={32} /> : <Trash2 className="w-3.5 h-3.5" />}
                     {deleting ? 'Deleting…' : hasPosted ? 'Delete Posted' : 'Delete'}
                   </button>
                 )}
@@ -745,7 +746,7 @@ export default function Payroll({ profile }: PayrollProps) {
       {/* Search + Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
-          <div className="py-20 text-center text-slate-400 text-sm">Loading payroll…</div>
+          <div className="py-20 flex justify-center"><LoadingIndicator /></div>
         ) : scopedEmployees.length === 0 ? (
           <div className="py-16 text-center">
             <Calculator className="w-10 h-10 mx-auto mb-3 text-slate-200" />

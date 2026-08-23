@@ -6,6 +6,7 @@ import {
   School, GraduationCap,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
 import { useOrg } from '@/lib/org';
@@ -301,7 +302,7 @@ export default function SmartImport() {
       {progress && phase === 'syncing' && (
         <div className={`${accentColor === 'blue' ? 'bg-blue-50 border-blue-200' : accentColor === 'emerald' ? 'bg-emerald-50 border-emerald-200' : 'bg-blue-50 border-blue-200'} border rounded-xl p-4`}>
           <div className="flex items-center gap-3 mb-3">
-            <ScriviaLogo className={`w-5 h-5 animate-pulse shrink-0`} />
+            <LoadingIndicator size={24} />
             <div className="flex-1">
               <p className={`text-sm font-medium ${accentColor === 'blue' ? 'text-blue-800' : accentColor === 'emerald' ? 'text-emerald-800' : 'text-blue-800'}`}>{progress.message}</p>
               <p className={`text-xs ${accentColor === 'blue' ? 'text-blue-600' : accentColor === 'emerald' ? 'text-emerald-600' : 'text-blue-600'}`}>File {progress.current} of {progress.total} — {TABLE_LABELS[progress.tableName]}</p>
@@ -341,7 +342,7 @@ export default function SmartImport() {
           >
             <Upload className="w-4 h-4" /> Select Files
           </button>
-          <input ref={fileInputRef} type="file" multiple accept=".dbf" onChange={handleFileInput} className="hidden" />
+          <input ref={fileInputRef} type="file" multiple accept=".DBF,.dbf" onChange={handleFileInput} className="hidden" />
         </div>
       )}
 
@@ -419,12 +420,12 @@ export default function SmartImport() {
             <h2 className="font-semibold text-slate-800">Import History</h2>
           </div>
           <button onClick={loadHistory} disabled={loadingHistory} className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700">
-            {loadingHistory ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <RefreshCw className="w-3.5 h-3.5" />} Refresh
+            {loadingHistory ? <LoadingIndicator size={32} /> : <RefreshCw className="w-3.5 h-3.5" />} Refresh
           </button>
         </div>
         {loadingHistory ? (
           <div className="flex items-center justify-center py-8">
-            <ScriviaLogo className="w-5 h-5 animate-pulse" />
+            <LoadingIndicator size={40} />
           </div>
         ) : history.length === 0 ? (
           <div className="py-8 text-center text-sm text-slate-400">No import sessions recorded yet.</div>
@@ -507,7 +508,7 @@ export default function SmartImport() {
                 disabled={deleteInProgress}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 transition-colors"
               >
-                {deleteInProgress ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Trash2 className="w-4 h-4" />}
+                {deleteInProgress ? <LoadingIndicator size={40} /> : <Trash2 className="w-4 h-4" />}
                 Delete
               </button>
             </div>
@@ -823,7 +824,7 @@ function HistoryRow({
               disabled={rollbackInProgress}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors"
             >
-              {rollbackInProgress ? <ScriviaLogo className="w-3.5 h-3.5 animate-pulse" /> : <Undo2 className="w-3.5 h-3.5" />}
+              {rollbackInProgress ? <LoadingIndicator size={32} /> : <Undo2 className="w-3.5 h-3.5" />}
               Rollback
             </button>
           )}

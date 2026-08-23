@@ -6,6 +6,7 @@ import {
   Table2, Plus, Pencil, Ban,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { validateUpload } from '@/lib/uploadSecurity';
@@ -488,7 +489,7 @@ const [parseErrors, setParseErrors] = useState<string[]>([]);
               disabled={(!pliFile && !delFile) || phase === 'validating'}
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {phase === 'validating' ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <FileCheck2 className="w-4 h-4" />}
+              {phase === 'validating' ? <LoadingIndicator size={40} /> : <FileCheck2 className="w-4 h-4" />}
               Validate Files
             </button>
           </div>
@@ -738,7 +739,7 @@ function PreviewScreen({
         <div className="p-5 rounded-xl bg-slate-900 text-white">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium flex items-center gap-2">
-              <ScriviaLogo className="w-4 h-4 animate-pulse" />
+              <LoadingIndicator size={40} />
               {progress.message}
             </span>
             <span className="text-sm tabular-nums text-slate-300">
@@ -761,7 +762,7 @@ function PreviewScreen({
           disabled={importing || stats.add + stats.update + stats.terminate === 0}
           className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {importing ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <CheckCircle2 className="w-4 h-4" />}
+          {importing ? <LoadingIndicator size={40} /> : <CheckCircle2 className="w-4 h-4" />}
           Process Import
         </button>
         <button

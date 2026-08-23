@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 
 interface DeleteAllConfirmProps {
   open: boolean;
@@ -157,7 +158,7 @@ export default function DeleteAllConfirm({
 
           {step === 'deleting' && (
             <div className="py-12 flex flex-col items-center gap-4">
-              <ScriviaLogo className="w-10 h-10 animate-pulse" />
+              <LoadingIndicator size={40} />
               <p className="text-sm font-medium text-slate-700">Deleting {count.toLocaleString()} records…</p>
               <p className="text-xs text-slate-400">Please do not close this window.</p>
             </div>

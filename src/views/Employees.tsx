@@ -65,6 +65,24 @@ interface EmployeeForm {
   distcode: string;
 }
 
+/** Auto-compute employee deductions and government shares from basic salary */
+function computeEmployeeDeductions(basic: number) {
+  // GSIS Personal share = basic × 9%
+  const dedlnr = Math.round(basic * 0.09 * 100) / 100;
+  // PhilHealth Employee share = basic × 2.5%, ceiling at ₱2,500 if basic >= ₱100,000
+  const philTotal = basic >= 100000 ? 5000 : Math.round(basic * 0.05 * 100) / 100;
+  const dedmed = Math.floor(philTotal / 2 * 100) / 100;
+  // Pag-IBIG = fixed ₱200
+  const dedpag = 200;
+  // GSIS Government share = basic × 12%
+  const govtlnr = Math.round(basic * 0.12 * 100) / 100;
+  // GSIS ECC = fixed ₱100
+  const govtecc = 100;
+  // PhilHealth Government share = total - employee share
+  const govtmed = Math.round((philTotal - dedmed) * 100) / 100;
+  return { dedlnr, dedmed, dedpag, govtlnr, govtecc, govtmed };
+}
+
 function emptyForm(): EmployeeForm {
   const today = new Date().toISOString().slice(0, 10);
   return {
@@ -74,7 +92,7 @@ function emptyForm(): EmployeeForm {
     hire_date: today,
     regcode: '', divcode: '', stacode: '', empno: '', account: '', empname: '',
     fname: '', mi: '', lname: '', appel: '', poscode: '', paymode: 'ATM',
-    grade: 0, step: 0, basic: 0, trans: 0, pera: 0, aca: 0, rata: 0,
+    grade: 0, step: 1, basic: 0, trans: 0, pera: 2000, aca: 0, rata: 0,
     ontop: 0, long: 0, clothing: 0, cashallow: 0,
     dedlnr: 0, dedmed: 0, dedtax: 0, dedpag: 0, netpay: 0,
     govtlnr: 0, govtecc: 0, govtmed: 0, govtpag: 0,
@@ -309,7 +327,26 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     }
   }, [highlightEmpId, loading, onConsumedHighlight, profile]);
 
-  // Wrap setForm to auto-populate BASIC when grade/step changes
+  // Schools list for STACODE search
+  const [schools, setSchools] = useState<{ school_code: string; school_name: string }[]>([]);
+  const [schoolSearch, setSchoolSearch] = useState('');
+  const [showSchoolPicker, setShowSchoolPicker] = useState(false);
+
+  useEffect(() => {
+    fetchAll(() => supabase.from('schools').select('school_code, school_name').eq('status', 'Active').order('school_code'))
+      .then((rows) => setSchools(rows as { school_code: string; school_name: string }[]));
+  }, []);
+
+  // Filtered schools for search
+  const filteredSchools = useMemo(() => {
+    if (!schoolSearch) return schools.slice(0, 20);
+    const q = schoolSearch.toLowerCase();
+    return schools.filter(s =>
+      s.school_code.toLowerCase().includes(q) || s.school_name.toLowerCase().includes(q)
+    ).slice(0, 30);
+  }, [schools, schoolSearch]);
+
+  // Wrap setForm to auto-populate BASIC when grade/step changes + auto-compute deductions
   const setFormWithSalary = useCallback((updater: EmployeeForm | ((prev: EmployeeForm) => EmployeeForm)) => {
     setForm((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -322,6 +359,20 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
           next.basic_salary = salary;
         }
       }
+      // Auto-compute deductions and government shares from basic salary
+      if (next.basic > 0) {
+        const deds = computeEmployeeDeductions(next.basic);
+        next.dedlnr = deds.dedlnr;
+        next.dedmed = deds.dedmed;
+        next.dedpag = deds.dedpag;
+        next.govtlnr = deds.govtlnr;
+        next.govtecc = deds.govtecc;
+        next.govtmed = deds.govtmed;
+        // Auto-compute NETPAY: gross - employee deductions
+        const gross = next.basic + next.trans + next.pera + next.aca + next.rata + next.ontop + next.long + next.clothing + next.cashallow;
+        const totalEmpDeds = next.dedlnr + next.dedmed + next.dedtax + next.dedpag;
+        next.netpay = Math.round((gross - totalEmpDeds) * 100) / 100;
+      }
       return next;
     });
   }, [salaryMap]);
@@ -332,6 +383,9 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     setEditing(null);
     const f = emptyForm();
     f.empno = `EMP${String(serverPag.total + 1).padStart(4, '0')}`;
+    // Auto-populate REGCODE and DIVCODE from org scope
+    if (scopeRegcode) f.regcode = scopeRegcode;
+    if (scopeDivcodes && scopeDivcodes.length > 0) f.divcode = scopeDivcodes[0];
     setForm(f);
     setError('');
     setShowModal(true);
@@ -558,7 +612,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     // the REGCODE/DIVCODE codes carried by legacy masterfile rows.
     const scopedEmps = allEmps.filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes }));
     const content = generateMasterfileDbf(scopedEmps);
-    downloadFile({ filename: `MASTERFILE_${new Date().toISOString().slice(0, 10)}.dbf`, content, mimeType: 'application/dbf' });
+    downloadFile({ filename: `MASTERFILE_${new Date().toISOString().slice(0, 10)}.DBF`, content, mimeType: 'application/dbf' });
   }
 
   async function handleDbfFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1050,7 +1104,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
               {!uploadPreview && !uploadResult && (
                 <>
                   <div className="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center">
-                    <input ref={fileRef} type="file" accept=".dbf" onChange={handleDbfFile} className="hidden" />
+                    <input ref={fileRef} type="file" accept=".DBF,.dbf" onChange={handleDbfFile} className="hidden" />
                     <FileUp className="w-10 h-10 mx-auto mb-3 text-slate-300" />
                     <button
                       onClick={() => fileRef.current?.click()}
@@ -1059,7 +1113,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       <Upload className="w-4 h-4" /> Choose DBF File
                     </button>
                     <p className="text-xs text-slate-400 mt-2">
-                      Select a masterfile .dbf file from your computer to import employee records.
+                      Select a masterfile .DBF file from your computer to import employee records.
                     </p>
                   </div>
 
@@ -1169,18 +1223,91 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-rose-50 text-rose-700 text-sm">
                   <AlertCircle className="w-4 h-4 shrink-0" /> {error}
                 </div>
-              )}
-
-              <CollapsibleSection title="Assignment & Identity" defaultOpen fields={[
-                { key: 'empno', label: 'EMPNO *' }, { key: 'regcode', label: 'REGCODE' },
-                { key: 'divcode', label: 'DIVCODE' }, { key: 'stacode', label: 'STACODE' },
-                { key: 'distcode', label: 'DISTCODE' },
+              )}              <CollapsibleSection title="Assignment & Identity" defaultOpen fields={[
+                { key: 'empno', label: 'EMPNO *' },
                 { key: 'lname', label: 'LNAME *' }, { key: 'fname', label: 'FNAME *' },
                 { key: 'mi', label: 'MI' }, { key: 'appel', label: 'APPEL' },
                 { key: 'account', label: 'ACCOUNT' },
                 { key: 'paymode', label: 'PAYMODE', type: 'select', options: ['ATM', 'Cash', 'Check'] },
                 { key: 'empname', label: 'EMPNAME (auto if blank)' },
               ]} form={form} setForm={setFormWithSalary} />
+
+              {/* Auto-populated REGCODE + DIVCODE from org scope */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <label className="block">
+                  <span className="block text-[11px] text-slate-500 mb-0.5">REGCODE (auto)</span>
+                  <input value={form.regcode} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                </label>
+                <label className="block">
+                  <span className="block text-[11px] text-slate-500 mb-0.5">DIVCODE (auto)</span>
+                  <input value={form.divcode} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                </label>
+              </div>
+
+              {/* STACODE searchable School picker */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <button type="button" onClick={() => setShowSchoolPicker(!showSchoolPicker)} className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors">
+                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">School Assignment (STACODE)</span>
+                  {showSchoolPicker ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                </button>
+                {showSchoolPicker && (
+                  <div className="p-4 space-y-3">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        value={schoolSearch}
+                        onChange={e => setSchoolSearch(e.target.value)}
+                        placeholder="Search by school code or name…"
+                        className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
+                      />
+                    </div>
+                    <select
+                      value={form.stacode}
+                      onChange={e => {
+                        const code = e.target.value;
+                        const school = schools.find(s => s.school_code === code);
+                        setFormWithSalary({
+                          ...form,
+                          stacode: code,
+                          department: school?.school_name || form.department,
+                        });
+                      }}
+                      className={inputCls}
+                    >
+                      <option value="">— Select School —</option>
+                      {filteredSchools.map(s => (
+                        <option key={s.school_code} value={s.school_code}>
+                          {s.school_code} — {s.school_name}
+                        </option>
+                      ))}
+                    </select>
+                    {form.stacode && (() => {
+                      const school = schools.find(s => s.school_code === form.stacode);
+                      if (!school) return (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700 text-xs">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          STACODE "{form.stacode}" not found in School Directory. Import schools in Organization first.
+                        </div>
+                      );
+                      return (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          {school.school_name}
+                        </div>
+                      );
+                    })()}
+                    {/* Manual STACODE input */}
+                    <label className="block">
+                      <span className="block text-[11px] text-slate-500 mb-0.5">Or type STACODE manually</span>
+                      <input value={form.stacode} onChange={e => setFormWithSalary({ ...form, stacode: e.target.value })} className={inputCls} placeholder="STACODE" />
+                    </label>
+                  </div>
+                )}
+              </div>
+              <label className="block">
+                <span className="block text-[11px] text-slate-500 mb-0.5">DISTCODE</span>
+                <input value={form.distcode} onChange={e => setFormWithSalary({ ...form, distcode: e.target.value })} className={inputCls} />
+              </label>
 
               {/* Position picker — sourced from position_management table */}
               <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -1265,11 +1392,11 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 { key: 'attend', label: 'ATTEND' },
               ]} form={form} setForm={setFormWithSalary} />
 
-              <CollapsibleSection title="Salary & Allowances" fields={[
-                { key: 'grade', label: 'GRADE', type: 'number' }, { key: 'step', label: 'STEP', type: 'number' },
-                { key: 'basic', label: 'BASIC', type: 'number', step: '0.01' },
+              <CollapsibleSection title="Salary & Allowances" defaultOpen fields={[
+                { key: 'grade', label: 'GRADE', type: 'number' }, { key: 'step', label: 'STEP (default 1)', type: 'number' },
+                { key: 'basic', label: 'BASIC (auto from SG+STEP)', type: 'number', step: '0.01' },
+                { key: 'pera', label: 'PERA (default ₱2,000)', type: 'number', step: '0.01' },
                 { key: 'trans', label: 'TRANS', type: 'number', step: '0.01' },
-                { key: 'pera', label: 'PERA', type: 'number', step: '0.01' },
                 { key: 'aca', label: 'ACA', type: 'number', step: '0.01' },
                 { key: 'rata', label: 'RATA', type: 'number', step: '0.01' },
                 { key: 'ontop', label: 'ONTOP', type: 'number', step: '0.01' },
@@ -1296,20 +1423,60 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 { key: 'banker', label: 'BANKER' }, { key: 'pib', label: 'PIB' },
               ]} form={form} setForm={setFormWithSalary} />
 
-              <CollapsibleSection title="Deductions (Employee Share)" fields={[
-                { key: 'dedlnr', label: 'DEDLNR', type: 'number', step: '0.01' },
-                { key: 'dedmed', label: 'DEDMED', type: 'number', step: '0.01' },
-                { key: 'dedtax', label: 'DEDTAX', type: 'number', step: '0.01' },
-                { key: 'dedpag', label: 'DEDPAG', type: 'number', step: '0.01' },
-                { key: 'netpay', label: 'NETPAY', type: 'number', step: '0.01' },
-              ]} form={form} setForm={setFormWithSalary} />
+              {/* Deductions (Employee Share) — auto-computed, only DEDTAX editable */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-default">
+                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Deductions (Employee Share) — Auto-Computed</span>
+                </button>
+                <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDLNR — GSIS (9% of basic)</span>
+                    <input value={form.dedlnr} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDMED — PhilHealth (2.5%)</span>
+                    <input value={form.dedmed} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDPAG — Pag-IBIG (₱200)</span>
+                    <input value={form.dedpag} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDTAX — Withholding Tax (editable)</span>
+                    <input type="number" step="0.01" value={form.dedtax} onChange={e => {
+                      const val = parseFloat(e.target.value) || 0;
+                      const gross = form.basic + form.trans + form.pera + form.aca + form.rata + form.ontop + form.long + form.clothing + form.cashallow;
+                      const totalDeds = form.dedlnr + form.dedmed + val + form.dedpag;
+                      setFormWithSalary({ ...form, dedtax: val, netpay: Math.round((gross - totalDeds) * 100) / 100 });
+                    }} className="w-full px-3 py-2 rounded-lg border border-emerald-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">NETPAY (auto-computed)</span>
+                    <input value={form.netpay} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed font-semibold" />
+                  </label>
+                </div>
+              </div>
 
-              <CollapsibleSection title="Government Share" fields={[
-                { key: 'govtlnr', label: 'GOVTLNR', type: 'number', step: '0.01' },
-                { key: 'govtecc', label: 'GOVTECC', type: 'number', step: '0.01' },
-                { key: 'govtmed', label: 'GOVTMED', type: 'number', step: '0.01' },
-                { key: 'govtpag', label: 'GOVTPAG', type: 'number', step: '0.01' },
-              ]} form={form} setForm={setFormWithSalary} />
+              {/* Government Share — auto-computed, read-only */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-default">
+                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Government Share — Auto-Computed</span>
+                </button>
+                <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTLNR — GSIS (12% of basic)</span>
+                    <input value={form.govtlnr} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTECC — GSIS ECC (₱100)</span>
+                    <input value={form.govtecc} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTMED — PhilHealth (2.5%)</span>
+                    <input value={form.govtmed} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
+                  </label>
+                </div>
+              </div>
 
               <CollapsibleSection title="Codes & Dates" fields={[
                 { key: 'pagcode', label: 'PAGCODE' }, { key: 'taxcode', label: 'TAXCODE' },

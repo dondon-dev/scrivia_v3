@@ -20,6 +20,7 @@ import {
   INITIAL_AUDIT_LOGS, INITIAL_HEADERS,
 } from '@/lib/plantilla';
 import { extractAndParseFile, parsePSIPOPText, type ExtractedPSIPOPResult } from '@/lib/psipopEngine';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { isImageFile, isPdfFile, isOcrSupportedFile, type OcrProgressInfo, type OcrErrorCategory } from '@/lib/ocrEngine';
 import { exportPSIPOPToExcel } from '@/lib/psipopExport';
 import { usePagination, Pagination } from '@/components/Pagination';
@@ -591,7 +592,7 @@ export default function PlantillaPositions() {
             <div className="flex justify-end gap-2">
               <button onClick={() => { setShowPsipopExportModal(false); setPsipopExportError(null); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">Cancel</button>
               <button onClick={handleExportPSIPOP} disabled={psipopExporting} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors">
-                {psipopExporting ? <><ScriviaLogo className="w-4 h-4 animate-pulse" /> Generating...</> : <><FileSpreadsheet className="w-4 h-4" /> Export PSIPOP</>}
+                {psipopExporting ? <><LoadingIndicator size={40} /> Generating...</> : <><FileSpreadsheet className="w-4 h-4" /> Export PSIPOP</>}
               </button>
             </div>
           </div>
@@ -1465,9 +1466,9 @@ function ImportWizard({ existingPositions, onImportSuccess }: {
           <div className="flex items-center justify-between text-xs">
             <span className="flex items-center gap-2 text-slate-600 dark:text-slate-300 font-semibold">
               {ocrActive ? (
-                <><ScriviaLogo className="w-4 h-4 animate-pulse" /> {ocrStage || 'Running OCR...'}</>
+                <><LoadingIndicator size={40} /> {ocrStage || 'Running OCR...'}</>
               ) : (
-                <><ScriviaLogo className="w-4 h-4 animate-pulse" /> Extracting positions...</>
+                <><LoadingIndicator size={40} /> Extracting positions...</>
               )}
             </span>
             <span className="font-bold text-depedblue-600">{progress}%</span>

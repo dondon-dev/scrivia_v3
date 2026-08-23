@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Users, Calculator, TrendingUp, ArrowRight, Wallet, Building2, Landmark,
   BarChart3, School, ShieldCheck, ShieldAlert, Upload, Clock, CheckCircle2,
@@ -239,8 +240,8 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 text-slate-400 text-sm">
-        <div className="w-10 h-10 rounded-xl bg-deped-100 dark:bg-deped-900/40 flex items-center justify-center mr-3">
-          <ScriviaLogo className="w-6 h-6 animate-pulse" />
+        <div className="flex items-center justify-center mr-3">
+          <LoadingIndicator size={56} />
         </div>
         Loading dashboard…
       </div>

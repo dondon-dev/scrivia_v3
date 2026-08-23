@@ -6,6 +6,7 @@ import {
   GraduationCap, Users, Briefcase, Eye,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { supabase, fetchAll } from '@/lib/supabase';
 import { downloadFile, generateCsv } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
@@ -426,7 +427,7 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
               <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50">
-                {saving ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <CheckCircle2 className="w-4 h-4" />}
+                {saving ? <LoadingIndicator size={40} /> : <CheckCircle2 className="w-4 h-4" />}
                 {editing ? 'Update' : 'Add'} Position
               </button>
             </div>
@@ -563,7 +564,7 @@ function ImportTab({ onDone, profile, logAudit }: { onDone: () => void; profile:
           <input
             ref={fileInputRef}
             type="file"
-            accept=".dbf,.csv,.xlsx,.txt"
+            accept=".DBF,.dbf,.csv,.xlsx,.txt"
             className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
           />
@@ -805,7 +806,7 @@ function ImportTab({ onDone, profile, logAudit }: { onDone: () => void; profile:
     const pct = progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
     return (
       <div className="max-w-md mx-auto text-center py-12">
-        <ScriviaLogo className="w-12 h-12 mx-auto animate-pulse mb-4" />
+        <LoadingIndicator size={48} />
         <h3 className="text-lg font-bold text-slate-800 mb-1">Importing Positions…</h3>
         <p className="text-sm text-slate-500 mb-6">{progress?.message ?? 'Processing…'}</p>
         <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
@@ -965,7 +966,7 @@ function HistoryTab() {
                       className="p-1.5 rounded-lg text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors disabled:opacity-50"
                       title="Rollback Import"
                     >
-                      {rollingBack === log.id ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <RotateCcw className="w-4 h-4" />}
+                      {rollingBack === log.id ? <LoadingIndicator size={40} /> : <RotateCcw className="w-4 h-4" />}
                     </button>
                   </div>
                 </td>

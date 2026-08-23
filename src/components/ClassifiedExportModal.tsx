@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   X, FileDown, Download, CheckCircle, AlertTriangle,
   School, Building2, Archive, ShieldCheck, FileSpreadsheet, Table2,
@@ -415,7 +416,7 @@ function CategorySection({ cat, icon, onExport, onExportAll, loading, result }: 
       </div>
 
       <button onClick={() => onExportAll(cat)} disabled={loading} className={`mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 ${accent === 'blue' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
-        {loading ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Archive className="w-4 h-4" />}
+        {loading ? <LoadingIndicator size={40} /> : <Archive className="w-4 h-4" />}
         Export All {r.label} DBF Files (ZIP)
       </button>
     </div>

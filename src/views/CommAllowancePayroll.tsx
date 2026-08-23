@@ -2,6 +2,7 @@
 // Department of Education · Division of Calamba City · "Other Payroll" module.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   ArrowLeft, Search, Save, Trash2, X, Upload, Download, FileSpreadsheet, FileText,
   Printer, CheckCircle2, AlertTriangle, UserPlus, Pencil, Wallet,
@@ -313,7 +314,7 @@ export default function CommAllowancePayroll({ profile, payrollId, onBack }: Pro
   if (loading && !header) {
     return (
       <div className="py-24 text-center text-slate-400 flex flex-col items-center gap-2">
-        <ScriviaLogo className="w-6 h-6 animate-pulse" /> Loading payroll…
+        <LoadingIndicator />
       </div>
     );
   }
@@ -681,7 +682,7 @@ export default function CommAllowancePayroll({ profile, payrollId, onBack }: Pro
                 <input ref={importRef} type="file" accept=".csv,text/csv" className="hidden"
                   onChange={(ev) => { const f = ev.target.files?.[0]; if (f) void handleImportFile(f); }} />
                 <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-primary mt-4">
-                  {importing ? <ScriviaLogo className="w-4 h-4 animate-pulse" /> : <Upload className="w-4 h-4" />}
+                  {importing ? <LoadingIndicator size={40} /> : <Upload className="w-4 h-4" />}
                   {importing ? 'Importing…' : 'Choose CSV File'}
                 </button>
               </div>
