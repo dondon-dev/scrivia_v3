@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, Suspense, type FormEvent } from 'react';
+import LoadingIndicator from '@/components/LoadingIndicator';
 import { lazyRetry } from '@/lib/lazyRetry';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -100,8 +101,7 @@ function roleBadge(role: UserRole): string {
 function ViewLoader() {
   return (
     <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
-      <ScriviaLogo className="w-10 h-10 animate-pulse mb-3" />
-      <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Loading view...</span>
+      <LoadingIndicator size={48} label="Loading view..." />
     </div>
   );
 }
@@ -268,10 +268,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex items-center justify-center">
-        <div className="flex items-center gap-3 text-slate-600 dark:text-slate-300">
-          <ScriviaLogo className="w-10 h-10 animate-pulse" />
-          <span className="text-sm font-medium">Loading SCRIVIA Cloud™…</span>
-        </div>
+        <LoadingIndicator size={64} label="Loading SCRIVIA Cloud™…" />
       </div>
     );
   }
