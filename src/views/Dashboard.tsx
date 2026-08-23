@@ -307,7 +307,7 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
   const quickActions = allActions.filter((a) => a.show);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {scopeDegraded && scopedCodes && scopedCodes.length > 0 && (
         <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -390,7 +390,7 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         variants={staggerContainer}
         initial="hidden"
         animate="show"
-        className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4"
+        className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3"
       >
         {kpiCards.map((s) => (
           <KpiCard key={s.label} {...s} />
@@ -398,10 +398,10 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
       </motion.div>
 
       {/* ══ 2-COLUMN LAYOUT: main content + right sidebar ══ */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
       {/* ── LEFT COLUMN (2/3) ── */}
-      <div className="lg:col-span-2 space-y-6">
+      <div className="lg:col-span-2 space-y-4">
 
       {/* Payroll Operations Center — workflow timeline */}
       {data.currentPeriod && (
@@ -465,7 +465,7 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
       </div>{/* end left column */}
 
       {/* ── RIGHT SIDEBAR (1/3) ── */}
-      <div className="space-y-6">
+      <div className="space-y-4">
 
       {/* Calendar / Notification */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 p-5 shadow-sm">

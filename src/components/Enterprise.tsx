@@ -97,18 +97,18 @@ export function KpiCard({
       custom={delay}
       whileHover={onClick ? { y: -6 } : { y: -3 }}
       onClick={onClick}
-      className={`nexora-card nexora-card-hover p-5 group relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
+      className={`nexora-card nexora-card-hover p-4 group relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
     >
       {/* hover glow wash */}
       <div className="pointer-events-none absolute -top-16 -right-16 w-40 h-40 rounded-full bg-gradient-to-br from-nexora-500/0 to-nexora-500/10 dark:from-nexora-500/0 dark:to-nexora-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
       <div className="flex items-start justify-between gap-3 relative">
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</p>
-          <p className="text-[26px] font-bold text-slate-900 dark:text-white mt-1.5 tabular truncate leading-tight">{display}</p>
+          <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1 tabular truncate leading-tight">{display}</p>
           {sublabel && <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{sublabel}</p>}
         </div>
-        <div className={`w-12 h-12 rounded-xl ${colors.iconBg} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300`}>
-          <Icon className={`w-6 h-6 ${colors.iconColor}`} />
+        <div className={`w-10 h-10 rounded-xl ${colors.iconBg} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300`}>
+          <Icon className={`w-5 h-5 ${colors.iconColor}`} />
         </div>
       </div>
 
@@ -183,11 +183,10 @@ export function HeroHeader({ greeting, title, date, chips, actions, metric, live
       className="nexora-hero rounded-3xl text-white shadow-nexora-lg"
     >
       {/* drifting aurora blobs */}
-      <div className="hero-blob w-72 h-72 -top-24 -right-16 bg-aurora-500/25" style={{ animationDelay: '0s' }} />
-      <div className="hero-blob w-56 h-56 -bottom-28 -left-10 bg-nexora-400/25" style={{ animationDelay: '-3s' }} />
-      <div className="hero-blob w-40 h-40 top-1/3 right-1/4 bg-white/10" style={{ animationDelay: '-5s' }} />
+      <div className="hero-blob w-48 h-48 -top-16 -right-10 bg-aurora-500/20" style={{ animationDelay: '0s' }} />
+      <div className="hero-blob w-40 h-40 -bottom-20 -left-8 bg-nexora-400/20" style={{ animationDelay: '-3s' }} />
 
-      <div className="relative p-6 sm:p-8">
+      <div className="relative p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -202,19 +201,19 @@ export function HeroHeader({ greeting, title, date, chips, actions, metric, live
                 </span>
               )}
             </div>
-            <h1 className="text-2xl sm:text-[28px] font-bold mt-3 leading-tight tracking-tight">
+            <h1 className="text-xl sm:text-2xl font-bold mt-2 leading-tight tracking-tight">
               {greeting}
               <span className="ml-2 inline-flex items-center gap-1 align-middle">
                 <Sparkles className="w-5 h-5 text-aurora-300" />
               </span>
             </h1>
-            {title && <p className="text-sm text-white/75 mt-2 max-w-2xl leading-relaxed">{title}</p>}
+            {title && <p className="text-[13px] text-white/70 mt-1.5 max-w-2xl leading-relaxed">{title}</p>}
             {chips && chips.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
+              <div className="flex flex-wrap gap-1.5 mt-3">
                 {chips.map((c, i) => {
                   const ChipIcon = c.icon;
                   return (
-                    <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 ring-1 ring-white/15 text-xs font-medium backdrop-blur-sm">
+                    <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/10 ring-1 ring-white/15 text-[11px] font-medium backdrop-blur-sm">
                       <ChipIcon className="w-3.5 h-3.5 text-aurora-200" />
                       {c.label}
                     </span>
