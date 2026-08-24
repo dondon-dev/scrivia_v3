@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { X, ChevronLeft, ChevronRight, Printer, ShieldAlert, ShieldCheck, Landmark, Wallet, FileText, User, CreditCard, Building2, Briefcase } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/supabase';
 import { usePositions } from '@/lib/usePositions';
-import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import type { Employee, PayrollEntry, PayPeriod, PayrollDeduction, DeductionCode } from '@/types/payroll';
 import { computePayrollDeductions } from '@/lib/payroll';
 import { processEmployeeDeductions, NTHP_THRESHOLD } from '@/lib/nthp';
@@ -43,7 +42,6 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const [dedCodes, setDedCodes] = useState<DeductionCode[]>([]);
 
   const { lookup: lookupPosition } = usePositions();
-  const { lookup: lookupSalary, meta: schedMeta } = useSalarySchedule();
 
   const e = fullEmployee ?? initialEmployee;
 
@@ -247,23 +245,6 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
                 </div>
                 <div className="p-4 space-y-2 text-sm">
                   <AmountRow label="Basic Salary" value={currency(e.basic ?? e.basic_salary)} />
-                  {(() => {
-                    const official = lookupSalary(e.grade ?? 0, e.step ?? 0);
-                    const actual = e.basic ?? e.basic_salary ?? 0;
-                    if (official == null) return null;
-                    const diff = actual - official;
-                    if (Math.abs(diff) < 0.01) {
-                      return <AmountRow label={`Schedule Rate (${schedMeta?.circular_no ?? ''})`} value={currency(official)} valueColor="text-emerald-600" />;
-                    }
-                    return (
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-amber-600">Schedule rate ({schedMeta?.circular_no ?? ''})</span>
-                        <span className={diff > 0 ? 'text-amber-600 font-medium tabular' : 'text-rose-600 font-medium tabular'}>
-                          {currency(official)} ({diff > 0 ? '+' : ''}{currency(diff)})
-                        </span>
-                      </div>
-                    );
-                  })()}
                   <AmountRow label="P.E.R.A." value={currency(e.pera)} />
                   {(e.rata ?? 0) > 0 && <AmountRow label="RATA" value={currency(e.rata)} />}
                   {(e.aca ?? 0) > 0 && <AmountRow label="ACA" value={currency(e.aca)} />}

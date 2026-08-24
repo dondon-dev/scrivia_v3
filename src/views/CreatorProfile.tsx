@@ -91,12 +91,24 @@ export default function CreatorProfile() {
             <h2 className="text-xl font-bold text-slate-900">About the Creator</h2>
           </div>
           <p className="text-slate-600 leading-relaxed">
-            This website was conceptualized, designed, developed, and maintained by{' '}
-            <span className="font-semibold text-slate-800">Adonai A. Magno</span>. He serves as the
-            system architect, website designer, database developer, and project owner. All layouts,
-            user interface designs, source code, databases, workflows, reports, dashboards, visual
-            elements, system architecture, and custom features are proprietary works created for this
-            project.
+            <span className="font-semibold text-slate-800">Adonai Magno</span> is an Administrative Officer II assigned at the Schools Division Office (SDO) of Calamba City. Passionate about technology and digital transformation, he serves as the developer of Scrivia Cloud, a modern cloud-based information management system designed to streamline administrative processes, improve efficiency, and support data-driven decision-making.
+          </p>
+          <p className="text-slate-600 leading-relaxed mt-4">
+            As a Full-Stack Developer, Adonai specializes in designing and developing end-to-end web applications, covering both frontend and backend technologies. His expertise includes database management, system architecture, user interface development, cloud solutions, and business process automation.
+          </p>
+          <p className="text-slate-600 leading-relaxed mt-4">
+            Through Scrivia Cloud and other digital initiatives, he continues to contribute to the modernization of educational and administrative services by creating innovative, reliable, and user-friendly software solutions that address real-world operational challenges.
+          </p>
+          <div className="mt-6 p-4 bg-gradient-to-r from-slate-50 to-slate-100 rounded-xl border border-slate-200">
+            <p className="text-sm font-medium text-slate-700">
+              <span className="text-slate-500">Position:</span> Administrative Officer II<br/>
+              <span className="text-slate-500">Organization:</span> Schools Division Office of Calamba City<br/>
+              <span className="text-slate-500">Role:</span> Full-Stack Developer & Creator of Scrivia Cloud<br/>
+              <span className="text-slate-500">Mission:</span> To leverage technology in delivering efficient, innovative, and sustainable digital solutions for education and public service.
+            </p>
+          </div>
+          <p className="text-slate-500 italic text-sm mt-4 text-center">
+            "Transforming ideas into digital solutions that empower organizations and improve service delivery."
           </p>
         </section>
 

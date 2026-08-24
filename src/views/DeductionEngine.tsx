@@ -643,7 +643,6 @@ function UploadCodesModal({ existingCodes, onClose, onImported }: UploadCodesPro
       const dedcode = (r['DEDCODE'] ?? '').trim().toUpperCase();
       if (!dedcode) { skipped++; errors.push(`Row ${i + 2}: Missing DEDCODE.`); continue; }
       toUpsert.push({
-        id: crypto.randomUUID(),
         dedcode,
         type: (r['TYPE'] ?? 'Other').trim() || 'Other',
         agency: (r['AGENCY'] ?? 'OTHER').trim().toUpperCase() || 'OTHER',

@@ -74,13 +74,12 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'Organization',
     icon: Building2,
     items: [
-      { id: 'org_division', label: 'Division Office', icon: Building2, permission: 'groups', viewKey: 'org_division' },
-      { id: 'org_regions', label: 'Regions & Divisions', icon: MapIcon, permission: 'groups', viewKey: 'org_regions' },
+      { id: 'org_regions', label: 'Regions and Divisions', icon: MapIcon, permission: 'groups', viewKey: 'org_regions' },
+      { id: 'org_division', label: 'Division Offices', icon: Building2, permission: 'groups', viewKey: 'org_division' },
       { id: 'org_elementary', label: 'Elementary Schools', icon: School, permission: 'groups', viewKey: 'org_elementary' },
       { id: 'org_highschool', label: 'High Schools', icon: GraduationCap, permission: 'groups', viewKey: 'org_highschool' },
       { id: 'org_units', label: 'Implementing Units', icon: Home, permission: 'groups', viewKey: 'org_units' },
       { id: 'org_directory', label: 'School Directory', icon: MapIcon, permission: 'groups', viewKey: 'org_directory' },
-      { id: 'org_structure', label: 'Organizational Structure', icon: Network, permission: 'groups', viewKey: 'org_division' },
     ],
   },
 
@@ -91,11 +90,9 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: Users,
     items: [
       { id: 'emp_records', label: 'Employee Records', icon: Contact, permission: 'employees', viewKey: 'employees' },
-      { id: 'emp_plantilla', label: 'Plantilla Intelligence Center', icon: Briefcase, permission: 'salary', viewKey: 'plantilla' },
+      { id: 'emp_plantilla', label: 'PSIPOP', icon: Briefcase, permission: 'salary', viewKey: 'plantilla' },
       { id: 'emp_nonplantilla', label: 'Non-Plantilla Items', icon: UserPlus, permission: 'employees', viewKey: 'nonplantilla' },
       { id: 'emp_status', label: 'Employment Status', icon: BadgeCheck, permission: 'employees', viewKey: 'employees' },
-      { id: 'emp_salary_grade', label: 'Salary Grade Management', icon: DollarSign, permission: 'salary', viewKey: 'salary' },
-      { id: 'emp_position_mgmt', label: 'Position Management', icon: Award, permission: 'employees', viewKey: 'positionmgmt' },
       { id: 'emp_name_validation', label: 'Name Validation', icon: FileCheck2, permission: 'employees', viewKey: 'namevalidation' },
       { id: 'emp_movement', label: 'Personnel Movement History', icon: GitBranch, permission: 'employees', viewKey: 'employees' },
     ],
@@ -130,66 +127,35 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
 
-  // ── 5. DEDUCTIONS & LOANS ──
+  // ── 5. REMITTANCE ──
   {
-    id: 'deductions',
-    label: 'Deductions & Loans',
-    icon: Receipt,
-    subGroups: [
-      {
-        id: 'ded_mandatory',
-        label: 'Mandatory Deductions',
-        icon: Landmark,
-        items: [
-          { id: 'ded_gsis', label: 'GSIS', icon: Landmark, permission: 'dbf_restore', viewKey: 'gsisimport' },
-      { id: 'govt_gsis', label: 'GSIS Dashboard', icon: Shield, permission: 'dedengine', viewKey: 'govt_gsis' },
-      { id: 'govt_w2', label: 'W-2 Annual Tax', icon: FileText, permission: 'taxcalc', viewKey: 'govt_w2' },
-      { id: 'govt_calculator', label: 'Gov Payroll Calculator', icon: Calculator, permission: 'taxcalc', viewKey: 'govt_calculator' },
-          { id: 'ded_philhealth', label: 'PhilHealth', icon: HeartPulse, permission: 'dedmaster', viewKey: 'dedmaster' },
-          { id: 'ded_pagibig', label: 'Pag-IBIG', icon: Home, permission: 'dedmaster', viewKey: 'dedmaster' },
-          { id: 'ded_bir_tax', label: 'BIR Tax', icon: Receipt, permission: 'taxcalc', viewKey: 'taxcalc' },
-        ],
-      },
-      {
-        id: 'ded_voluntary',
-        label: 'Voluntary Deductions',
-        icon: PiggyBank,
-        items: [
-          { id: 'ded_provident', label: 'Provident', icon: PiggyBank, permission: 'dedmaster', viewKey: 'dedmaster' },
-          { id: 'ded_other', label: 'Other Deductions', icon: ClipboardList, permission: 'dedmaster', viewKey: 'dedmaster' },
-        ],
-      },
-      {
-        id: 'ded_loans',
-        label: 'Loans',
-        icon: HandCoins,
-        items: [
-          { id: 'loan_billing', label: 'Loan Billing Upload', icon: Upload, permission: 'dbf_restore', viewKey: 'pliimport' },
-          { id: 'loan_verification', label: 'Loan Verification', icon: CheckCircle2, permission: 'dedengine', viewKey: 'dedmaster' },
-          { id: 'loan_approval', label: 'Loan Approval', icon: FileCheck2, permission: 'dedengine', viewKey: 'dedmaster' },
-          { id: 'loan_history', label: 'Loan History', icon: History, permission: 'dedengine', viewKey: 'dedmaster' },
-          { id: 'loan_monitoring', label: 'Loan Monitoring', icon: Activity, permission: 'dedengine', viewKey: 'dedmaster' },
-        ],
-      },
-      {
-        id: 'ded_remittances',
-        label: 'Remittances',
-        icon: Send,
-        items: [
-          { id: 'rem_processing', label: 'Remittance Processing', icon: Send, permission: 'dedengine', viewKey: 'dedengine' },
-          { id: 'rem_summary', label: 'Remittance Summary', icon: FileBarChart, permission: 'dedengine', viewKey: 'dedengine' },
-          { id: 'rem_history', label: 'Remittance History', icon: History, permission: 'dedengine', viewKey: 'dedengine' },
-          { id: 'rem_generation', label: 'Remittance Generation', icon: FileText, permission: 'dedengine', viewKey: 'dedengine' },
-        ],
-      },
-    ],
+    id: 'remittance',
+    label: 'Remittance',
+    icon: Send,
     items: [
-      { id: 'ded_engine', label: 'Deduction Codes', icon: Cog, permission: 'dedengine', viewKey: 'dedengine' },
-      { id: 'ded_file_viewer', label: 'Deductions', icon: Table2, permission: 'dedmaster', viewKey: 'dedfile' },
+      { id: 'rem_gsis', label: 'GSIS Report', icon: Landmark, permission: 'dedengine', viewKey: 'govt_gsis' },
+      { id: 'rem_philhealth', label: 'PhilHealth Report', icon: HeartPulse, permission: 'reports', viewKey: 'reports', tab: 'philhealth' },
+      { id: 'rem_pagibig', label: 'Pag-IBIG Report', icon: Home, permission: 'reports', viewKey: 'reports', tab: 'pagibig' },
+      { id: 'rem_gsis_billing', label: 'GSIS Billing Upload', icon: Upload, permission: 'dbf_restore', viewKey: 'gsisimport' },
     ],
   },
 
-  // ── 6. REPORT CENTER ──
+  // ── 6. LOANS ──
+  {
+    id: 'loans',
+    label: 'Loans',
+    icon: HandCoins,
+    items: [
+      { id: 'loan_deductions', label: 'Deductions', icon: Table2, permission: 'dedmaster', viewKey: 'dedfile' },
+      { id: 'loan_verification', label: 'Loan Verification', icon: CheckCircle2, permission: 'dedengine', viewKey: 'dedmaster' },
+      { id: 'loan_provident', label: 'Provident Loan', icon: PiggyBank, permission: 'dedmaster', viewKey: 'dedmaster' },
+      { id: 'loan_other', label: 'Other Loans', icon: ClipboardList, permission: 'dedmaster', viewKey: 'dedmaster' },
+      { id: 'loan_dedcodes', label: 'Deduction Codes', icon: Cog, permission: 'dedengine', viewKey: 'dedengine' },
+      { id: 'loan_billing', label: 'Loan Billing Upload', icon: Upload, permission: 'dbf_restore', viewKey: 'pliimport' },
+    ],
+  },
+
+  // ── 7. REPORT CENTER ──
   {
     id: 'reports',
     label: 'Report Center',
@@ -197,36 +163,26 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'rep_pay_register', label: 'Payroll Register', icon: FileSpreadsheet, permission: 'reports', viewKey: 'reports', tab: 'payrollRegister' },
       { id: 'rep_history', label: 'Payroll History', icon: History, permission: 'reports', viewKey: 'reports', tab: 'payrollHistory' },
-      { id: 'rep_exports', label: 'DBF & CSV Exports', icon: Database, permission: 'reports', viewKey: 'reports', tab: 'exports' },
-      { id: 'rep_salary_summary', label: 'Salary Summary', icon: Wallet, permission: 'reports', viewKey: 'reports', tab: 'salarySummary' },
       { id: 'rep_deduction_summary', label: 'Deduction Summary', icon: BarChart3, permission: 'reports', viewKey: 'reports', tab: 'deductionSummary' },
-      { id: 'rep_net_pay', label: 'Net Pay Summary', icon: FileText, permission: 'reports', viewKey: 'reports', tab: 'netPaySummary' },
       { id: 'rep_loan_ledger', label: 'Loan Deduction Report', icon: BookOpen, permission: 'reports', viewKey: 'reports', tab: 'loanLedger' },
-      { id: 'rep_gsis', label: 'GSIS Report', icon: Landmark, permission: 'reports', viewKey: 'reports', tab: 'gsis' },
-      { id: 'rep_philhealth', label: 'PhilHealth Report', icon: HeartPulse, permission: 'reports', viewKey: 'reports', tab: 'philhealth' },
-      { id: 'rep_pagibig', label: 'Pag-IBIG Report', icon: Home, permission: 'reports', viewKey: 'reports', tab: 'pagibig' },
-      { id: 'rep_nthp', label: 'NTHP / Undeducted', icon: ShieldCheck, permission: 'reports', viewKey: 'reports', tab: 'nthp' },
       { id: 'rep_undeducted', label: 'Undeducted Report', icon: AlertCircle, permission: 'reports', viewKey: 'reports', tab: 'undeducted' },
-      { id: 'rep_overpayment', label: 'Overpayment', icon: AlertCircle, permission: 'reports', viewKey: 'reports', tab: 'overpayment' },
-      { id: 'rep_bank_advice', label: 'Bank Credit Advice', icon: Building, permission: 'reports', viewKey: 'reports', tab: 'bankAdvice' },
-      { id: 'rep_payslip', label: 'Payslip', icon: ClipboardList, permission: 'reports', viewKey: 'reports', tab: 'payslip' },
-      { id: 'rep_unassigned', label: 'Unassigned STACODE', icon: AlertCircle, permission: 'reports', viewKey: 'reports', tab: 'unassigned' },
-      { id: 'rep_w2', label: 'W-2 Annual Tax', icon: FileText, permission: 'reports', viewKey: 'reports', tab: 'w2' },
+      { id: 'rep_overpayment', label: 'Overpayment Report', icon: AlertCircle, permission: 'reports', viewKey: 'reports', tab: 'overpayment' },
+      { id: 'rep_exports', label: 'DBF/CSV Export', icon: Database, permission: 'reports', viewKey: 'reports', tab: 'exports' },
     ],
   },
 
-  // ── 7. IMPORT AND BACKUP ──
+  // ── 8. BIR ──
   {
-    id: 'import_backup',
-    label: 'IMPORT & BACKUP',
-    icon: Database,
-    leaf: true,
+    id: 'bir',
+    label: 'BIR',
+    icon: Receipt,
     items: [
-      { id: 'imp_main', label: 'IMPORT & BACKUP', icon: Database, permission: 'dbf_restore', viewKey: 'importbackup' },
+      { id: 'bir_tax', label: 'BIR Tax', icon: Receipt, permission: 'taxcalc', viewKey: 'taxcalc' },
+      { id: 'bir_form2316', label: 'BIR Form 2316', icon: FileText, permission: 'taxcalc', viewKey: 'govt_w2' },
     ],
   },
 
-  // ── 8. WORKFLOW & APPROVALS ──
+  // ── 9. WORKFLOW & APPROVALS ──
   {
     id: 'workflow',
     label: 'Workflow & Approvals',
@@ -242,53 +198,57 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
 
-  // ── 9. PAYROLL COPILOT ──
+  // ── 10. SETTINGS ──
+  {
+    id: 'settings',
+    label: 'Settings',
+    icon: Settings,
+    items: [
+      { id: 'cfg_payroll_defs', label: 'Payroll Definitions & Formulas', icon: Settings, permission: 'payroll_definitions', viewKey: 'payroll_defs' },
+      { id: 'cfg_signatories', label: 'Signatory Management', icon: FileCheck2, permission: 'system_settings', viewKey: 'signatories' },
+      { id: 'admin_user_mgmt', label: 'User Management', icon: UserCog, permission: 'user_management', viewKey: 'users' },
+      { id: 'my_access', label: 'My Access & Permissions', icon: ShieldCheck, permission: 'dashboard', viewKey: 'my_access' },
+      { id: 'cfg_salary_grade', label: 'Salary Grade Management', icon: DollarSign, permission: 'salary', viewKey: 'salary' },
+      { id: 'cfg_position_mgmt', label: 'Position Management', icon: Award, permission: 'employees', viewKey: 'positionmgmt' },
+      { id: 'cfg_smart_import', label: 'Smart Import', icon: Database, permission: 'dbf_restore', viewKey: 'smartimport' },
+      { id: 'cfg_export_backup', label: 'Export and Backup', icon: Download, permission: 'dbf_restore', viewKey: 'importbackup' },
+    ],
+  },
+
+  // ── 11. COPILOT ──
   {
     id: 'copilot',
-    label: 'COPILOT',
+    label: 'Copilot',
     icon: BrainCircuit,
     leaf: true,
     items: [
-      { id: 'ai_center', label: 'COPILOT', icon: BrainCircuit, permission: 'dashboard', viewKey: 'ai_center' },
+      { id: 'ai_center', label: 'Copilot', icon: BrainCircuit, permission: 'dashboard', viewKey: 'ai_center' },
     ],
   },
 
-  // ── 10. LOGS ──
-  {
-    id: 'audit_monitoring',
-    label: 'LOGS',
-    icon: ScrollText,
-    leaf: true,
-    items: [
-      { id: 'audit_trail', label: 'LOGS', icon: ScrollText, permission: 'audit_logs', viewKey: 'audit' },
-    ],
-  },
-
-  // ── 11. ADMINISTRATION ──
-  {
-    id: 'administration',
-    label: 'Administration',
-    icon: ShieldAlert,
-    items: [
-      { id: 'admin_user_mgmt', label: 'User Management', icon: UserCog, permission: 'user_management', viewKey: 'users' },
-      { id: 'my_access', label: 'My Access & Permissions', icon: ShieldCheck, permission: 'dashboard', viewKey: 'my_access' },
-      { id: 'cfg_signatories', label: 'Signatory Management', icon: FileCheck2, permission: 'system_settings', viewKey: 'signatories' },
-      { id: 'cfg_payroll_defs', label: 'Payroll Definitions & Formulas', icon: Settings, permission: 'payroll_definitions', viewKey: 'payroll_defs' },
-    ],
-  },
-
-  // ── 12. POLICY & REGULATION LIBRARY ──
+  // ── 12. MEMOS ──
   {
     id: 'policy_library_section',
-    label: 'Policy Library',
+    label: 'Memos',
     icon: BookOpen,
     leaf: true,
     items: [
-      { id: 'lib_policies', label: 'Policy Library', icon: BookOpen, permission: 'dashboard', viewKey: 'policy_library' },
+      { id: 'lib_policies', label: 'Memos', icon: BookOpen, permission: 'dashboard', viewKey: 'policy_library' },
     ],
   },
 
-  // ── 13. HELP & SUPPORT ──
+  // ── 13. LOGS ──
+  {
+    id: 'audit_monitoring',
+    label: 'Logs',
+    icon: ScrollText,
+    leaf: true,
+    items: [
+      { id: 'audit_trail', label: 'Logs', icon: ScrollText, permission: 'audit_logs', viewKey: 'audit' },
+    ],
+  },
+
+  // ── 14. HELP & SUPPORT ──
   {
     id: 'help',
     label: 'Help & Support',

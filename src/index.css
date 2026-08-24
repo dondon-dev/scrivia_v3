@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,13 +6,67 @@
 
 @layer base {
   :root {
+    /* ── Light Mode Theme ── */
+    --table-header-bg: #F1F5F9;
+    --table-header-text: #0F172A;
+    --table-row-alt: #F8FAFC;
+    --table-total-bg: #E6F4EA;
+    --badge-paid-bg: #DCFCE7;
+    --badge-paid-text: #15803D;
+    --badge-processing-bg: #DBEAFE;
+    --badge-processing-text: #2563EB;
+    --badge-pending-bg: #FEF3C7;
+    --badge-pending-text: #D97706;
+    --table-row-hover: #F0F9FF;
+    --sidebar-bg: #FFFFFF;
+    --sidebar-border: #E2E8F0;
+    --sidebar-text: #475569;
+    --sidebar-active-bg: #EFF6FF;
+    --sidebar-active-text: #2563EB;
+    --card-bg: #FFFFFF;
+    --card-border: #E2E8F0;
+    --text-primary: #0F172A;
+    --text-secondary: #475569;
+    --text-muted: #94A3B8;
+    --border-default: #E2E8F0;
+    --bg-page: #F8FAFC;
+    --bg-elevated: #FFFFFF;
     --aurora-background: radial-gradient(120% 120% at 50% -10%, #101c3f 0%, #070c1d 55%, #04060f 100%);
   }
+
+  .dark {
+    /* ── Dark Mode Theme ── */
+    --table-header-bg: #1E293B;
+    --table-header-text: #E2E8F0;
+    --table-row-alt: #0F172A;
+    --table-total-bg: #064E3B;
+    --badge-paid-bg: #14532D;
+    --badge-paid-text: #4ADE80;
+    --badge-processing-bg: #1E3A5F;
+    --badge-processing-text: #60A5FA;
+    --badge-pending-bg: #78350F;
+    --badge-pending-text: #FCD34D;
+    --table-row-hover: #1E293B;
+    --sidebar-bg: #111827;
+    --sidebar-border: #1F2937;
+    --sidebar-text: #9CA3AF;
+    --sidebar-active-bg: #1E293B;
+    --sidebar-active-text: #60A5FA;
+    --card-bg: #1F2937;
+    --card-border: #374151;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
+    --border-default: #374151;
+    --bg-page: #0B1220;
+    --bg-elevated: #1F2937;
+    --aurora-background: radial-gradient(120% 120% at 50% -10%, #0B1220 0%, #070c1d 55%, #04060f 100%);
+  }
   html {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Public Sans', system-ui, sans-serif;
   }
   body {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Public Sans', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     margin: 0;
@@ -76,6 +130,56 @@
   }
   .sidebar-item-inactive {
     @apply text-brand-200 hover:bg-white/10 hover:text-white;
+  }
+
+  /* ── Premium Table Styles (Light/Dark) ── */
+  .table-header {
+    background-color: var(--table-header-bg);
+    color: var(--table-header-text);
+  }
+  .table-row-alt {
+    background-color: var(--table-row-alt);
+  }
+  .table-row-hover:hover {
+    background-color: var(--table-row-hover);
+  }
+  .table-total {
+    background-color: var(--table-total-bg);
+  }
+
+  /* ── Status Badges ── */
+  .badge-paid {
+    background-color: var(--badge-paid-bg);
+    color: var(--badge-paid-text);
+  }
+  .badge-processing {
+    background-color: var(--badge-processing-bg);
+    color: var(--badge-processing-text);
+  }
+  .badge-pending {
+    background-color: var(--badge-pending-bg);
+    color: var(--badge-pending-text);
+  }
+
+  /* ── Theme-Aware Cards ── */
+  .card-theme {
+    background-color: var(--card-bg);
+    border-color: var(--card-border);
+  }
+  .bg-page {
+    background-color: var(--bg-page);
+  }
+  .text-theme-primary {
+    color: var(--text-primary);
+  }
+  .text-theme-secondary {
+    color: var(--text-secondary);
+  }
+  .text-theme-muted {
+    color: var(--text-muted);
+  }
+  .border-theme {
+    border-color: var(--border-default);
   }
   .enterprise-card {
     @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-card;

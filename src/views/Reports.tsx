@@ -416,7 +416,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
     { id: 'bankAdvice', label: 'Bank Credit Advice', icon: Building },
     { id: 'payslip', label: 'Payslip', icon: Printer },
     { id: 'unassigned', label: 'Unassigned STACODE', icon: AlertCircle },
-    { id: 'w2', label: 'W-2 Annual Tax', icon: FileText },
+    { id: 'w2', label: 'BIR Form 2316', icon: FileText },
   ];
 
   const registerTotal = registerRows.reduce(
@@ -834,13 +834,6 @@ export default function Reports({ category, profile, initialTab }: { category?: 
         <div className="py-20 text-center text-slate-400 text-sm">Loading reports…</div>
       ) : tab === 'exports' ? (
         <>
-          <div className="flex items-start gap-3 bg-gradient-to-r from-slate-900 to-slate-800 rounded-xl p-5 text-white">
-            <Database className="w-6 h-6 text-emerald-400 shrink-0 mt-0.5" />
-            <div>
-              <h2 className="font-semibold text-sm">DBF Report Format</h2>
-              <p className="text-xs text-slate-300 mt-1">All DBF files are generated in dBASE III format — compatible with legacy DepEd payroll systems. Files download directly with a <span className="font-mono text-emerald-400">.DBF</span> extension.</p>
-            </div>
-          </div>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             {[
               { title: 'MASTFILE.DBF', desc: 'Complete employee master list (80-column FoxPro format)', icon: Users, color: 'bg-blue-500', actions: [{ label: 'DBF', primary: true, fn: exportMasterfileDbf }, { label: 'CSV', primary: false, fn: exportMasterfileCsv }] },
@@ -1861,7 +1854,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
             <div>
-              <h3 className="font-semibold text-slate-800 text-sm">W-2 Annual Tax Computation — {currentPeriod?.year ?? '—'}</h3>
+              <h3 className="font-semibold text-slate-800 text-sm">BIR Form 2316 — Annual Tax Computation — {currentPeriod?.year ?? '—'}</h3>
               <p className="text-xs text-slate-500 mt-0.5">Annual withholding tax reconciliation per COMPUTAX.PRG / W2SUM.PRG</p>
             </div>
           </div>

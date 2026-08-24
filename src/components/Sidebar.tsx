@@ -1,8 +1,7 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
-  X, ChevronDown, ChevronRight, ChevronLeft, Search,
-  Star, LogOut, Code2, LayoutDashboard, Clock,
+  X, ChevronRight, ChevronLeft, Search, Star, LogOut, Settings, HelpCircle, Code2,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -12,7 +11,7 @@ import { usePermissions } from '@/lib/permissions';
 import RegionDivisionSelector from '@/components/RegionDivisionSelector';
 import type { PayrollCategory } from '@/lib/categories';
 import {
-  NAV_SECTIONS, type NavSection, type NavSubGroup, type NavItem, type ViewKey,
+  NAV_SECTIONS, type NavSection, type NavItem, type ViewKey,
   findNavItem,
 } from '@/lib/navConfig';
 
@@ -39,15 +38,19 @@ export interface SidebarProps {
 export default function Sidebar(props: SidebarProps) {
   const {
     profile, collapsed, mobileOpen, activeNavId, stacodeBadge,
-    onNavigate, onToggleCollapse, onCloseMobile, onSignOut, onHoverSection,
+    onNavigate, onToggleCollapse, onCloseMobile, onSignOut,
   } = props;
 
   const [searchQuery, setSearchQuery] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recents, setRecents] = useState<string[]>([]);
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
-  const [expandedSubGroups, setExpandedSubGroups] = useState<Record<string, boolean>>({});
   const { hasPermission } = usePermissions();
+
+  // Flyout state
+  const [hoveredSection, setHoveredSection] = useState<string | null>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const sectionRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     try {
@@ -57,24 +60,6 @@ export default function Sidebar(props: SidebarProps) {
       if (recentRaw) setRecents(JSON.parse(recentRaw));
     } catch { /* ignore */ }
   }, []);
-
-  useEffect(() => {
-    if (!activeNavId) return;
-    for (const section of NAV_SECTIONS) {
-      const contains = section.items?.some((i) => i.id === activeNavId) ||
-        section.subGroups?.some((sg) => sg.items.some((i) => i.id === activeNavId));
-      if (contains) {
-        setExpandedSections((prev) => ({ ...prev, [section.id]: true }));
-        if (section.subGroups) {
-          for (const sg of section.subGroups) {
-            if (sg.items.some((i) => i.id === activeNavId)) {
-              setExpandedSubGroups((prev) => ({ ...prev, [sg.id]: true }));
-            }
-          }
-        }
-      }
-    }
-  }, [activeNavId]);
 
   function toggleFavorite(id: string) {
     setFavorites((prev) => {
@@ -86,18 +71,19 @@ export default function Sidebar(props: SidebarProps) {
     });
   }
 
-  function handleItemClick(item: NavItem, category: PayrollCategory | null) {
+  function handleItemClick(item: NavItem, _category: PayrollCategory | null) {
     setRecents((prev) => {
       const next = [item.id, ...prev.filter((r) => r !== item.id)].slice(0, MAX_RECENT);
       try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* */ }
       return next;
     });
-    onNavigate(item, category);
+    onNavigate(item, _category);
+    setHoveredSection(null);
   }
 
   const filteredSections = useMemo(() => {
     return NAV_SECTIONS
-      .filter((section) => section.id !== 'notifications') // Notifications moved to topbar flyout
+      .filter((section) => section.id !== 'notifications')
       .map((section) => {
         const filterItem = (item: NavItem) => hasPermission(item.permission);
         if (section.subGroups) {
@@ -110,37 +96,17 @@ export default function Sidebar(props: SidebarProps) {
           };
         }
         return { ...section, items: section.items?.filter(filterItem) };
-      }).filter((section) => {
+      })
+      .filter((section) => {
         const hasItems = (section.items?.length ?? 0) > 0;
         const hasSubItems = (section.subGroups?.length ?? 0) > 0;
         return hasItems || hasSubItems;
       });
   }, [hasPermission]);
 
-  const flatSearchItems = useMemo(() => {
-    if (!searchQuery.trim()) return [];
-    const q = searchQuery.toLowerCase().trim();
-    const result: { item: NavItem; sectionLabel: string }[] = [];
-    for (const section of filteredSections) {
-      if (section.items) {
-        for (const item of section.items) {
-          if (item.label.toLowerCase().includes(q)) {
-            result.push({ item, sectionLabel: section.label });
-          }
-        }
-      }
-      if (section.subGroups) {
-        for (const sg of section.subGroups) {
-          for (const item of sg.items) {
-            if (item.label.toLowerCase().includes(q)) {
-              result.push({ item, sectionLabel: `${section.label} › ${sg.label}` });
-            }
-          }
-        }
-      }
-    }
-    return result;
-  }, [filteredSections, searchQuery]);
+  const filteredItems = useMemo(() => {
+    return filteredSections.flatMap((s) => s.items ?? []);
+  }, [filteredSections]);
 
   const favoriteItems = useMemo(() => {
     return favorites
@@ -148,87 +114,284 @@ export default function Sidebar(props: SidebarProps) {
       .filter((item): item is NavItem => !!item && hasPermission(item.permission));
   }, [favorites, hasPermission]);
 
-  const recentItems = useMemo(() => {
-    return recents
-      .map((id) => findNavItem(id))
-      .filter((item): item is NavItem => !!item && hasPermission(item.permission))
-      .filter((item) => item.id !== activeNavId)
-      .slice(0, MAX_RECENT);
-  }, [recents, hasPermission, activeNavId]);
+  // Flyout handlers
+  const handleSectionEnter = useCallback((sectionId: string) => {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+    hoverTimeout.current = setTimeout(() => setHoveredSection(sectionId), 40);
+  }, []);
+
+  const handleSectionLeave = useCallback(() => {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+    hoverTimeout.current = setTimeout(() => setHoveredSection(null), 150);
+  }, []);
+
+  const handleFlyoutEnter = useCallback(() => {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+  }, []);
+
+  const handleFlyoutLeave = useCallback(() => {
+    hoverTimeout.current = setTimeout(() => setHoveredSection(null), 100);
+  }, []);
+
+  const hoveredSectionData = useMemo(() => {
+    if (!hoveredSection) return null;
+    return filteredSections.find((s) => s.id === hoveredSection) ?? null;
+  }, [hoveredSection, filteredSections]);
+
+  // Get the top position for the flyout
+  const getFlyoutTop = useCallback(() => {
+    if (!hoveredSection) return 0;
+    const el = sectionRefs.current.get(hoveredSection);
+    if (el) return el.getBoundingClientRect().top;
+    return 80;
+  }, [hoveredSection]);
 
   const isSearching = searchQuery.trim().length > 0;
 
-  return (
-    <aside
-      className={`fixed lg:static inset-y-0 left-0 z-[60] ${collapsed ? 'lg:w-20' : 'lg:w-72'} w-72 flex flex-col transition-all duration-300 ${
-        mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-      }`}
-      style={{ fontFamily: '"Inter", "Segoe UI", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}
-    >
+  // ── Collapsed icon rail ──
+  const renderCollapsedRail = () => (
+    <aside className="hidden lg:flex flex-col items-center w-[68px] bg-white dark:bg-[#111827] border-r border-gray-200 dark:border-gray-800 h-full shrink-0">
       {/* Logo */}
-      <div className={`flex items-center gap-3 h-16 border-b border-gray-300 shrink-0 relative overflow-hidden ${collapsed ? 'lg:px-3 px-5' : 'px-5'}`} style={{ backgroundColor: '#D9D9DB' }}>
-        <div className="absolute -top-8 -right-8 w-24 h-24 rounded-full bg-nexora-500/20 blur-2xl" />
-        <img src="/scrivia_logo.png" alt="SCRIVIA CLOUD" className="w-10 h-10 shrink-0 relative object-contain" />
-        {!collapsed && (
-          <div className="flex flex-col flex-1 min-w-0 overflow-hidden relative">
-            <span className="font-bold text-sm tracking-wide leading-tight" style={{ color: '#000000' }}>SCRIVIA™ CLOUD</span>
-            <span className="text-[8px] tracking-[0.1em] leading-tight" style={{ color: '#333333' }}>SMART PAYROLL. SECURE FUTURE.</span>
-          </div>
-        )}
-        <button
-          onClick={onCloseMobile}
-          className="ml-auto lg:hidden p-1.5 rounded-lg hover:bg-white/10 transition-colors"
-          aria-label="Close menu"
-        >
-          <X className="w-5 h-5" />
-        </button>
+      <div className="flex items-center justify-center w-full h-16 border-b border-gray-100 dark:border-gray-800">
+        <img src="/scrivia_logo.png" alt="Scrivia" className="h-[50px] w-auto object-contain" />
       </div>
 
-      {/* Content below logo — light background with dark text */}
-      <div className="flex-1 flex flex-col" style={{ backgroundColor: '#D9D9DB', color: '#2F3B57' }}>
-        {/* Region / Division */}
-        {!collapsed && <RegionDivisionSelector />}
+      {/* Nav icons */}
+      <nav className="flex-1 flex flex-col items-center gap-1 py-4 px-2 overflow-y-auto sidebar-scroll">
+        {/* Favorites first */}
+        {favoriteItems.length > 0 && (
+          <>
+            {favoriteItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeNavId === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleItemClick(item, props.globalCategory)}
+                  title={item.label}
+                  className={`relative w-11 h-11 flex items-center justify-center rounded-xl transition-all duration-200 ${
+                    isActive
+                      ? 'bg-[#6495ED]/10 text-[#6495ED]'
+                      : 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                >
+                  <Icon className="w-5 h-5" strokeWidth={isActive ? 2.2 : 1.8} />
+                  {isActive && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-[#6495ED] rounded-r-full" />
+                  )}
+                </button>
+              );
+            })}
+            <div className="w-6 h-px bg-gray-200 dark:bg-gray-700 my-1" />
+          </>
+        )}
 
-        {/* Search */}
-      {!collapsed && (
-        <div className="px-3 py-2.5 border-b border-white/10 shrink-0">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-deped-300" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search menu…  (⌘K)"
-              className="w-full pl-8 pr-7 py-2 rounded-lg bg-white text-xs placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#078A8C]/50 transition-all" style={{ color: '#2F3B57' }}
-            />
-            {searchQuery && (
+        {/* Section icons */}
+        {filteredSections.map((section) => {
+          const SectionIcon = section.icon;
+          const hasActiveChild =
+            section.items?.some((i) => i.id === activeNavId) ||
+            section.subGroups?.some((sg) => sg.items.some((i) => i.id === activeNavId));
+          const isHovered = hoveredSection === section.id;
+
+          return (
+            <div
+              key={section.id}
+              ref={(el) => { if (el) sectionRefs.current.set(section.id, el); }}
+              onMouseEnter={() => handleSectionEnter(section.id)}
+              onMouseLeave={handleSectionLeave}
+              className="relative"
+            >
               <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-deped-300 hover:text-white transition-colors"
+                onClick={() => {
+                  if (section.leaf && section.items?.[0]) {
+                    handleItemClick(section.items[0], props.globalCategory);
+                  } else {
+                    setHoveredSection(isHovered ? null : section.id);
+                  }
+                }}
+                title={section.label}
+                className={`relative w-11 h-11 flex items-center justify-center rounded-xl transition-all duration-200 ${
+                  hasActiveChild
+                    ? 'bg-[#6495ED]/10 text-[#6495ED]'
+                    : isHovered
+                    ? 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
+                    : 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
               >
-                <X className="w-3.5 h-3.5" />
+                <SectionIcon className="w-5 h-5" strokeWidth={hasActiveChild ? 2.2 : 1.8} />
+                {hasActiveChild && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-[#6495ED] rounded-r-full" />
+                )}
               </button>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
+          );
+        })}
+      </nav>
 
-      {/* Navigation */}
-      <nav className={`flex-1 px-3 py-3 overflow-y-auto sidebar-scroll ${collapsed ? 'lg:px-2' : ''}`}>
+      {/* Bottom icons */}
+      <div className="flex flex-col items-center gap-1 py-4 px-2 border-t border-gray-100 dark:border-gray-800">
+        <button
+          onClick={onToggleCollapse}
+          className="w-11 h-11 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300 transition-all"
+          title="Expand sidebar"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+        <button
+          title="Help & Support"
+          className="w-11 h-11 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300 transition-all"
+        >
+          <HelpCircle className="w-5 h-5" />
+        </button>
+        <button
+          title="Settings"
+          className="w-11 h-11 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300 transition-all"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
+      </div>
+    </aside>
+  );
 
+  // ── Flyout panel (appears on hover in both collapsed and expanded modes) ──
+  const renderFlyout = () => {
+    if (!hoveredSectionData) return null;
 
-        {/* Favorites */}
-        {!isSearching && !collapsed && favoriteItems.length > 0 && (
-          <div className="mb-2">
-            <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1" style={{ color: '#6B6B6B' }}>
-              <Star className="w-3 h-3 fill-amber-300/80" /> Favorites
+    const el = hoveredSection ? sectionRefs.current.get(hoveredSection) : undefined;
+    const rect = el?.getBoundingClientRect();
+    const top = rect ? rect.top : 80;
+    const left = rect ? rect.right + 4 : (collapsed ? 72 : 284);
+
+    return (
+      <AnimatePresence>
+        <motion.div
+          ref={flyoutRef}
+          initial={{ opacity: 0, x: -4 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -4 }}
+          transition={{ duration: 0.15 }}
+          onMouseEnter={handleFlyoutEnter}
+          onMouseLeave={handleFlyoutLeave}
+          className="fixed z-[70] w-64 bg-white dark:bg-[#1a1f2e] rounded-2xl shadow-2xl border border-gray-200/80 dark:border-gray-700/50 overflow-hidden"
+          style={{ top: `${Math.min(top, window.innerHeight - 400)}px`, left: `${left}px` }}
+        >
+          {/* Flyout header */}
+          <div className="px-4 pt-4 pb-2">
+            <p className="text-[11px] font-semibold tracking-wider text-gray-400 dark:text-gray-500 uppercase">
+              {hoveredSectionData.label}
             </p>
-            {favoriteItems.map((item) => (
-              <NavLeaf
+          </div>
+
+          {/* Flyout items */}
+          <div className="px-2 pb-3">
+            {hoveredSectionData.items?.map((item) => (
+              <FlyoutItem
                 key={item.id}
                 item={item}
                 active={activeNavId === item.id}
-                onClick={(it) => handleItemClick(it, props.globalCategory)}
+                onClick={() => handleItemClick(item, props.globalCategory)}
+                isFavorite={favorites.includes(item.id)}
+                onToggleFavorite={() => toggleFavorite(item.id)}
+              />
+            ))}
+
+            {hoveredSectionData.subGroups?.map((sg) => (
+              <div key={sg.id}>
+                <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                  {sg.label}
+                </p>
+                {sg.items.map((item) => (
+                  <FlyoutItem
+                    key={item.id}
+                    item={item}
+                    active={activeNavId === item.id}
+                    onClick={() => handleItemClick(item, props.globalCategory)}
+                    isFavorite={favorites.includes(item.id)}
+                    onToggleFavorite={() => toggleFavorite(item.id)}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    );
+  };
+
+  // ── Expanded sidebar ──
+  const renderExpandedSidebar = () => (
+    <aside className="hidden lg:flex flex-col w-72 bg-white dark:bg-[#111827] border-r border-gray-200 dark:border-gray-800 h-full shrink-0 transition-all duration-300">
+      {/* Logo */}
+      <div className="flex items-center gap-3 h-16 px-5 border-b border-gray-100 dark:border-gray-800 shrink-0">
+        <img src="/scrivia_logo.png" alt="Scrivia" className="h-[50px] w-auto object-contain" />
+        <div className="flex flex-col flex-1 min-w-0">
+          <span className="font-bold text-2xl text-gray-900 dark:text-white">Scrivia Cloud</span>
+          <span className="text-[10px] text-gray-400">Smart Payroll. Secure Future.</span>
+        </div>
+      </div>
+
+      {/* Region / Division */}
+      <RegionDivisionSelector />
+
+      {/* Search */}
+      <div className="px-3 py-2 shrink-0">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search menu…"
+            className="w-full pl-9 pr-7 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#6495ED]/20 focus:border-[#6495ED] transition-all"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 px-3 py-2 overflow-y-auto sidebar-scroll">
+        {/* Search results */}
+        {isSearching && (
+          <div className="space-y-0.5">
+            {filteredItems.filter((item) => item.label.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 ? (
+              <p className="text-xs text-center py-6 text-gray-400">No results for "{searchQuery}"</p>
+            ) : (
+              filteredItems
+                .filter((item) => item.label.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map((item) => (
+                  <NavItemRow
+                    key={item.id}
+                    item={item}
+                    active={activeNavId === item.id}
+                    onClick={() => { handleItemClick(item, props.globalCategory); setSearchQuery(''); }}
+                    isFavorite={favorites.includes(item.id)}
+                    onToggleFavorite={() => toggleFavorite(item.id)}
+                  />
+                ))
+            )}
+          </div>
+        )}
+
+        {/* Favorites */}
+        {!isSearching && favoriteItems.length > 0 && (
+          <div className="mb-3">
+            <p className="px-3 py-1.5 text-[10px] font-semibold tracking-wider text-gray-400 dark:text-gray-500 flex items-center gap-1.5">
+              <Star className="w-3 h-3 fill-amber-300/80" /> Favorites
+            </p>
+            {favoriteItems.map((item) => (
+              <NavItemRow
+                key={item.id}
+                item={item}
+                active={activeNavId === item.id}
+                onClick={() => handleItemClick(item, props.globalCategory)}
                 isFavorite
                 onToggleFavorite={() => toggleFavorite(item.id)}
               />
@@ -236,283 +399,266 @@ export default function Sidebar(props: SidebarProps) {
           </div>
         )}
 
-        {/* Search results */}
-        {isSearching && !collapsed && (
-          <div className="space-y-0.5">
-            {flatSearchItems.length === 0 ? (
-              <p className="text-xs text-center py-6" style={{ color: '#6B6B6B' }}>No results for "{searchQuery}"</p>
-            ) : (
-              flatSearchItems.map(({ item }) => (
-                <NavLeaf
-                  key={item.id}
-                  item={item}
-                  active={activeNavId === item.id}
-                  onClick={(it) => { handleItemClick(it, props.globalCategory); setSearchQuery(''); }}
-                  isFavorite={favorites.includes(item.id)}
-                  onToggleFavorite={() => toggleFavorite(item.id)}
-                  showSection
-                />
-              ))
-            )}
-          </div>
-        )}
-
-        {/* Main navigation with cascading flyouts */}
-        {!isSearching && (
-          filteredSections.map((section) => {
-            // Leaf sections (Dashboard, Import and Backup) — single clickable item
-            if (section.leaf && section.items && section.items.length > 0) {
-              const item = section.items[0];
-              return (
-                <NavLeaf
-                  key={section.id}
-                  item={item}
-                  active={activeNavId === item.id}
-                  onClick={(it) => handleItemClick(it, props.globalCategory)}
-                  isFavorite={favorites.includes(item.id)}
-                  onToggleFavorite={() => toggleFavorite(item.id)}
-                  collapsed={collapsed}
-                  stacodeBadgeCount={stacodeBadge}
-                />
-              );
-            }
-            // Sections with flyout submenu
+        {/* Main sections */}
+        {!isSearching && filteredSections.map((section) => {
+          const firstItem = section.items?.[0];
+          if (section.leaf && firstItem) {
             return (
-              <FlyoutSection
+              <NavItemRow
                 key={section.id}
-                section={section}
-                collapsed={collapsed}
-                activeNavId={activeNavId}
-                stacodeBadge={stacodeBadge}
-                globalCategory={props.globalCategory}
-                onNavigate={handleItemClick}
-                favorites={favorites}
-                onToggleFavorite={toggleFavorite}
-                onHoverSection={onHoverSection}
+                item={firstItem}
+                active={activeNavId === firstItem.id}
+                onClick={() => handleItemClick(firstItem, props.globalCategory)}
+                isFavorite={favorites.includes(firstItem.id)}
+                onToggleFavorite={() => toggleFavorite(firstItem.id)}
               />
             );
-          })
-        )}
+          }
+
+          const SectionIcon = section.icon;
+          const hasActiveChild =
+            section.items?.some((i) => i.id === activeNavId) ||
+            section.subGroups?.some((sg) => sg.items.some((i) => i.id === activeNavId));
+
+          return (
+            <div
+              key={section.id}
+              ref={(el) => { if (el) sectionRefs.current.set(section.id, el); }}
+              className="mb-1 relative"
+              onMouseEnter={() => handleSectionEnter(section.id)}
+              onMouseLeave={handleSectionLeave}
+            >
+              <button
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  hasActiveChild
+                    ? 'bg-[#6495ED]/10 text-[#6495ED]'
+                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                }`}
+              >
+                <SectionIcon className="w-5 h-5 shrink-0" strokeWidth={hasActiveChild ? 2.2 : 1.8} />
+                <span className="flex-1 text-left">{section.label}</span>
+                <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600" />
+              </button>
+            </div>
+          );
+        })}
 
         {/* About the Creator */}
         {!isSearching && (
-          <div className="pt-2 mt-2 border-t border-white/10">
-            <NavLeaf
+          <div className="pt-2 mt-2 border-t border-gray-100 dark:border-gray-800">
+            <NavItemRow
               item={{ id: 'creator', label: 'About the Creator', icon: Code2, permission: 'dashboard', viewKey: 'creator' }}
               active={activeNavId === 'creator'}
               onClick={(item) => handleItemClick(item, null)}
-              collapsed={collapsed}
             />
           </div>
         )}
       </nav>
-      </div>{/* End content below logo */}
 
       {/* Collapse toggle */}
       <button
         onClick={onToggleCollapse}
-        className="hidden lg:flex items-center justify-center gap-2 py-3 border-t border-gray-300 transition-colors text-xs font-medium shrink-0 hover:bg-gray-300"
-        style={{ color: '#6B6B6B' }}
+        className="hidden lg:flex items-center justify-center gap-2 py-3 border-t border-gray-100 dark:border-gray-800 transition-colors text-xs font-medium shrink-0 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-400"
       >
-        <ChevronLeft className={`w-4 h-4 transition-transform ${collapsed ? 'rotate-180' : ''}`} />
-        {!collapsed && <span>Collapse</span>}
+        <ChevronLeft className="w-4 h-4" />
+        <span>Collapse</span>
       </button>
 
       {/* User profile */}
-      <div className="px-3 py-3 border-t border-gray-300 shrink-0" style={{ backgroundColor: '#D9D9DB' }}>
-        <div className={`flex items-center gap-3 px-2 py-2 ${collapsed ? 'lg:justify-center' : ''}`}>
-          <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold shrink-0" style={{ backgroundColor: '#078A8C', color: '#fff' }}>
+      <div className="px-3 py-3 border-t border-gray-100 dark:border-gray-800 shrink-0">
+        <div className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+          <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold shrink-0 bg-[#6495ED] text-white">
             {profile.first_name?.[0]?.toUpperCase() ?? profile.email[0]?.toUpperCase()}
           </div>
-          {!collapsed && (
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium truncate" style={{ color: '#2F3B57' }}>{profile.first_name} {profile.last_name}</p>
-              <p className="text-[11px]" style={{ color: '#6B6B6B' }}>{ROLE_LABELS[profile.role]}</p>
-            </div>
-          )}
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium truncate text-gray-900 dark:text-white">{profile.first_name} {profile.last_name}</p>
+            <p className="text-[11px] text-gray-400">{ROLE_LABELS[profile.role]}</p>
+          </div>
         </div>
-        {!collapsed && (
+        <button
+          onClick={onSignOut}
+          className="w-full mt-1 flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-500 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 transition-all"
+        >
+          <LogOut className="w-[18px] h-[18px]" />
+          Sign Out
+        </button>
+      </div>
+    </aside>
+  );
+
+  // ── Mobile overlay ──
+  const renderMobileOverlay = () => (
+    <>
+      {mobileOpen && (
+        <div className="fixed inset-0 bg-black/40 z-[55] lg:hidden" onClick={onCloseMobile} />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-[60] w-72 flex flex-col bg-white dark:bg-[#111827] border-r border-gray-200 dark:border-gray-800 transition-transform duration-300 lg:hidden ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        {/* Mobile header */}
+        <div className="flex items-center gap-3 h-16 px-5 border-b border-gray-100 dark:border-gray-800 shrink-0">
+          <img src="/scrivia_logo.png" alt="Scrivia" className="h-[50px] w-auto object-contain" />
+          <div className="flex flex-col flex-1 min-w-0">
+            <span className="font-bold text-2xl text-gray-900 dark:text-white">Scrivia Cloud</span>
+            <span className="text-[10px] text-gray-400">Smart Payroll. Secure Future.</span>
+          </div>
+          <button onClick={onCloseMobile} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <X className="w-5 h-5 text-gray-400" />
+          </button>
+        </div>
+
+        {/* Mobile nav items (flat list) */}
+        <nav className="flex-1 px-3 py-3 overflow-y-auto sidebar-scroll">
+          {filteredSections.map((section) => {
+            if (section.leaf && section.items?.[0]) {
+              const item = section.items[0];
+              return (
+                <NavItemRow
+                  key={item.id}
+                  item={item}
+                  active={activeNavId === item.id}
+                  onClick={() => handleItemClick(item, props.globalCategory)}
+                />
+              );
+            }
+
+            const SectionIcon = section.icon;
+            return (
+              <div key={section.id} className="mb-1">
+                <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-500 dark:text-gray-400">
+                  <SectionIcon className="w-5 h-5 shrink-0" />
+                  <span className="flex-1">{section.label}</span>
+                </div>
+                {section.subGroups?.map((sg) =>
+                  sg.items.map((item) => (
+                    <NavItemRow
+                      key={item.id}
+                      item={item}
+                      active={activeNavId === item.id}
+                      onClick={() => handleItemClick(item, props.globalCategory)}
+                      compact
+                    />
+                  ))
+                )}
+                {section.items?.map((item) => (
+                  <NavItemRow
+                    key={item.id}
+                    item={item}
+                    active={activeNavId === item.id}
+                    onClick={() => handleItemClick(item, props.globalCategory)}
+                    compact
+                  />
+                ))}
+              </div>
+            );
+          })}
+        </nav>
+
+        {/* Mobile user */}
+        <div className="px-3 py-3 border-t border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-3 px-3 py-2">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold bg-[#6495ED] text-white">
+              {profile.first_name?.[0]?.toUpperCase() ?? profile.email[0]?.toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium truncate text-gray-900 dark:text-white">{profile.first_name} {profile.last_name}</p>
+              <p className="text-[11px] text-gray-400">{ROLE_LABELS[profile.role]}</p>
+            </div>
+          </div>
           <button
             onClick={onSignOut}
-            className="w-full mt-2 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors hover:bg-gray-300"
-            style={{ color: '#2F3B57' }}
+            className="w-full mt-1 flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-500 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 transition-all"
           >
             <LogOut className="w-[18px] h-[18px]" />
             Sign Out
           </button>
-        )}
-      </div>
-    </aside>
+        </div>
+      </aside>
+    </>
+  );
+
+  return (
+    <>
+      {collapsed ? renderCollapsedRail() : renderExpandedSidebar()}
+      {renderFlyout()}
+      {renderMobileOverlay()}
+    </>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// NavLeaf — single clickable item
+// FlyoutItem — single item in the collapsed flyout panel
 // ══════════════════════════════════════════════════════════════════════════════
 
-interface NavLeafProps {
+interface FlyoutItemProps {
+  item: NavItem;
+  active: boolean;
+  onClick: () => void;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
+}
+
+function FlyoutItem({ item, active, onClick, isFavorite, onToggleFavorite }: FlyoutItemProps) {
+  const Icon = item.icon;
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+        active
+          ? 'bg-[#6495ED]/10 text-[#6495ED]'
+          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50 hover:text-gray-900 dark:hover:text-gray-200'
+      }`}
+    >
+      <Icon className="w-5 h-5 shrink-0" strokeWidth={active ? 2.2 : 1.8} />
+      <span className="flex-1 text-left truncate">{item.label}</span>
+      {isFavorite && (
+        <Star className="w-3 h-3 fill-amber-300 text-amber-300" />
+      )}
+    </button>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NavItemRow — single clickable nav item in expanded sidebar
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface NavItemRowProps {
   item: NavItem;
   active: boolean;
   onClick: (item: NavItem) => void;
   isFavorite?: boolean;
   onToggleFavorite?: () => void;
   compact?: boolean;
-  collapsed?: boolean;
-  showSection?: boolean;
-  stacodeBadgeCount?: number;
 }
 
-function NavLeaf({ item, active, onClick, isFavorite, onToggleFavorite, compact, collapsed, showSection, stacodeBadgeCount = 0 }: NavLeafProps) {
+function NavItemRow({ item, active, onClick, isFavorite, onToggleFavorite, compact }: NavItemRowProps) {
   const Icon = item.icon;
-  if (collapsed) {
-    return (
-      <div className="relative mb-1">
-        {active && (
-          <motion.span
-            layoutId="nexora-sidebar-active"
-            className="sidebar-accent"
-            transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-          />
-        )}
-        <button
-          onClick={() => onClick(item)}
-          title={item.label}
-          className={`w-full flex items-center justify-center px-2 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-            active ? 'text-white' : 'hover:bg-gray-300'
-          }`}
-          style={active ? { backgroundColor: '#078A8C', color: '#fff' } : { color: '#2F3B57' }}
-        >
-          <Icon className="w-5 h-5 shrink-0" />
-        </button>
-        {item.badgeKey === 'stacode' && stacodeBadgeCount > 0 && (
-          <span className="absolute -top-1 -right-1 px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-semibold tabular">{stacodeBadgeCount}</span>
-        )}
-      </div>
-    );
-  }
   return (
     <div className="group relative flex items-center gap-0.5 mb-0.5">
-      {active && (
-        <motion.span
-          layoutId="nexora-sidebar-active"
-          className="sidebar-accent"
-          transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-        />
-      )}
       <button
         onClick={() => onClick(item)}
-        className={`flex-1 flex items-center gap-2.5 ${compact ? 'pl-2 pr-1 py-1.5' : 'pl-3 pr-1 py-2'} rounded-lg text-[13px] font-medium transition-colors ${
-          active ? 'shadow-sm' : 'hover:bg-gray-300'
+        className={`flex-1 flex items-center gap-3 ${compact ? 'pl-2 pr-1 py-1.5' : 'pl-3 pr-2 py-2.5'} rounded-xl text-sm font-medium transition-all ${
+          active
+            ? 'bg-[#6495ED]/10 text-[#6495ED]'
+            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50 hover:text-gray-900 dark:hover:text-gray-200'
         }`}
-        style={active ? { backgroundColor: '#078A8C', color: '#fff' } : { color: '#2F3B57' }}
       >
-        <Icon className="w-4 h-4 shrink-0" />
-        <span className="flex-1 text-left truncate">
-          {item.label}
-          {showSection && <span className="block text-[9px] font-normal" style={{ color: '#6B6B6B' }}>{''}</span>}
-        </span>
-        {item.badgeKey === 'stacode' && stacodeBadgeCount > 0 && (
-          <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-semibold tabular">{stacodeBadgeCount}</span>
-        )}
+        <Icon className="w-5 h-5 shrink-0" strokeWidth={active ? 2.2 : 1.8} />
+        <span className="flex-1 text-left truncate">{item.label}</span>
       </button>
       {onToggleFavorite && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
           title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-          className={`p-1 rounded transition-opacity ${
-            isFavorite ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
+          className={`p-1 rounded transition-opacity ${isFavorite ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
         >
-          <Star className="w-3 h-3" style={{ color: isFavorite ? '#F59E0B' : '#6B6B6B', fill: isFavorite ? '#F59E0B' : 'none' }} />
+          <Star className="w-3 h-3" style={{ color: isFavorite ? '#F59E0B' : '#9CA3AF', fill: isFavorite ? '#F59E0B' : 'none' }} />
         </button>
       )}
     </div>
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// FlyoutSection — QuickBooks-style cascading flyout submenu
-// ══════════════════════════════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════════════════════════════
-// FlyoutSection — triggers flyout column via onHoverSection callback
-// ══════════════════════════════════════════════════════════════════════════════
-
-interface FlyoutSectionProps {
-  section: NavSection;
-  collapsed: boolean;
-  activeNavId: string;
-  stacodeBadge: number;
-  globalCategory: PayrollCategory | null;
-  onNavigate: (item: NavItem, category: PayrollCategory | null) => void;
-  favorites: string[];
-  onToggleFavorite: (id: string) => void;
-  onHoverSection?: (sectionId: string | null, top?: number) => void;
-}
-
-function FlyoutSection({
-  section, collapsed, activeNavId, onHoverSection,
-}: FlyoutSectionProps) {
-  const SectionIcon = section.icon;
-  const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
-
-  const hasActiveChild = section.items?.some((i) => i.id === activeNavId) ||
-    section.subGroups?.some((sg) => sg.items.some((i) => i.id === activeNavId));
-
-  function handleMouseEnter() {
-    if (enterTimer.current) clearTimeout(enterTimer.current);
-    enterTimer.current = setTimeout(() => {
-      const top = rowRef.current?.getBoundingClientRect().top ?? 60;
-      onHoverSection?.(section.id, top);
-    }, 50);
-  }
-
-  function handleMouseLeave() {
-    if (enterTimer.current) clearTimeout(enterTimer.current);
-    onHoverSection?.(null);
-  }
-
-  const hasItems = (section.items && section.items.length > 0) || (section.subGroups && section.subGroups.length > 0);
-
-  if (collapsed) {
-    return (
-      <div
-        ref={rowRef}
-        className="mb-1 relative"
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-      >
-        <button
-          title={section.label}
-          className={`w-full flex items-center justify-center px-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors ${
-            hasActiveChild ? '' : 'hover:bg-gray-300'
-          }`}
-          style={hasActiveChild ? { backgroundColor: '#078A8C', color: '#fff' } : { color: '#2F3B57' }}
-        >
-          <SectionIcon className="w-5 h-5 shrink-0" />
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={rowRef}
-      className="mb-1 relative"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
-      <button
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold uppercase tracking-wider transition-colors ${
-          hasActiveChild ? '' : 'hover:bg-gray-300'
-        }`}
-        style={hasActiveChild ? { backgroundColor: '#078A8C', color: '#fff' } : { color: '#2F3B57' }}
-      >
-        <SectionIcon className="w-4 h-4 shrink-0" />
-        <span className="flex-1 text-left">{section.label}</span>
-        {hasItems && <ChevronRight className="w-3.5 h-3.5" style={{ color: '#6B6B6B' }} />}
-      </button>
-    </div>
-  );
-}

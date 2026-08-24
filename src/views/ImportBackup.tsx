@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { Database, HardDriveDownload, Download, type LucideIcon } from 'lucide-react';
+import { Database, Download, type LucideIcon } from 'lucide-react';
 import SmartImport from '@/views/SmartImport';
-import RestoreData from '@/views/RestoreData';
 import BackupRestore from '@/views/BackupRestore';
 
-type ImportTab = 'smartimport' | 'restore' | 'backup';
+type ImportTab = 'smartimport' | 'backup';
 
 interface TabDef {
   key: ImportTab;
@@ -21,13 +20,6 @@ const TABS: TabDef[] = [
     icon: Database,
     description: 'Upload DBF files (MASTFILE, DEDFILE, DIVTABLE, STNTABLE, PAYROLLS, PYENT) — auto-synced into the payroll system',
     component: SmartImport,
-  },
-  {
-    key: 'restore',
-    label: 'DBF Restore',
-    icon: HardDriveDownload,
-    description: 'Restore legacy DBF data from local files with version validation',
-    component: RestoreData,
   },
   {
     key: 'backup',

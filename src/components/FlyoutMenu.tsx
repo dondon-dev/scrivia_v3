@@ -43,7 +43,7 @@ export default function FlyoutMenu({ section, activeNavId, top, collapsed, onNav
     >
       <div
         className="w-60 border border-gray-300 rounded-r-xl shadow-2xl overflow-y-auto"
-        style={{ maxHeight: 'calc(100vh - 80px)', backgroundColor: '#D9D9DB', fontFamily: '"Inter", "Segoe UI", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}
+        style={{ maxHeight: 'calc(100vh - 80px)', backgroundColor: '#D9D9DB', fontFamily: '"Public Sans", "Segoe UI", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}
       >
         {/* Items */}
         <div className="py-1.5">
