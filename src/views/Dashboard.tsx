@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import LoadingIndicator from '@/components/LoadingIndicator';
+import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
+import { inCategory, type PayrollCategory } from '@/lib/categories';
 import {
   Users, Calculator, TrendingUp, ArrowRight, Wallet, Building2, Landmark,
   BarChart3, School, ShieldCheck, ShieldAlert, Upload, Clock, CheckCircle2,
@@ -15,7 +17,6 @@ import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import type { PayPeriod, PayrollGroup } from '@/types/payroll';
 import type { UserProfile } from '@/types/auth';
 import { ROLE_LABELS } from '@/types/auth';
-import type { PayrollCategory } from '@/lib/categories';
 import { canImportDbf, canExportDbf } from '@/lib/authz';
 import { usePermissions } from '@/lib/permissions';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
@@ -30,6 +31,8 @@ interface DashboardProps {
   onNavigate: (v: View) => void;
   category?: PayrollCategory | null;
   profile?: UserProfile | null;
+  groupFilterValue?: GroupFilterValue;
+  onGroupFilterChange?: (v: GroupFilterValue) => void;
 }
 
 interface DashboardData {
@@ -104,13 +107,17 @@ function normalizeDashboardData(src: Record<string, unknown>): DashboardData {
   };
 }
 
-export default function Dashboard({ onNavigate, category, profile }: DashboardProps) {
+export default function Dashboard({ onNavigate, category, profile, groupFilterValue, onGroupFilterChange }: DashboardProps) {
   // DB-merged permission checks — quick actions reflect live grant/revoke.
   const { hasPermission: can } = usePermissions();
   const { selectedRegion, selectedDivision, scoped, scopedCodes } = useOrg();
   if (profile?.role === 'ess') {
     return <EssDashboard profile={profile} />;
   }
+  const [internalGroupFilter, setInternalGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
+  const groupFilter = groupFilterValue ?? internalGroupFilter;
+  const setGroupFilter = onGroupFilterChange ?? setInternalGroupFilter;
+  const [allGroups, setAllGroups] = useState<PayrollGroup[]>([]);
   const [data, setData] = useState<DashboardData | null>(null);
   const [uploadStats, setUploadStats] = useState<UploadStats | null>(null);
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
@@ -334,6 +341,11 @@ export default function Dashboard({ onNavigate, category, profile }: DashboardPr
         </div>
       )}
 
+
+      {/* Group Filter */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <GroupFilter value={groupFilter} onChange={setGroupFilter} />
+      </div>
 
       {/* Executive Command Center — hero header */}
       <HeroHeader

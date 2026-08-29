@@ -20,6 +20,7 @@ import { inCategory, type PayrollCategory } from '@/lib/categories';
 import { getEmployeeFilter } from '@/lib/authz';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import type { UserProfile } from '@/types/auth';
+import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
 
 type ReportTab = 'exports' | 'payrollHistory' | 'payrollRegister' | 'deductionSummary' | 'loanLedger' | 'nthp' | 'undeducted' | 'gsis' | 'philhealth' | 'pagibig' | 'salarySummary' | 'netPaySummary' | 'unassigned' | 'overpayment' | 'bankAdvice' | 'payslip' | 'w2';
 
@@ -65,7 +66,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
   const [generated, setGenerated] = useState<string | null>(null);
   const [empSearch, setEmpSearch] = useState('');
   const [groups, setGroups] = useState<PayrollGroup[]>([]);
-  const [groupFilter, setGroupFilter] = useState('all');
+  const [groupFilter, setGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
   const [undeductedObs, setUndeductedObs] = useState<UndeductedObligation[]>([]);
   const [payslipEmpId, setPayslipEmpId] = useState('');
   // FOXPRO legacy report engine (Print Register / Payslip overlays)
@@ -190,15 +191,18 @@ export default function Reports({ category, profile, initialTab }: { category?: 
   const currentPeriod = periods.find((p) => p.id === periodId);
   const dedCodeMap = useMemo(() => new Map(dedCodes.map((c) => [c.dedcode, c])), [dedCodes]);
   const groupMap = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
-  const selectedGroupLabel = groupFilter === 'all' ? 'All Groups' : groupMap.get(groupFilter)?.group_name ?? 'Group';
+  const gf = useMemo(() => resolveGroupFilter(groupFilter, groups), [groupFilter, groups]);
+  const selectedGroupLabel = gf.label;
 
   // Filter employees by category (STACODE range) and payroll group
   const scopedEmployees = useMemo(() => {
-    let result = employees;
-    if (category) result = result.filter((e) => inCategory(e.stacode, category));
-    if (groupFilter !== 'all') result = result.filter((e) => e.payroll_group_id === groupFilter);
-    return result;
-  }, [employees, groupFilter, category]);
+    if (gf.stacodeMin === null && gf.stacodeMax === null && gf.groupId === null) {
+      if (category) return employees.filter((e) => inCategory(e.stacode, category));
+      return employees;
+    }
+    if (gf.groupId) return employees.filter((e) => e.payroll_group_id === gf.groupId);
+    return employees.filter((e) => inCategory(e.stacode, gf.category!));
+  }, [employees, gf, category]);
   const scopedEmpIds = useMemo(() => new Set(scopedEmployees.map((e) => e.id)), [scopedEmployees]);
   const scopedEntries = useMemo(() => entries.filter((e) => scopedEmpIds.has(e.employee_id)), [entries, scopedEmpIds]);
   const scopedUndeducted = useMemo(() => undeductedObs.filter((u) => scopedEmpIds.has(u.employee_id)), [undeductedObs, scopedEmpIds]);
@@ -787,13 +791,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
                   {periods.map((p) => <option key={p.id} value={p.id}>{p.period_name}</option>)}
                 </select>
 
-                {tab !== 'payrollRegister' && (<>
-                  <label className="text-xs font-medium text-slate-500">Group:</label>
-                  <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 min-w-[160px] bg-white">
-                    <option value="all">All Groups</option>
-                    {groups.map((g) => <option key={g.id} value={g.id}>{g.group_name} ({g.group_code})</option>)}
-                  </select>
-                </>)}
+                <GroupFilter value={groupFilter} onChange={setGroupFilter} />
               </>
             )}
           </div>
