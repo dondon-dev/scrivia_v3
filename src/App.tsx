@@ -4,7 +4,7 @@ import { lazyRetry } from '@/lib/lazyRetry';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Wallet, Menu, Moon, Sun, ChevronDown, LogOut, X,
-  ShieldCheck, ShieldAlert, Lock, LayoutDashboard, Search, BrainCircuit, Bell,
+  ShieldCheck, ShieldAlert, Lock, LayoutDashboard, Search, BrainCircuit, Bell, Code2,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -232,6 +232,10 @@ export default function App() {
     // Direct viewKey shortcuts (e.g. AiCommandCenter's 'Ask Copilot' button)
     if (navId === 'ai_omnidev') {
       setActiveView({ navId: 'ai_omnidev', viewKey: 'omnidev_ai', label: 'Payroll Copilot', icon: BrainCircuit, category: cat });
+      return;
+    }
+    if (navId === 'creator') {
+      setActiveView({ navId: 'creator', viewKey: 'creator', label: 'About the Creator', icon: Code2, category: cat });
       return;
     }
     // First try matching by nav ID, then fall back to matching by viewKey
