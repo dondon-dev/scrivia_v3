@@ -265,14 +265,14 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
   if (records.length === 0) return { tableName: 'INCLUDED', fileName: '', inserted: 0, updated: 0, skipped: 0, duplicates: 0, errors: ['No records found'], durationMs: Date.now() - start };
   const filtered = filterRecordsByCategory(records, category);
 
-  const resolvedPeriod = periodName || 'Unknown Period';
+  const resolvedPeriod = periodName || '';
 
   const rows: Record<string, unknown>[] = filtered.map((rec) => ({
     empno: str(rec, 'EMPNO'),
     stacode: str(rec, 'STACODE'),
     divcode: str(rec, 'DIVCODE'),
     regcode: str(rec, 'REGCODE'),
-    payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
+    payperiod: resolvedPeriod,
     paytype: str(rec, 'PAYTYPE') || str(rec, 'TYPE'),
     remarks: str(rec, 'REMARKS') || str(rec, 'REMARK'),
     type: str(rec, 'TYPE'),
@@ -309,7 +309,7 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
     updated_at: new Date().toISOString(),
   })).filter((r) => r.empno);
 
-  const result = await upsertTable('dbf_included', rows, ['empno'], (r) => `${r.empno}|${r.payperiod}`, 'id,empno,payperiod');
+  const result = await upsertTable('dbf_included', rows, ['empno'], (r) => `${r.empno}`, 'id,empno');
 
   // INCLUDED.DBF → deductions for deducted: for each included employee/period,
   // copy their ACTIVE deductions into the per-period deductions table.
@@ -326,7 +326,7 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
  */
 async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
-  const resolvedPeriod = periodName || 'Unknown Period';
+  const resolvedPeriod = periodName || '';
   const rows = records
     .map((rec) => ({
       empno: str(rec, 'EMPNO'),
@@ -335,7 +335,7 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
       regcode: str(rec, 'REGCODE'),
       payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
     }))
-    .filter((r) => r.empno && r.payperiod);
+    .filter((r) => r.empno);
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
@@ -465,7 +465,7 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
   if (records.length === 0) return { tableName: 'EXCLUDED', fileName: '', inserted: 0, updated: 0, skipped: 0, duplicates: 0, errors: ['No records found'], durationMs: Date.now() - start };
   const filtered = filterRecordsByCategory(records, category);
 
-  const resolvedPeriod = periodName || 'Unknown Period';
+  const resolvedPeriod = periodName || '';
 
   // Group by empno to collect deduction-level data
   const byEmp = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[]; type: string; fname: string; mi: string; lname: string; appel: string; netpay: number; dedid: string; termm: string; teryy: string; policyno: string; policydate: string; agent: string; absno: number; underhr: number; undermin: number; status: string; update_date: string; paydate: string; editor: string; tm: string; ty: string; agency: string; principal: number; interest: number; charges: number; proceeds: number; qs: string }>();
@@ -563,7 +563,7 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
     });
   }
 
-  const result = await upsertTable('dbf_excluded', rows, ['empno'], (r) => `${r.empno}|${r.payperiod}`, 'id,empno,payperiod');
+  const result = await upsertTable('dbf_excluded', rows, ['empno'], (r) => `${r.empno}`, 'id,empno');
 
   // EXCLUDED.DBF → those deductions are classified as UNDEDUCTED in the payroll.
   // For each excluded employee/period, their ACTIVE deductions become
@@ -582,7 +582,7 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
  */
 async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
-  const resolvedPeriod = periodName || 'Unknown Period';
+  const resolvedPeriod = periodName || '';
   const rows = records
     .map((rec) => ({
       empno: str(rec, 'EMPNO'),
@@ -592,7 +592,7 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
       payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
       reason: str(rec, 'REASON') || str(rec, 'REMARKS') || str(rec, 'REMARK') || 'EXCLUDED FROM PAYROLL',
     }))
-    .filter((r) => r.empno && r.payperiod);
+    .filter((r) => r.empno);
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
@@ -684,7 +684,7 @@ async function syncPayrolls(bytes: Uint8Array, category?: PayrollCategory | null
   // FoxPro PAYROLLS.DBF may not have PAYPERIOD/PAYDATE columns.
   // Fall back to ISSUE (paydate field), PAYCODE (paytype), and the
   // user-supplied periodName so records always land in a period.
-  const resolvedPeriod = periodName || 'Unknown Period';
+  const resolvedPeriod = periodName || '';
 
   const rows: Record<string, unknown>[] = filtered.map((rec) => ({
     empno: str(rec, 'EMPNO'),
@@ -945,7 +945,7 @@ async function forwardPyentToPayent(records: DbfRecord[], tableName: SyncTableNa
       amount: num(rec, 'AMOUNT') || num(rec, 'AMT') || num(rec, 'NETPAY') || num(rec, 'NET'),
       remarks: str(rec, 'REMARKS') || str(rec, 'REMARK'),
     }))
-    .filter((r) => r.empno && r.payperiod);
+    .filter((r) => r.empno);
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
