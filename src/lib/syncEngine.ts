@@ -327,6 +327,8 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
 async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
   const resolvedPeriod = periodName || '';
+
+  // Use INCLUDED.DBF's own deduction-level data (dedcode, dedamt per row)
   const rows = records
     .map((rec) => ({
       empno: str(rec, 'EMPNO'),
@@ -334,19 +336,31 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
       divcode: str(rec, 'DIVCODE'),
       regcode: str(rec, 'REGCODE'),
       payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
+      dedcode: str(rec, 'DEDCODE') || str(rec, 'CODE'),
+      dedamt: num(rec, 'DEDAMT') || num(rec, 'AMOUNT') || 0,
+      dedid: str(rec, 'DEDID'),
+      fname: str(rec, 'FNAME'),
+      mi: str(rec, 'MI'),
+      lname: str(rec, 'LNAME'),
+      appel: str(rec, 'APPEL'),
+      netpay: num(rec, 'NETPAY'),
+      effyy: Math.floor(num(rec, 'EFFYY') || 0),
+      effmm: Math.floor(num(rec, 'EFFMM') || 0),
+      termm: str(rec, 'TERMM'),
+      teryy: str(rec, 'TERYY'),
+      policyno: str(rec, 'POLICYNO'),
+      policydate: str(rec, 'POLICYDATE'),
+      agency: str(rec, 'AGENCY'),
+      principal: num(rec, 'PRINCIPAL'),
+      interest: num(rec, 'INTEREST'),
+      charges: num(rec, 'CHARGES'),
+      proceeds: num(rec, 'PROCEEDS'),
     }))
-    .filter((r) => r.empno);
+    .filter((r) => r.empno && r.dedcode);
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
   const periodIdMap = await resolvePeriodIds(rows, errors);
-
-  // Load the active deductions for the affected employees
-  const empIds = [...new Set(rows.map((r) => empIdMap.get(r.empno)).filter((x): x is string => !!x))];
-  if (empIds.length === 0) return errors;
-  const activeDeds = await fetchAll(() =>
-    supabase.from('payroll_deductions').select('employee_id,dedcode,dedamt,status').in('employee_id', empIds).eq('status', 'Active'),
-  );
   const { data: dedCodes } = await supabase.from('deduction_codes').select('dedcode,dedname,type');
   const codeName = new Map<string, { dedname: string; type: string }>(
     (dedCodes ?? []).map((c) => [c.dedcode, { dedname: c.dedname, type: c.type }]),
@@ -359,25 +373,23 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
     if (error) errors.push(`deductions clear (${pid}): ${error.message}`);
   }
 
+  // Use INCLUDED.DBF deduction data directly (dedcode + dedamt from the file)
   const toInsert: Record<string, unknown>[] = [];
   for (const r of rows) {
     const empId = empIdMap.get(r.empno);
     const periodId = periodIdMap.get(r.payperiod);
     if (!empId || !periodId) continue;
-    for (const d of activeDeds as { employee_id: string; dedcode: string; dedamt: number }[]) {
-      if (d.employee_id !== empId) continue;
-      const info = codeName.get(d.dedcode);
-      toInsert.push({
-        employee_id: empId,
-        pay_period_id: periodId,
-        deduction_code: d.dedcode,
-        deduction_name: info?.dedname || d.dedcode,
-        category: info?.type || 'Other',
-        amount: Number(d.dedamt) || 0,
-        source: 'INCLUDED',
-        reference: r.payperiod,
-      });
-    }
+    const info = codeName.get(r.dedcode);
+    toInsert.push({
+      employee_id: empId,
+      pay_period_id: periodId,
+      deduction_code: r.dedcode,
+      deduction_name: info?.dedname || r.dedcode,
+      category: info?.type || 'Other',
+      amount: r.dedamt,
+      source: 'INCLUDED',
+      reference: r.payperiod,
+    });
   }
 
   for (let i = 0; i < toInsert.length; i += 500) {
@@ -583,6 +595,8 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
 async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
   const resolvedPeriod = periodName || '';
+
+  // Use EXCLUDED.DBF's own deduction-level data directly (dedcode, dedamt per row)
   const rows = records
     .map((rec) => ({
       empno: str(rec, 'EMPNO'),
@@ -591,18 +605,26 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
       regcode: str(rec, 'REGCODE'),
       payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
       reason: str(rec, 'REASON') || str(rec, 'REMARKS') || str(rec, 'REMARK') || 'EXCLUDED FROM PAYROLL',
+      dedcode: str(rec, 'DEDCODE') || str(rec, 'CODE'),
+      dedamt: num(rec, 'DEDAMT') || num(rec, 'AMOUNT') || 0,
+      dedid: str(rec, 'DEDID'),
+      netpay: num(rec, 'NETPAY'),
+      effyy: Math.floor(num(rec, 'EFFYY') || 0),
+      effmm: Math.floor(num(rec, 'EFFMM') || 0),
+      termm: str(rec, 'TERMM'),
+      teryy: str(rec, 'TERYY'),
+      policyno: str(rec, 'POLICYNO'),
+      agency: str(rec, 'AGENCY'),
+      principal: num(rec, 'PRINCIPAL'),
+      interest: num(rec, 'INTEREST'),
+      charges: num(rec, 'CHARGES'),
+      proceeds: num(rec, 'PROCEEDS'),
     }))
-    .filter((r) => r.empno);
+    .filter((r) => r.empno && r.dedcode);
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
   const periodIdMap = await resolvePeriodIds(rows, errors);
-
-  const empIds = [...new Set(rows.map((r) => empIdMap.get(r.empno)).filter((x): x is string => !!x))];
-  if (empIds.length === 0) return errors;
-  const activeDeds = await fetchAll(() =>
-    supabase.from('payroll_deductions').select('employee_id,dedcode,dedamt,status').in('employee_id', empIds).eq('status', 'Active'),
-  );
   const { data: dedCodes } = await supabase.from('deduction_codes').select('dedcode,dedname');
   const codeName = new Map<string, string>((dedCodes ?? []).map((c) => [c.dedcode, c.dedname]));
 
@@ -613,58 +635,23 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
     if (error) errors.push(`undeducted clear (${pid}): ${error.message}`);
   }
 
+  // Use EXCLUDED.DBF deduction data directly (dedcode + dedamt from the file)
   const toInsert: Record<string, unknown>[] = [];
   for (const r of rows) {
     const empId = empIdMap.get(r.empno);
     const periodId = periodIdMap.get(r.payperiod);
     if (!empId || !periodId) continue;
-
-    // Parse JSON reason to get deduction-level data from EXCLUDED.DBF
-    let excDeds: { dedcode: string; dedamt: number }[] = [];
-    let baseReason = r.reason;
-    try {
-      const parsed = JSON.parse(r.reason);
-      if (parsed.deds && Array.isArray(parsed.deds)) {
-        excDeds = parsed.deds;
-        baseReason = parsed.base || 'EXCLUDED FROM PAYROLL';
-      }
-    } catch {
-      // Not JSON — treat as employee-level (all deductions excluded)
-    }
-
-    // Use EXCLUDED.DBF deduction data directly (dedcode + dedamt from the file)
-    if (excDeds.length > 0) {
-      for (const ed of excDeds) {
-        if (!ed.dedcode || (ed.dedamt || 0) <= 0) continue;
-        toInsert.push({
-          employee_id: empId,
-          pay_period_id: periodId,
-          deduction_code: ed.dedcode,
-          deduction_description: codeName.get(ed.dedcode) || ed.dedcode,
-          undeducted_amount: ed.dedamt,
-          scheduled_amount: ed.dedamt,
-          station_code: r.stacode || '',
-          reason: baseReason,
-        });
-      }
-    } else {
-      // No deduction-level data — use all active deductions for this employee
-      for (const d of activeDeds as { employee_id: string; dedcode: string; dedamt: number }[]) {
-        if (d.employee_id !== empId) continue;
-        const amount = Number(d.dedamt) || 0;
-        if (amount <= 0) continue;
-        toInsert.push({
-          employee_id: empId,
-          pay_period_id: periodId,
-          deduction_code: d.dedcode,
-          deduction_description: codeName.get(d.dedcode) || d.dedcode,
-          undeducted_amount: amount,
-          scheduled_amount: amount,
-          station_code: r.stacode || '',
-          reason: baseReason,
-        });
-      }
-    }
+    if (!r.dedcode || r.dedamt <= 0) continue;
+    toInsert.push({
+      employee_id: empId,
+      pay_period_id: periodId,
+      deduction_code: r.dedcode,
+      deduction_description: codeName.get(r.dedcode) || r.dedcode,
+      undeducted_amount: r.dedamt,
+      scheduled_amount: r.dedamt,
+      station_code: r.stacode || '',
+      reason: r.reason || 'EXCLUDED FROM PAYROLL',
+    });
   }
 
   for (let i = 0; i < toInsert.length; i += 500) {

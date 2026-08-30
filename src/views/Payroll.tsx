@@ -679,12 +679,13 @@ export default function Payroll({ profile }: PayrollProps) {
 
       {/* Stats */}
       {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-3">
           <StatCard label="Employees" value={String(rows.length)} icon="employees" />
           <StatCard label="Gross Pay" value={currency(totalGross)} icon="gross" />
           <StatCard label="Total Deductions" value={currency(totalDeductions)} tone="rose" icon="deductions" />
-          <StatCard label="Net Pay" value={currency(totalNet)} tone="emerald" icon="net" />
+          <StatCard label="Loan Deductions" value={currency(totalOtherDeds)} tone="slate" icon="deductions" />
           <StatCard label="Undeducted" value={currency(totalUndeducted)} tone="amber" icon="undeducted" />
+          <StatCard label="Net Pay" value={currency(totalNet)} tone="emerald" icon="net" />
           <StatCard label="NTHP Status" value={`${rows.length - nthpFails}/${rows.length} PASS`} tone={nthpFails > 0 ? 'rose' : 'emerald'} icon="nthp" />
         </div>
       )}
