@@ -619,7 +619,7 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
     const periodId = periodIdMap.get(r.payperiod);
     if (!empId || !periodId) continue;
 
-    // Parse JSON reason to get deduction-level data
+    // Parse JSON reason to get deduction-level data from EXCLUDED.DBF
     let excDeds: { dedcode: string; dedamt: number }[] = [];
     let baseReason = r.reason;
     try {
@@ -632,27 +632,38 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
       // Not JSON — treat as employee-level (all deductions excluded)
     }
 
-    for (const d of activeDeds as { employee_id: string; dedcode: string; dedamt: number }[]) {
-      if (d.employee_id !== empId) continue;
-      const amount = Number(d.dedamt) || 0;
-      if (amount <= 0) continue;
-
-      // If deduction-level data exists, only match specific deductions
-      if (excDeds.length > 0) {
-        const match = excDeds.find((e) => e.dedcode === d.dedcode && Math.abs(e.dedamt - amount) < 0.01);
-        if (!match) continue; // Not in EXCLUDED list — skip
+    // Use EXCLUDED.DBF deduction data directly (dedcode + dedamt from the file)
+    if (excDeds.length > 0) {
+      for (const ed of excDeds) {
+        if (!ed.dedcode || (ed.dedamt || 0) <= 0) continue;
+        toInsert.push({
+          employee_id: empId,
+          pay_period_id: periodId,
+          deduction_code: ed.dedcode,
+          deduction_description: codeName.get(ed.dedcode) || ed.dedcode,
+          undeducted_amount: ed.dedamt,
+          scheduled_amount: ed.dedamt,
+          station_code: r.stacode || '',
+          reason: baseReason,
+        });
       }
-
-      toInsert.push({
-        employee_id: empId,
-        pay_period_id: periodId,
-        deduction_code: d.dedcode,
-        deduction_description: codeName.get(d.dedcode) || d.dedcode,
-        undeducted_amount: amount,
-        scheduled_amount: amount,
-        station_code: r.stacode || '',
-        reason: baseReason,
-      });
+    } else {
+      // No deduction-level data — use all active deductions for this employee
+      for (const d of activeDeds as { employee_id: string; dedcode: string; dedamt: number }[]) {
+        if (d.employee_id !== empId) continue;
+        const amount = Number(d.dedamt) || 0;
+        if (amount <= 0) continue;
+        toInsert.push({
+          employee_id: empId,
+          pay_period_id: periodId,
+          deduction_code: d.dedcode,
+          deduction_description: codeName.get(d.dedcode) || d.dedcode,
+          undeducted_amount: amount,
+          scheduled_amount: amount,
+          station_code: r.stacode || '',
+          reason: baseReason,
+        });
+      }
     }
   }
 
