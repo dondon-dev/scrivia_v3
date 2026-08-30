@@ -51,23 +51,34 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
   }, [profile, scopedDivisionIds, scopedCodes]);
 
   const loadDeductions = useCallback(async () => {
-    if (!periodId) return;
+    // Read from payroll_deductions (DEDFILE) directly — the master deduction list
     const data = await fetchAll(() =>
-      supabase.from('deductions')
-        .select('id,employee_id,pay_period_id,deduction_code,deduction_name,category,amount,source,reference,created_at')
-        .eq('pay_period_id', periodId)
-        .order('deduction_code'),
+      supabase.from('payroll_deductions')
+        .select('id,empno,fname,mi,lname,dedcode,dedid,dedamt,policyno,policydate,effmm,effyy,termm,teryy,status,type,agency,regcode,divcode,stacode,principal,interest,charges,proceeds,netpay')
+        .order('dedcode'),
     );
-    setDeductions(data as Deduction[]);
-    // Fetch summary stats via RPC (single call, server-side aggregation)
-    const { data: summaryData } = await supabase.rpc('get_deductions_summary', { p_period_id: periodId });
-    if (summaryData) {
-      const s = summaryData as { totalCount: number; totalAmount: string; codeCount: number; empCount: number };
-      setSummary({ totalCount: s.totalCount, totalAmount: Number(s.totalAmount), codeCount: s.codeCount, empCount: s.empCount });
-    }
-  }, [periodId]);
+    // Map to Deduction type for display
+    const mapped = (data as unknown[]).map((r: any) => ({
+      id: r.id,
+      employee_id: r.empno,
+      pay_period_id: '',
+      deduction_code: r.dedcode || '',
+      deduction_name: r.dedid || r.dedcode || '',
+      category: r.type || 'Other',
+      amount: r.dedamt || 0,
+      source: 'DEDFILE',
+      reference: r.policyno || '',
+      created_at: '',
+    }));
+    setDeductions(mapped as Deduction[]);
+    // Summary
+    const totalAmount = mapped.reduce((s: number, d: any) => s + (d.amount || 0), 0);
+    const codeSet = new Set(mapped.map((d: any) => d.deduction_code).filter(Boolean));
+    const empSet = new Set(mapped.map((d: any) => d.employee_id).filter(Boolean));
+    setSummary({ totalCount: mapped.length, totalAmount, codeCount: codeSet.size, empCount: empSet.size });
+  }, []);
 
-  useEffect(() => { loadDeductions(); }, [loadDeductions, refetchKey]);
+  useEffect(() => { loadDeductions(); }, [refetchKey]);
 
   const empMap = new Map(employees.map((e) => [e.id, e]));
   const filtered = deductions.filter((d) => {
