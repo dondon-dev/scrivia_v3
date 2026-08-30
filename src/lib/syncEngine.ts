@@ -289,14 +289,14 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
     termm: str(rec, 'TERMM'),
     teryy: str(rec, 'TERYY'),
     policyno: str(rec, 'POLICYNO'),
-    policydate: str(rec, 'POLICYDATE'),
+    policydate: str(rec, 'POLICYDATE') || null,
     agent: str(rec, 'AGENT'),
     absno: num(rec, 'ABSNO'),
     underhr: num(rec, 'UNDERHR'),
     undermin: num(rec, 'UNDERMIN'),
     status: str(rec, 'STATUS'),
-    update_date: str(rec, 'UPDATE'),
-    paydate: str(rec, 'PAYDATE'),
+    update_date: str(rec, 'UPDATE') || null,
+    paydate: str(rec, 'PAYDATE') || null,
     editor: str(rec, 'EDITOR'),
     tm: str(rec, 'TM'),
     ty: str(rec, 'TY'),
@@ -349,7 +349,7 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
       termm: str(rec, 'TERMM'),
       teryy: str(rec, 'TERYY'),
       policyno: str(rec, 'POLICYNO'),
-      policydate: str(rec, 'POLICYDATE'),
+      policydate: str(rec, 'POLICYDATE') || null,
       agency: str(rec, 'AGENCY'),
       principal: num(rec, 'PRINCIPAL'),
       interest: num(rec, 'INTEREST'),
@@ -480,7 +480,7 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
   const resolvedPeriod = periodName || '';
 
   // Group by empno to collect deduction-level data
-  const byEmp = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[]; type: string; fname: string; mi: string; lname: string; appel: string; netpay: number; dedid: string; termm: string; teryy: string; policyno: string; policydate: string; agent: string; absno: number; underhr: number; undermin: number; status: string; update_date: string; paydate: string; editor: string; tm: string; ty: string; agency: string; principal: number; interest: number; charges: number; proceeds: number; qs: string }>();
+  const byEmp = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[]; type: string; fname: string; mi: string; lname: string; appel: string; netpay: number; dedid: string; termm: string; teryy: string; policyno: string; policydate: string | null; agent: string; absno: number; underhr: number; undermin: number; status: string; update_date: string | null; paydate: string | null; editor: string; tm: string; ty: string; agency: string; principal: number; interest: number; charges: number; proceeds: number; qs: string }>();
   for (const rec of filtered) {
     const empno = str(rec, 'EMPNO');
     if (!empno) continue;
@@ -506,14 +506,14 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
         termm: str(rec, 'TERMM'),
         teryy: str(rec, 'TERYY'),
         policyno: str(rec, 'POLICYNO'),
-        policydate: str(rec, 'POLICYDATE'),
+        policydate: str(rec, 'POLICYDATE') || null,
         agent: str(rec, 'AGENT'),
         absno: num(rec, 'ABSNO'),
         underhr: num(rec, 'UNDERHR'),
         undermin: num(rec, 'UNDERMIN'),
         status: str(rec, 'STATUS'),
-        update_date: str(rec, 'UPDATE'),
-        paydate: str(rec, 'PAYDATE'),
+        update_date: str(rec, 'UPDATE') || null,
+        paydate: str(rec, 'PAYDATE') || null,
         editor: str(rec, 'EDITOR'),
         tm: str(rec, 'TM'),
         ty: str(rec, 'TY'),

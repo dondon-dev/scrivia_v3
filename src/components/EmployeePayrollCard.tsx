@@ -65,20 +65,18 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const basicSalary = e.basic ?? e.basic_salary ?? 0;
   const computed = computePayrollDeductions(
     basicSalary, e.pera ?? 0, e.aca ?? 0, e.rata ?? 0, e.ontop ?? 0, e.long ?? 0, 0,
-  );
+  );  const gross = entry ? Number(entry.gross_pay) : computed.gross;
+  // Use server-computed values from the entry when available (Payroll Run results)
+  const mandatoryDed = entry
+    ? Number(entry.mandatory_deductions ?? 0) || Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100
+    : Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
+  const netPayBeforeLoans = entry ? Number(entry.available_balance ?? 0) || Math.round((gross - mandatoryDed) * 100) / 100 : Math.round((gross - mandatoryDed) * 100) / 100;
 
-
-
-
-
-  const gross = entry ? Number(entry.gross_pay) : computed.gross;
-  // Always compute from individual components to stay consistent with the displayed rows
-  const mandatoryDed = Math.round((computed.dedlnr + computed.dedmed + computed.dedpag + computed.dedtax) * 100) / 100;
-  const netPayBeforeLoans = Math.round((gross - mandatoryDed) * 100) / 100;
+  // Use server-computed loan/undeducted from the entry when available
+  const entryLoanDeductions = entry ? Number(entry.actual_loan_deductions ?? entry.other_deductions ?? 0) : 0;
+  const entryUndeductedAmount = entry ? Number(entry.undeducted_amount ?? 0) : 0;
 
   // ── NTHP Compliance Engine ──
-  // Run the real NTHP processor: applies loans in priority order,
-  // stops when Net Pay would fall below ₱5,000 NTHP threshold.
   const nthpResult = processEmployeeDeductions(
     netPayBeforeLoans, empDeds, dedCodeMap, e.stacode ?? '',
   );
@@ -98,14 +96,15 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
     return amt > 0 && !nthpUndeductedKeys.has(`${d.dedcode}::${amt.toFixed(2)}`);
   });
 
-  const loanDedsDisplay = appliedDedsNthp.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
+  // Prefer server-computed values when available, fallback to client-computed
+  const loanDedsDisplay = entry ? entryLoanDeductions : appliedDedsNthp.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0);
   const totalDed = Math.round((mandatoryDed + loanDedsDisplay) * 100) / 100;
-  const netPay = Math.round((gross - totalDed) * 100) / 100;
+  const netPay = entry ? Number(entry.net_pay ?? 0) || Math.round((gross - totalDed) * 100) / 100 : Math.round((gross - totalDed) * 100) / 100;
   const actualLoanDeductionsApplied = loanDedsDisplay;
-  const totalUndeductedAmount = nthpUndeducted.reduce((s, d) => s + d.undeducted_amount, 0);
-  const finalNetPay = nthpResult.finalNetPay;
-  // Use computed NTHP status, not stale entry value
-  const nthpStatus = nthpResult.nthpStatus;
+  const totalUndeductedAmount = entry ? entryUndeductedAmount : nthpUndeducted.reduce((s, d) => s + d.undeducted_amount, 0);
+  const finalNetPay = entry ? Number(entry.net_pay ?? 0) || nthpResult.finalNetPay : nthpResult.finalNetPay;
+  // Use entry NTHP status when available
+  const nthpStatus = entry ? (entry.nthp_status as 'PASS' | 'FAIL') ?? nthpResult.nthpStatus : nthpResult.nthpStatus;
 
   const civil = e.civilstat?.toUpperCase() ?? '';
   const civilLabel = CIVIL_STAT[civil] ?? civil;
