@@ -657,6 +657,28 @@ const POLICIES: PolicyMemo[] = [
     relevance: 'high',
     category: 'memorandum',
   },
+  {
+    id: 'bir-008',
+    title: 'Revenue Memorandum No. 2024-112: Order of Priority in the Deduction of Government Employees\'s Salary for Loan Payments and Other Obligations',
+    agency: 'bir',
+    topics: ['salary', 'taxation', 'compliance'],
+    date: '2024-11-15',
+    refNumber: 'RM No. 2024-112',
+    summary: 'Prescribes the order of priority in the deduction of salaries of government employees for loan payments and other obligations, ensuring compliance with existing laws and regulations on salary deductions. This memorandum establishes the sequential order in which deductions shall be applied against an employee\'s gross salary, with mandatory contributions taking precedence over voluntary loan deductions.',
+    keyProvisions: [
+      'FIRST PRIORITY: GSIS Life & Retirement Insurance (9% employee share, 12% government share).',
+      'SECOND PRIORITY: PhilHealth National Health Insurance (2.5% employee share, 2.5% government share).',
+      'THIRD PRIORITY: Pag-IBIG Fund Housing Mutual Fund (fixed P200 employee, P200 government).',
+      'FOURTH PRIORITY: BIR Withholding Tax (based on TRAIN Law graduated rates).',
+      'FIFTH PRIORITY: Loan deductions in order — (a) BIR loans, (b) GSIS loans (salary, emergency, policy), (c) PhilHealth loans, (d) Pag-IBIG loans (multi-purpose, housing), (e) Cooperative loans, (f) MBA loans, (g) Provident/Savings, (h) Insurance.',
+      'LEAST PRIORITY: EXCLUDED deductions from the EXCLUDED.DBF file — these are deducted last and only if NTHP (Net Take Home Pay) capacity remains after all higher-priority deductions. If capacity is insufficient, they become Undeducted Obligations.',
+      'NTHP THRESHOLD: Net Take Home Pay must not fall below P5,000.00 (DepEd requirement). Any deduction that would cause NTHP to fall below this threshold is reversed and moved to Undeducted Obligations.',
+      'INCLUDED deductions from the INCLUDED.DBF file take precedence over normal DEDFILE deductions and are always processed first.',
+    ],
+    effectiveDate: '2024-11-15',
+    relevance: 'high',
+    category: 'memorandum',
+  },
 ];
 
 // ── Component ────────────────────────────────────────────────────────────────

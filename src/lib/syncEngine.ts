@@ -309,6 +309,15 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
 
   const result = await upsertTable('dbf_included', rows, ['empno'], (r) => `${r.empno}`, 'id,empno');
 
+  // Set priority = 1 for INCLUDED deductions (highest priority, deducted FIRST)
+  const includedEmpnos = [...new Set(rows.map((r) => r.empno).filter(Boolean))];
+  if (includedEmpnos.length > 0) {
+    for (let i = 0; i < includedEmpnos.length; i += 100) {
+      const batch = includedEmpnos.slice(i, i + 100);
+      await supabase.from('payroll_deductions').update({ priority: 1 }).in('empno', batch);
+    }
+  }
+
   // INCLUDED.DBF → deductions for deducted: for each included employee/period,
   // copy their ACTIVE deductions into the per-period deductions table.
   const forwardErrors = await forwardIncludedToDeductions(filtered, periodName);
@@ -579,6 +588,15 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
   }
 
   const result = await upsertTable('dbf_excluded', rows, ['empno'], (r) => `${r.empno}`, 'id,empno');
+
+  // Set priority = 2 for EXCLUDED deductions (least priority, deducted LAST)
+  const excludedEmpnos = [...new Set(rows.map((r) => r.empno).filter(Boolean))];
+  if (excludedEmpnos.length > 0) {
+    for (let i = 0; i < excludedEmpnos.length; i += 100) {
+      const batch = excludedEmpnos.slice(i, i + 100);
+      await supabase.from('payroll_deductions').update({ priority: 2 }).in('empno', batch);
+    }
+  }
 
   // EXCLUDED.DBF → those deductions are classified as UNDEDUCTED in the payroll.
   // For each excluded employee/period, their ACTIVE deductions become
