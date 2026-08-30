@@ -476,7 +476,7 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
     abmm: ['ABMM'], abyy: ['ABYY'], oldcode: ['OLDCODE'],
     hiredate: ['HIREDATE'], birthdate: ['BIRTHDATE'], gsis_bpn: ['GSIS_BPN'],
     qs: ['QS'], upcode: ['UPDCODE'], paydate: ['PAYDATE'], editor: ['EDITOR'],
-    dedfile_id: ['ID'],
+    dbf_id: ['ID'],
   };
 
   function normRow(rec: DbfRecord): Record<string, string> {
@@ -503,7 +503,7 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
     if (dedamt < 0) { skipped++; continue; }
     const status = decodeStatus(r['status'] ?? '');
     rowMap.set(`${empno}|${dedcode}|${r['policyno'] ?? ''}|${status}`, {
-      employee_id: empId, empno, dedcode, dedid: r['dedid'] ?? '', policyno: r['policyno'] ?? '',
+      empno, dedcode, dedid: r['dedid'] ?? '', policyno: r['policyno'] ?? '',
       effmm: parseInt(r['effmm'] ?? '1') || 1, effyy: parseInt(r['effyy'] ?? '25') || 25,
       termm: r['termm'] ? parseInt(r['termm']) || null : null, teryy: r['teryy'] ? parseInt(r['teryy']) || null : null,
       dedamt, principal: parseFloat(r['principal'] ?? '0') || 0, interest: parseFloat(r['interest'] ?? '0') || 0,
@@ -517,7 +517,7 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
       abmm: r['abmm'] ?? '', abyy: r['abyy'] ?? '', oldcode: r['oldcode'] ?? '',
       hiredate: r['hiredate'] || null, birthdate: r['birthdate'] || null,
       gsis_bpn: r['gsis_bpn'] ?? '', qs: r['qs'] ?? '', upcode: r['upcode'] ?? '',
-      paydate: r['paydate'] || null, editor: r['editor'] ?? '', dedfile_id: r['dedfile_id'] ?? '',
+      paydate: r['paydate'] || null, editor: r['editor'] ?? '', dbf_id: r['dbf_id'] ?? '',
       created_by: 'restore', updated_by: 'restore',
     });
   }
@@ -538,15 +538,15 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
 
   const toUpdate: (Record<string, unknown> & { id: string })[] = [];
   const toInsert: Record<string, unknown>[] = [];
-  const affectedEmpIds = new Set<string>();
+  const affectedEmpnos = new Set<string>();
   for (const row of activeRows) {
     const key = `${row.empno}|${row.dedcode}|${row.policyno}`;
     const existingId = existingMap.get(key);
     if (existingId) toUpdate.push({ ...row, id: existingId });
     else toInsert.push(row);
-    if (row.employee_id) affectedEmpIds.add(row.employee_id as string);
+    if (row.empno) affectedEmpnos.add(row.empno as string);
   }
-  nonActiveRows.forEach((r) => { toInsert.push(r); if (r.employee_id) affectedEmpIds.add(r.employee_id as string); });
+  nonActiveRows.forEach((r) => { toInsert.push(r); if (r.empno) affectedEmpnos.add(r.empno as string); });
 
   let imported = 0;
   for (let i = 0; i < toInsert.length; i += 500) {
@@ -562,7 +562,9 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
     else imported += batch.length;
   }
 
-  await bulkRecomputeNetPay([...affectedEmpIds]);
+  // Resolve empnos to employee IDs for recompute
+  const affectedEmpIdsList = [...affectedEmpnos].map((empno) => empByNumber.get(empno)).filter((id): id is string => !!id);
+  await bulkRecomputeNetPay(affectedEmpIdsList);
 
   return { tableName: 'DEDFILE', imported, skipped, errors: errors.slice(0, 10) };
 }
