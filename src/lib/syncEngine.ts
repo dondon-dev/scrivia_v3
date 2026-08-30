@@ -363,6 +363,8 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
+  // Ensure all rows have payperiod set to resolvedPeriod if empty
+  for (const r of rows) { if (!r.payperiod) r.payperiod = resolvedPeriod; }
   const periodIdMap = await resolvePeriodIds(rows, errors);
   const { data: dedCodes } = await supabase.from('deduction_codes').select('dedcode,dedname,type');
   const codeName = new Map<string, { dedname: string; type: string }>(
