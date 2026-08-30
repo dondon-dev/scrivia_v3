@@ -548,7 +548,7 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
       fname: data.fname || '',
       mi: data.mi || '',
       lname: data.lname || '',
-      appEL: data.appel || '',
+      appel: data.appel || '',
       netpay: data.netpay || 0,
       dedid: data.dedid || '',
       termm: data.termm || '',
