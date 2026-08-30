@@ -469,6 +469,14 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
     dedamt: ['DEDAMT'], principal: ['PRINCIPAL'], interest: ['INTEREST'],
     charges: ['CHARGES'], proceeds: ['PROCEEDS'], agency: ['AGENCY', 'AGENT'],
     status: ['STATUS'], type: ['TYPE'], stacode: ['STACODE'],
+    regcode: ['REGCODE'], divcode: ['DIVCODE'],
+    fname: ['FNAME'], mi: ['MI'], lname: ['LNAME'], appel: ['APPEL'],
+    netpay: ['NETPAY'], policydate: ['POLICYDATE'], absno: ['ABSNO'],
+    underhr: ['UNDERHR'], undermin: ['UNDERMIN'], bill: ['BILL'],
+    abmm: ['ABMM'], abyy: ['ABYY'], oldcode: ['OLDCODE'],
+    hiredate: ['HIREDATE'], birthdate: ['BIRTHDATE'], gsis_bpn: ['GSIS_BPN'],
+    qs: ['QS'], upcode: ['UPDCODE'], paydate: ['PAYDATE'], editor: ['EDITOR'],
+    dedfile_id: ['ID'],
   };
 
   function normRow(rec: DbfRecord): Record<string, string> {
@@ -501,7 +509,15 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
       dedamt, principal: parseFloat(r['principal'] ?? '0') || 0, interest: parseFloat(r['interest'] ?? '0') || 0,
       charges: parseFloat(r['charges'] ?? '0') || 0, proceeds: parseFloat(r['proceeds'] ?? '0') || 0,
       agency: r['agency'] ?? '', status, type: decodeType(r['type'] ?? ''),
-      stacode: r['stacode'] ?? '',
+      stacode: r['stacode'] ?? '', regcode: r['regcode'] ?? '', divcode: r['divcode'] ?? '',
+      fname: r['fname'] ?? '', mi: r['mi'] ?? '', lname: r['lname'] ?? '', appel: r['appel'] ?? '',
+      netpay: parseFloat(r['netpay'] ?? '0') || 0, policydate: r['policydate'] || null,
+      absno: parseFloat(r['absno'] ?? '0') || 0, underhr: parseFloat(r['underhr'] ?? '0') || 0,
+      undermin: parseFloat(r['undermin'] ?? '0') || 0, bill: r['bill'] ?? '',
+      abmm: r['abmm'] ?? '', abyy: r['abyy'] ?? '', oldcode: r['oldcode'] ?? '',
+      hiredate: r['hiredate'] || null, birthdate: r['birthdate'] || null,
+      gsis_bpn: r['gsis_bpn'] ?? '', qs: r['qs'] ?? '', upcode: r['upcode'] ?? '',
+      paydate: r['paydate'] || null, editor: r['editor'] ?? '', dedfile_id: r['dedfile_id'] ?? '',
       created_by: 'restore', updated_by: 'restore',
     });
   }
