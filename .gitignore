@@ -38,3 +38,5 @@ supabase/migrations/*_studio_sync.sql
 # Temp files
 query
 skills-lock.json
+supabase/remote_schema.sql
+supabase/migrations/*_remote_schema.sql
