@@ -287,9 +287,9 @@ export default function Payroll({ profile }: PayrollProps) {
       setPeriods(scopedPeriods(per ?? []));
 
       setRunSummary(
-        `Payroll computed: ${engineRes?.entries ?? 0} entries, ` +
-        `${engineRes?.employees_updated ?? 0} employees updated, ` +
-        `undeducted obligations: ${currency(Number(engineRes?.undeducted_amount) || 0)} (${engineRes?.undeducted ?? 0} items).`
+        `Payroll computed: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries, ` +
+        `${engineRes?.employees_processed ?? engineRes?.employees_updated ?? 0} employees updated, ` +
+        `undeducted obligations: ${currency(Number(engineRes?.total_undeducted ?? engineRes?.undeducted_amount) || 0)} (${engineRes?.unducted_written ?? engineRes?.undeducted ?? 0} items).`
       );
     } catch (err) {
       const msg = formatError(err);
@@ -421,10 +421,10 @@ export default function Payroll({ profile }: PayrollProps) {
 
       setRefetch((r) => r + 1);
       setSyncSummary(
-        `Deductions synced: ${engineRes?.entries ?? 0} entries updated, ` +
-        `undeducted: ${currency(Number(engineRes?.undeducted_amount) || 0)} (${engineRes?.undeducted ?? 0} items).`
+        `Deductions synced: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries updated, ` +
+        `undeducted: ${currency(Number(engineRes?.total_undeducted ?? engineRes?.undeducted_amount) || 0)} (${engineRes?.unducted_written ?? engineRes?.undeducted ?? 0} items).`
       );
-      await logAudit('deduction_sync', 'pay_period', periodId, { entries: engineRes?.entries ?? 0 });
+      await logAudit('deduction_sync', 'pay_period', periodId, { entries: engineRes?.employees_processed ?? engineRes?.entries ?? 0 });
     } catch (err) {
       const msg = formatError(err);
       // Same posted-entry guard as the payroll run — point the user at Reverse.

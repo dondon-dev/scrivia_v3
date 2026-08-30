@@ -333,8 +333,8 @@ export default function SmartImport() {
           <p className="text-sm font-semibold text-slate-700">Drag and drop FoxPro DBF files here{category ? ` — ${catLabel} only` : ''}</p>
           <p className="text-xs text-slate-500 mt-1">
             {category
-              ? `Only records in the ${catLabel} stacode range will be imported. Upload all 10 tables: DEDFILE, DIVTABLE, EXCLUDED, INCLUDED, MASTFILE, PAYROLLS, PYENT, PYENT1, PYENT2, STNTABLE`
-              : 'Upload all 10 tables at once: DEDFILE, DIVTABLE, EXCLUDED, INCLUDED, MASTFILE, PAYROLLS, PYENT, PYENT1, PYENT2, STNTABLE'}
+              ? `Only records in the ${catLabel} stacode range will be imported. Upload tables: DEDFILE, DIVTABLE, INCLUDED, EXCLUDED, MASTFILE, STNTABLE — EXCLUDED = undeducted obligations`
+              : 'Upload tables: DEDFILE, DIVTABLE, INCLUDED, EXCLUDED, MASTFILE, STNTABLE — EXCLUDED = undeducted obligations (lowest priority)'}
           </p>
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -374,7 +374,7 @@ export default function SmartImport() {
                 <span>Sync order: {SYNC_ORDER.join(' → ')}</span>
               </div>
               {/* Period name input for files that need it (PAYROLLS, INCLUDED, EXCLUDED) */}
-              {(sortedPreviews.some(p => ['PAYROLLS', 'INCLUDED', 'EXCLUDED'].includes(p.tableName))) && (
+              {(sortedPreviews.some(p => ['INCLUDED', 'EXCLUDED'].includes(p.tableName))) && (
                 <div className="flex items-center gap-3">
                   <label className="text-xs font-medium text-slate-600 whitespace-nowrap">Pay Period:</label>
                   <input
@@ -384,7 +384,7 @@ export default function SmartImport() {
                     placeholder="e.g. August 2026, 08-2026, etc."
                     className="flex-1 max-w-xs px-3 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
-                  <span className="text-xs text-slate-400">Required for PAYROLLS / INCLUDED / EXCLUDED</span>
+                  <span className="text-xs text-slate-400">Required for INCLUDED / EXCLUDED</span>
                 </div>
               )}
               {/* Sync button */}
@@ -721,7 +721,7 @@ function TableStatusGrid({ canDelete, category, accentColor, onDeleteTable, refr
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="flex items-center gap-2 px-5 py-4 border-b border-slate-100">
         <Table2 className="w-5 h-5 text-slate-600" />
-        <h2 className="font-semibold text-slate-800">Supported Tables Status</h2>
+        <h2 className="font-semibold text-slate-800">Supported Tables Status (6 tables)</h2>
         {category && (
           <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${accentText} ${accentBg} px-2 py-0.5 rounded-full`}>
             {category === 'elementary' ? 'STACODE 1–499' : 'STACODE 500–701'}
@@ -734,7 +734,7 @@ function TableStatusGrid({ canDelete, category, accentColor, onDeleteTable, refr
         )}
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-px bg-slate-100">
-        {SYNC_ORDER.map((table) => {
+        {SYNC_ORDER.filter((table) => !['PAYROLLS', 'PYENT', 'PYENT1', 'PYENT2'].includes(table)).map((table) => {
           const dbTable = TABLE_TO_DB[table];
           const row = counts[dbTable];
           const isShared = table === 'DIVTABLE';
