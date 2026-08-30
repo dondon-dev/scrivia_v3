@@ -324,7 +324,12 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
  */
 async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
-  const resolvedPeriod = periodName || '';
+  let resolvedPeriod = periodName || '';
+  // Fallback to current open period if none specified
+  if (!resolvedPeriod) {
+    const { data: openPeriod } = await supabase.from('pay_periods').select('period_name').eq('status', 'open').order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (openPeriod) resolvedPeriod = openPeriod.period_name;
+  }
 
   // Use INCLUDED.DBF's own deduction-level data (dedcode, dedamt per row)
   const rows = records
@@ -590,7 +595,12 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
  */
 async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
-  const resolvedPeriod = periodName || '';
+  let resolvedPeriod = periodName || '';
+  // Fallback to current open period if none specified
+  if (!resolvedPeriod) {
+    const { data: openPeriod } = await supabase.from('pay_periods').select('period_name').eq('status', 'open').order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (openPeriod) resolvedPeriod = openPeriod.period_name;
+  }
 
   // Use EXCLUDED.DBF's own deduction-level data directly (dedcode, dedamt per row)
   const rows = records
