@@ -40,6 +40,8 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
   const [fullEmployee, setFullEmployee] = useState<Employee | null>(null);
   const [empDeds, setEmpDeds] = useState<PayrollDeduction[]>([]);
   const [dedCodes, setDedCodes] = useState<DeductionCode[]>([]);
+  const [actualDeductions, setActualDeductions] = useState<{ deduction_code: string; deduction_name: string; amount: number; category: string }[]>([]);
+  const [actualUndeducted, setActualUndeducted] = useState<{ deduction_code: string; deduction_description: string; undeducted_amount: number; scheduled_amount: number; reason: string }[]>([]);
 
   const { lookup: lookupPosition } = usePositions();
 
@@ -47,18 +49,26 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
 
   useEffect(() => {
     (async () => {
-      const [empRes, dedRes, codeRes, undedRes] = await Promise.all([
+      const [empRes, dedRes, codeRes] = await Promise.all([
         supabase.from('employees').select('*').eq('id', initialEmployee.id).single(),
         supabase.from('payroll_deductions').select('*').eq('employee_id', initialEmployee.id).neq('status', 'Terminated'),
         fetchAll(() => supabase.from('deduction_codes').select('*')),
-        Promise.resolve({ data: null, error: null }),
       ]);
       setFullEmployee((empRes.data as Employee) ?? null);
       setEmpDeds((dedRes.data as PayrollDeduction[]) ?? []);
       setDedCodes(codeRes as DeductionCode[]);
 
+      // Fetch actual deduction lines and undeducted obligations from the database
+      if (entry?.pay_period_id) {
+        const [dedLines, undedLines] = await Promise.all([
+          fetchAll(() => supabase.from('deductions').select('deduction_code, deduction_name, amount, category').eq('employee_id', initialEmployee.id).eq('pay_period_id', entry.pay_period_id)),
+          fetchAll(() => supabase.from('undeducted_obligations').select('deduction_code, deduction_description, undeducted_amount, scheduled_amount, reason').eq('employee_id', initialEmployee.id).eq('pay_period_id', entry.pay_period_id)),
+        ]);
+        setActualDeductions((dedLines as { deduction_code: string; deduction_name: string; amount: number; category: string }[]) ?? []);
+        setActualUndeducted((undedLines as { deduction_code: string; deduction_description: string; undeducted_amount: number; scheduled_amount: number; reason: string }[]) ?? []);
+      }
     })();
-  }, [initialEmployee.id, entry?.id]);
+  }, [initialEmployee.id, entry?.id, entry?.pay_period_id]);
 
   const dedCodeMap = new Map(dedCodes.map((c) => [c.dedcode, c]));
 
@@ -290,32 +300,31 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </span>
             </div>
 
-            {/* Loan Deductions Detail — only applied (deducted) deductions */}
-            {appliedDedsNthp.length > 0 && (
+            {/* Loan Deductions Detail — from actual deductions table (Payroll Run) */}
+            {actualDeductions.length > 0 && (
               <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
                   <FileText className="w-3.5 h-3.5 text-slate-400" />
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({appliedDedsNthp.length} records)</p>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Loan Deductions Detail ({actualDeductions.length} records)</p>
                 </div>
                 <div className="divide-y divide-slate-100 max-h-52 overflow-y-auto">
-                  {appliedDedsNthp.map((d) => {
-                    const codeInfo = dedCodeMap.get(d.dedcode);
+                  {actualDeductions.map((d, i) => {
+                    const codeInfo = dedCodeMap.get(d.deduction_code);
                     return (
-                      <div key={d.id} className="px-4 py-2.5 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center hover:bg-slate-50 transition-colors">
+                      <div key={`${d.deduction_code}-${i}`} className="px-4 py-2.5 grid grid-cols-[70px_1fr_90px] gap-x-3 text-xs items-center hover:bg-slate-50 transition-colors">
                         <div className="flex items-center gap-1">
-                          <span className="font-mono font-semibold text-brand-700">{d.dedcode}</span>
+                          <span className="font-mono font-semibold text-brand-700">{d.deduction_code}</span>
                           {!codeInfo && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Code not found in deduction codes lookup" />}
                         </div>
-                        <span className={`truncate ${!codeInfo ? 'text-amber-600' : 'text-slate-600'}`}>{codeInfo?.dedname ?? `${d.dedcode} (unknown code)`}</span>
-                        <span className="text-slate-400 truncate text-right">{d.policyno || '—'}</span>
-                        <span className="font-semibold text-slate-700 text-right tabular">{currency(d.dedamt)}</span>
+                        <span className={`truncate ${!codeInfo ? 'text-amber-600' : 'text-slate-600'}`}>{d.deduction_name || (codeInfo?.dedname ?? `${d.deduction_code} (unknown code)`)}</span>
+                        <span className="font-semibold text-slate-700 text-right tabular">{currency(d.amount)}</span>
                       </div>
                     );
                   })}
                 </div>
-                <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 grid grid-cols-[70px_1fr_100px_90px] gap-x-3 text-xs items-center">
-                  <span className="col-span-3 font-semibold text-slate-600">Total Loan Deductions Applied:</span>
-                  <span className="font-bold text-slate-800 text-right tabular">{currency(appliedDedsNthp.reduce((sum, d) => sum + (Number(d.dedamt) || 0), 0))}</span>
+                <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 grid grid-cols-[70px_1fr_90px] gap-x-3 text-xs items-center">
+                  <span className="col-span-2 font-semibold text-slate-600">Total Loan Deductions Applied:</span>
+                  <span className="font-bold text-slate-800 text-right tabular">{currency(actualDeductions.reduce((sum, d) => sum + (Number(d.amount) || 0), 0))}</span>
                 </div>
               </div>
             )}
@@ -347,13 +356,13 @@ export default function EmployeePayrollCard({ employee: initialEmployee, entry, 
               </div>
               <p className="text-xs text-slate-400 mt-3">NTHP Floor: ₱{NTHP_THRESHOLD.toFixed(2)} — loan deductions are skipped if they would bring net pay below this threshold.</p>
 
-              {nthpUndeducted.length > 0 && (
+              {actualUndeducted.length > 0 && (
                 <div className="mt-4 pt-3 border-t border-amber-200">
                   <p className="text-xs font-semibold text-amber-700 mb-2 uppercase tracking-wider">
-                    Undeducted Obligations ({nthpUndeducted.length} items)
+                    Undeducted Obligations ({actualUndeducted.length} items)
                   </p>
                   <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                    {nthpUndeducted.map((d, i) => (
+                    {actualUndeducted.map((d, i) => (
                       <div key={`${d.deduction_code}-${i}`} className="flex items-center justify-between text-xs bg-white/60 rounded-lg px-3 py-2">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="font-mono font-semibold text-amber-700 shrink-0">{d.deduction_code}</span>
