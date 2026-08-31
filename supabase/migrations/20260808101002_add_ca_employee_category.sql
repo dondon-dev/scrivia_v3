@@ -1,11 +1,3 @@
--- CA Payroll: payroll-breakdown category for the employee masterfile.
--- The Organization module (schools directory) is NOT an employee source — it only
--- defines the payroll breakdown:
---   Elementary     = STACODE 001–449
---   Secondary      = STACODE 500–701
---   Non-Plantilla  = sourced from non_plantilla_employees
-ALTER TABLE ca_employees
-  ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT ''
-  CHECK (category IN ('', 'Elementary', 'Secondary', 'Non-Plantilla'));
-
-CREATE INDEX IF NOT EXISTS idx_ca_emp_category ON ca_employees (category);
+version https://git-lfs.github.com/spec/v1
+oid sha256:134fe5aeb7554e1fa33394124d1ebca6db4f7b6c94eab2a3a9d8ae0e750a466f
+size 484
