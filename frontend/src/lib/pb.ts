@@ -267,22 +267,22 @@ class SupabaseQueryBuilder {
   }
 
   gt(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} > ${value}`);
+    this._filter.push(`${tsCol(column)} > ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
     return this;
   }
 
   gte(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} >= ${value}`);
+    this._filter.push(`${tsCol(column)} >= ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
     return this;
   }
 
   lt(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} < ${value}`);
+    this._filter.push(`${tsCol(column)} < ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
     return this;
   }
 
   lte(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} <= ${value}`);
+    this._filter.push(`${tsCol(column)} <= ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
     return this;
   }
 
