@@ -63,6 +63,7 @@ const GsisDashboard = lazyRetry(() => import('@/views/GsisDashboard'));
 const W2TaxAnnual = lazyRetry(() => import('@/views/W2TaxAnnual'));
 const GovPayrollCalculator = lazyRetry(() => import('@/views/GovPayrollCalculator'));
 const PolicyLibrary = lazyRetry(() => import('@/views/PolicyLibrary'));
+const PlantillaAllocationList = lazyRetry(() => import('@/views/PlantillaAllocationList'));
 
 // Organization.tsx exposes named exports — map each to a default export for lazyRetry()
 const ElementarySchools = lazyRetry(() => import('@/views/Organization').then(m => ({ default: m.ElementarySchools })));
@@ -373,6 +374,7 @@ export default function App() {
       case 'positionmgmt': return <PositionManagement initialTab="positions" />;
       case 'positionimport': return <PositionManagement initialTab="import" />;
       case 'plantilla': return <PlantillaPositions />;
+      case 'plantilla_allocation': return <PlantillaAllocationList />;
       case 'nonplantilla': return <NonPlantillaItems />;
       case 'namevalidation': return <NameValidation />;
       case 'ca_dashboard': return <CommAllowance profile={profile} />;

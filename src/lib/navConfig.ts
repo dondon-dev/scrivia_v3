@@ -23,6 +23,7 @@ export type ViewKey =
   | 'org_division' | 'org_elementary' | 'org_highschool' | 'org_units' | 'org_directory' | 'org_regions'
   | 'positionmgmt' | 'positionimport' | 'plantilla' | 'nonplantilla'
   | 'namevalidation' | 'initial_payroll' | 'ips_system' | 'signatories' | 'coming_soon'
+  | 'plantilla_allocation'
   | 'ca_dashboard' | 'my_access' | 'ai_center' | 'omnidev_ai' | 'payroll_defs'
   | 'notifications' | 'help'
   | 'govt_gsis' | 'govt_w2' | 'govt_calculator'
@@ -91,6 +92,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'emp_records', label: 'Employee Records', icon: Contact, permission: 'employees', viewKey: 'employees' },
       { id: 'emp_plantilla', label: 'PSIPOP', icon: Briefcase, permission: 'salary', viewKey: 'plantilla' },
+      { id: 'emp_plantilla_alloc', label: 'Plantilla Allocation List', icon: ListTree, permission: 'salary', viewKey: 'plantilla_allocation' },
       { id: 'emp_nonplantilla', label: 'Non-Plantilla Items', icon: UserPlus, permission: 'employees', viewKey: 'nonplantilla' },
       { id: 'emp_status', label: 'Employment Status', icon: BadgeCheck, permission: 'employees', viewKey: 'employees' },
       { id: 'emp_name_validation', label: 'Name Validation', icon: FileCheck2, permission: 'employees', viewKey: 'namevalidation' },

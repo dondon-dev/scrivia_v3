@@ -3,20 +3,10 @@ import {
   Globe, Building2, FolderOpen, Plus, Pencil, Trash2, X, Check, Users,
   School as SchoolIcon, Wallet, MapPin, RefreshCw, ChevronRight, ChevronDown,
   Folder, AlertTriangle, CheckCircle2, ArrowRight, Link2, UserCog, Power,
-  ClipboardCopy, Table2,
+  Table2,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
-import regionsDivisionsSetupSql from '../../supabase/migrations/20260809090100_create_regions_divisions.sql?raw';
-import regionsDivisionsFixSql from '../../supabase/migrations/20260809100000_fix_divisions_region_fk.sql?raw';
-
-/** Full setup script: base migration + FK fix (SQL Editor paste path). */
-const FULL_SETUP_SQL = `${regionsDivisionsSetupSql}
-
--- ============================================================================
--- Fix: self-healing upsert_division (resolves the region by id, then by code)
--- ============================================================================
-${regionsDivisionsFixSql}`;
 import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
@@ -28,25 +18,16 @@ import {
 import type { UserRole } from '@/types/auth';
 import { ROLE_LABELS } from '@/types/auth';
 
-interface SchoolRow { id: string; school_code: string; school_name: string; status: string; division_id: string | null; }
+interface SchoolRow { id: string; school_code: string; stacode?: string; school_name: string; status: string; division_id: string | null; }
 interface UserRow { id: string; first_name: string; last_name: string; email: string; role: UserRole; division_id: string | null; }
-interface EmpRow { division_id: string | null; status: string | null; }
+interface EmpRow { id: string; stacode?: string; regcode?: string; divcode?: string; status: string | null; }
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-deped-500/30 focus:border-deped-500 transition-all';
 const labelCls = 'block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1.5';
 
-/** Turn the cryptic PostgREST "function not in schema cache" error into an
- * actionable message — the function lives in the repo's migration files but
- * hasn't been pushed to the database yet (run `supabase db push`). */
-function friendlyRpcError(error: { message?: string }): string {
-  const m = error?.message ?? '';
-  if (/could not find the function|in the schema cache|does not exist/i.test(m)) {
-    return 'Database functions not deployed yet. Run `supabase db push` from the project folder, then try again.';
-  }
-  if (/violates foreign key constraint.*divisions_region_id_fkey/i.test(m)) {
-    return 'The selected region no longer exists in the database (stale region id). Refresh the page to reload the regions list, then try again. If it persists, paste the Setup SQL into the Supabase SQL Editor to install the self-healing fix.';
-  }
-  return m;
+/** Friendlier write-error message without the Supabase PostgREST wording. */
+function failError(error: { message?: string }): string {
+  return (error?.message ?? '').trim() || 'Something went wrong — please try again.';
 }
 
 export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: string) => void }) {
@@ -66,7 +47,6 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [view, setView] = useState<'folders' | 'table'>('folders');
-  const [setupOpen, setSetupOpen] = useState(false);
 
   // Table view — inline add rows
   const [newRegionCode, setNewRegionCode] = useState('');
@@ -85,34 +65,18 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
     setTimeout(() => setNotice(null), 4000);
   };
 
-  // RPC failure — if it's the schema-cache "not deployed" error, surface the
-  // one-click setup panel so the user can paste the migration into the SQL Editor.
-  const rpcFail = (error: { message?: string }) => {
-    const msg = friendlyRpcError(error);
-    flash('err', msg);
-    if (/not deployed yet|schema cache|does not exist/i.test(msg)) setSetupOpen(true);
-    // Stale region id — reload the directory so the app re-adopts the DB's ids.
-    if (/foreign key constraint/i.test(msg)) void org.refresh();
-  };
-
-  const copySetupSql = () => {
-    void navigator.clipboard.writeText(FULL_SETUP_SQL).then(() => {
-      flash('ok', 'Setup SQL copied — paste it into your Supabase SQL Editor and click Run.');
-    });
-  };
-
   // Table view — inline add
   const addRegionFromTable = async () => {
     if (!isSuper || busy || !newRegionCode.trim() || !newRegionName.trim()) return;
     setBusy(true);
-    const { error } = await supabase.rpc('upsert_region', {
-      p_region_id: null,
-      p_region_code: newRegionCode,
-      p_region_name: newRegionName,
-      p_sort_order: 0,
+    const { error } = await supabase.from('regions').insert({
+      region_code: newRegionCode,
+      region_name: newRegionName,
+      sort_order: 0,
+      status: 'Active',
     });
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', 'Region created.');
     setNewRegionCode('');
     setNewRegionName('');
@@ -121,18 +85,16 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
 
   const addDivisionFromTable = async () => {
     if (!isSuper || busy || !newDivCode.trim() || !newDivName.trim() || !newDivRegion) return;
-    const region = org.regions.find((r) => r.id === newDivRegion);
     setBusy(true);
-    const { error } = await supabase.rpc('upsert_division', {
-      p_division_id: null,
-      p_region_id: newDivRegion,
-      p_region_code: region?.region_code ?? '',
-      p_division_code: newDivCode,
-      p_division_name: newDivName,
-      p_features: DEFAULT_DIVISION_FEATURES,
+    const { error } = await supabase.from('divisions').insert({
+      region_id: newDivRegion,
+      division_code: newDivCode,
+      division_name: newDivName,
+      features: DEFAULT_DIVISION_FEATURES,
+      status: 'Active',
     });
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', 'Division created.');
     setNewDivCode('');
     setNewDivName('');
@@ -148,11 +110,11 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
     setLoadingStats(true);
     try {
       const [s, u, e] = await Promise.all([
-        fetchAll<SchoolRow>(() => supabase.from('schools').select('id,school_code,school_name,status,division_id').order('school_name')),
+        fetchAll<SchoolRow>(() => supabase.from('schools').select('id,school_name,stacode,status,division_id').order('school_name')),
         fetchAll<UserRow>(() => supabase.from('profiles').select('id,first_name,last_name,email,role,division_id').order('last_name')),
-        fetchAll<EmpRow>(() => supabase.from('employees').select('division_id,status')),
+        fetchAll<EmpRow>(() => supabase.from('employees').select('id,stacode,regcode,divcode,status')),
       ]);
-      setSchools(s);
+      setSchools(s.map((r) => ({ ...r, school_code: r.stacode ?? '' })));
       setUsers(u);
       setEmpRows(e);
     } catch { /* stats are best-effort */ }
@@ -161,12 +123,15 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
 
   useEffect(() => { void load(); }, [load]);
 
-  const statsFor = useCallback((divisionId: string) => ({
-    users: users.filter((u) => u.division_id === divisionId).length,
-    schools: schools.filter((s) => s.division_id === divisionId).length,
-    employees: empRows.filter((e) => e.division_id === divisionId).length,
-    activeEmployees: empRows.filter((e) => e.division_id === divisionId && e.status === 'Active').length,
-  }), [users, schools, empRows]);
+  const statsFor = useCallback((divisionId: string) => {
+    const div = org.divisions.find((d) => d.id === divisionId);
+    return {
+      users: users.filter((u) => u.division_id === divisionId).length,
+      schools: schools.filter((s) => s.division_id === divisionId).length,
+      employees: div ? empRows.filter((e) => e.divcode === div.division_code).length : 0,
+      activeEmployees: div ? empRows.filter((e) => e.divcode === div.division_code && e.status === 'Active').length : 0,
+    };
+  }, [users, schools, empRows, org.divisions]);
 
   const selectedDivision = useMemo(
     () => org.divisions.find((d) => d.id === selectedDivisionId) ?? null,
@@ -190,14 +155,23 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const saveRegion = async (input: { region_code: string; region_name: string; sort_order: number }, regionId?: string) => {
     if (!isSuper || busy) return;
     setBusy(true);
-    const { error } = await supabase.rpc('upsert_region', {
-      p_region_id: regionId ?? null,
-      p_region_code: input.region_code,
-      p_region_name: input.region_name,
-      p_sort_order: input.sort_order,
-    });
+    let error: { message?: string } | null;
+    if (regionId) {
+      ({ error } = await supabase.from('regions').update({
+        region_code: input.region_code,
+        region_name: input.region_name,
+        sort_order: input.sort_order,
+      }).eq('id', regionId));
+    } else {
+      ({ error } = await supabase.from('regions').insert({
+        region_code: input.region_code,
+        region_name: input.region_name,
+        sort_order: input.sort_order,
+        status: 'Active',
+      }));
+    }
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', regionId ? 'Region updated.' : 'Region created.');
     setRegionModal(null);
     await org.refresh();
@@ -206,10 +180,15 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const deleteRegion = async (region: Region) => {
     if (!isSuper || busy) return;
     if (!window.confirm(`Delete region "${region.region_name || region.region_code}"? Divisions must be removed first.`)) return;
+    const divisionCount = org.divisions.filter((d) => d.region_id === region.id).length;
+    if (divisionCount > 0) {
+      flash('err', `Region still has ${divisionCount} division(s). Remove them first.`);
+      return;
+    }
     setBusy(true);
-    const { error } = await supabase.rpc('delete_region', { p_region_id: region.id });
+    const { error } = await supabase.from('regions').delete().eq('id', region.id);
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', 'Region deleted.');
     await org.refresh();
   };
@@ -217,18 +196,29 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   // ── Division CRUD ──
   const saveDivision = async (input: { region_id: string; division_code: string; division_name: string }, divisionId?: string) => {
     if (!isSuper || busy) return;
-    const region = org.regions.find((r) => r.id === input.region_id);
     setBusy(true);
-    const { error } = await supabase.rpc('upsert_division', {
-      p_division_id: divisionId ?? null,
-      p_region_id: input.region_id,
-      p_region_code: region?.region_code ?? '',
-      p_division_code: input.division_code,
-      p_division_name: input.division_name,
-      p_features: divisionId ? mergeFeatures(org.divisions.find((d) => d.id === divisionId)?.features) : DEFAULT_DIVISION_FEATURES,
-    });
+    const features = divisionId
+      ? mergeFeatures(org.divisions.find((d) => d.id === divisionId)?.features)
+      : DEFAULT_DIVISION_FEATURES;
+    let error: { message?: string } | null;
+    if (divisionId) {
+      ({ error } = await supabase.from('divisions').update({
+        region_id: input.region_id,
+        division_code: input.division_code,
+        division_name: input.division_name,
+        features,
+      }).eq('id', divisionId));
+    } else {
+      ({ error } = await supabase.from('divisions').insert({
+        region_id: input.region_id,
+        division_code: input.division_code,
+        division_name: input.division_name,
+        features,
+        status: 'Active',
+      }));
+    }
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', divisionId ? 'Division updated.' : 'Division created.');
     setDivisionModal(null);
     await org.refresh();
@@ -237,10 +227,17 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const deleteDivision = async (division: Division) => {
     if (!isSuper || busy) return;
     if (!window.confirm(`Delete division "${division.division_name || division.division_code}"? This is blocked while users, schools, or employees are assigned.`)) return;
+    const usersCount = users.filter((u) => u.division_id === division.id).length;
+    const schoolsCount = schools.filter((s) => s.division_id === division.id).length;
+    const employeesCount = empRows.filter((e) => e.divcode === division.division_code).length;
+    if (usersCount + schoolsCount + employeesCount > 0) {
+      flash('err', `Division still has data assigned (${employeesCount} employees, ${schoolsCount} schools, ${usersCount} users). Reassign or remove them first, then try again.`);
+      return;
+    }
     setBusy(true);
-    const { error } = await supabase.rpc('delete_division', { p_division_id: division.id });
+    const { error } = await supabase.from('divisions').delete().eq('id', division.id);
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     flash('ok', 'Division deleted.');
     if (selectedDivisionId === division.id) setSelectedDivisionId(null);
     await org.refresh();
@@ -252,17 +249,9 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
     setFeatureBusy(feature);
     const features = mergeFeatures(selectedDivision.features);
     features[feature] = enabled;
-    const region = org.regions.find((r) => r.id === selectedDivision.region_id);
-    const { error } = await supabase.rpc('upsert_division', {
-      p_division_id: selectedDivision.id,
-      p_region_id: selectedDivision.region_id,
-      p_region_code: region?.region_code ?? '',
-      p_division_code: selectedDivision.division_code,
-      p_division_name: selectedDivision.division_name,
-      p_features: features,
-    });
+    const { error } = await supabase.from('divisions').update({ features }).eq('id', selectedDivision.id);
     setFeatureBusy(null);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     await org.refresh();
   };
 
@@ -270,12 +259,13 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const assignSchools = async () => {
     if (!isSuper || !selectedDivision || pendingAssign.size === 0) return;
     setBusy(true);
-    const { error } = await supabase.rpc('assign_schools_to_division', {
-      p_division_id: selectedDivision.id,
-      p_school_ids: [...pendingAssign],
-    });
+    let failed = false;
+    for (const schoolId of pendingAssign) {
+      const { error } = await supabase.from('schools').update({ division_id: selectedDivision.id }).eq('id', schoolId);
+      if (error) failed = true;
+    }
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (failed) { flash('err', 'Some schools could not be assigned.'); return; }
     flash('ok', `${pendingAssign.size} school(s) assigned to ${selectedDivision.division_name}.`);
     setPendingAssign(new Set());
     await load();
@@ -284,23 +274,31 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
   const clearSchool = async (school: SchoolRow) => {
     if (!isSuper || !selectedDivision || busy) return;
     setBusy(true);
-    const { error } = await supabase.rpc('clear_schools_from_division', {
-      p_division_id: selectedDivision.id,
-      p_school_ids: [school.id],
-    });
+    const { error } = await supabase.from('schools').update({ division_id: '' }).eq('id', school.id);
     setBusy(false);
-    if (error) { rpcFail(error); return; }
+    if (error) { flash('err', failError(error)); return; }
     await load();
   };
 
   const syncEmployees = async () => {
     if (!isSuper || !selectedDivision || busy) return;
+    const region = org.regions.find((r) => r.id === selectedDivision.region_id);
+    if (!region) { flash('err', 'Missing region for this division.'); return; }
     setBusy(true);
-    const { data, error } = await supabase.rpc('sync_employees_to_division', { p_division_id: selectedDivision.id });
+    const divSchools = schools.filter((s) => s.division_id === selectedDivision.id && s.stacode);
+    const schoolCodes = new Set(divSchools.map((s) => s.stacode as string));
+    let updated = 0;
+    for (const emp of empRows) {
+      if (emp.stacode && schoolCodes.has(emp.stacode) && (emp.divcode !== selectedDivision.division_code || emp.regcode !== region.region_code)) {
+        const { error } = await supabase.from('employees').update({
+          divcode: selectedDivision.division_code,
+          regcode: region.region_code,
+        }).eq('id', emp.id);
+        if (!error) updated++;
+      }
+    }
     setBusy(false);
-    if (error) { rpcFail(error); return; }
-    const n = (data as { updated?: number } | null)?.updated ?? 0;
-    flash('ok', n > 0 ? `${n} employee(s) mapped to this division from its schools.` : 'All employees already mapped.');
+    flash('ok', updated > 0 ? `${updated} employee(s) mapped to this division from its schools.` : 'All employees already mapped.');
     await load();
   };
 
@@ -374,32 +372,6 @@ export default function RegionsDivisions({ onNavigate }: { onNavigate: (v: strin
         }`}>
           {notice.kind === 'ok' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
           {notice.text}
-        </div>
-      )}
-
-      {setupOpen && (
-        <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
-          <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0" />
-          <div className="flex-1">
-            <p className="font-semibold">Database setup incomplete.</p>
-            <p className="mt-0.5">
-              The Regions &amp; Divisions tables and functions live in the migration{' '}
-              <code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">20260809090100_create_regions_divisions.sql</code>.
-              Run <strong>supabase db push</strong> from the project folder — or paste the script below into your
-              Supabase SQL Editor and click Run (it also reloads the PostgREST schema cache so the app sees them immediately):
-            </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <button
-                onClick={copySetupSql}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-700 text-white text-xs font-semibold hover:bg-amber-800 transition-colors"
-              >
-                <ClipboardCopy className="w-3.5 h-3.5" /> Copy Setup SQL
-              </button>
-              <button onClick={() => setSetupOpen(false)} className="px-2 py-1.5 text-xs text-amber-700 hover:text-amber-900">
-                Dismiss
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
