@@ -7,7 +7,7 @@ import {
   Users, Calculator, TrendingUp, ArrowRight, Wallet, Building2, Landmark,
   BarChart3, School, ShieldCheck, ShieldAlert, Upload, Clock, CheckCircle2,
   AlertTriangle, DollarSign, Receipt, ChevronRight, Database, Download,
-  ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap,
+  ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap, ListTree,
   Check, Circle, Building, MapPin, Sparkles, Brain, Hash, RefreshCw, type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/pb';
@@ -25,7 +25,7 @@ import { useOrg, codeScope } from '@/lib/org';
 import { KpiCard, QuickAction, SectionHeader, ProgressBar, HeroHeader } from '@/components/Enterprise';
 import EssDashboard from '@/views/EssDashboard';
 
-type View = 'dashboard' | 'employees' | 'dedmaster' | 'dedengine' | 'payroll' | 'reports' | 'salary' | 'taxcalc' | 'stacode' | 'importbackup' | 'users' | 'audit' | 'initial_payroll' | 'ai_center' | 'positionmgmt' | 'salary';
+type View = 'dashboard' | 'employees' | 'dedmaster' | 'dedengine' | 'payroll' | 'reports' | 'salary' | 'taxcalc' | 'stacode' | 'importbackup' | 'users' | 'audit' | 'initial_payroll' | 'ai_center' | 'positionmgmt' | 'plantilla_allocation';
 
 interface DashboardProps {
   onNavigate: (v: View) => void;
@@ -88,6 +88,12 @@ function normalizeDashboardData(src: Record<string, unknown>): DashboardData {
     const v = src[camel] ?? src[snake];
     return v === undefined ? null : v;
   };
+  // PocketBase stores JSON fields as strings — parse them back to arrays
+  const parseJson = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') { try { return JSON.parse(v); } catch { return []; } }
+    return [];
+  };
   return {
     totalRecords: Number(pick('totalRecords', 'total_records') ?? 0),
     activeEmployees: Number(pick('activeEmployees', 'active_employees') ?? 0),
@@ -97,13 +103,13 @@ function normalizeDashboardData(src: Record<string, unknown>): DashboardData {
     totalLoanDeds: Number(pick('totalLoanDeds', 'total_loan_deds') ?? 0),
     processedCount: Number(pick('processedCount', 'processed_count') ?? 0),
     pendingCount: Number(pick('pendingCount', 'pending_count') ?? 0),
-    currentPeriod: (pick('currentPeriod', 'current_period') as PayPeriod | null) ?? null,
+    currentPeriod: (() => { const v = pick('currentPeriod', 'current_period'); if (!v) return null; if (typeof v === 'string') { try { return JSON.parse(v); } catch { return null; } } return v as PayPeriod; })(),
     periodNet: Number(pick('periodNet', 'period_net') ?? 0),
-    groupStats: (pick('groupStats', 'group_stats') as DashboardData['groupStats']) ?? [],
+    groupStats: parseJson(pick('groupStats', 'group_stats')) as DashboardData['groupStats'],
     unassignedCount: Number(pick('unassignedCount', 'unassigned_count') ?? 0),
     activeLoanAccounts: Number(pick('activeLoanAccounts', 'active_loan_accounts') ?? 0),
-    dedTotalsByCode: (pick('dedTotalsByCode', 'ded_totals_by_code') as DashboardData['dedTotalsByCode']) ?? [],
-    recentEmployees: (pick('recentEmployees', 'recent_employees') as DashboardData['recentEmployees']) ?? [],
+    dedTotalsByCode: parseJson(pick('dedTotalsByCode', 'ded_totals_by_code')) as DashboardData['dedTotalsByCode'],
+    recentEmployees: parseJson(pick('recentEmployees', 'recent_employees')) as DashboardData['recentEmployees'],
   };
 }
 
@@ -142,47 +148,107 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
         const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-        // When a Region/Division is selected in the org selector, aggregate the
-        // dashboard live for that scope (REGCODE + DIVCODE are the unique
-        // reference for one division's payroll). If the scoped RPC is not
-        // available (migration not applied / permission issue), fall back to the
-        // global snapshot cache so the dashboard always renders.
+        // Build a scoped dashboard by querying PocketBase collections directly
+        // with regcode/divcode filters when a Region/Division is selected.
         const scope = scopedCodes && scopedCodes.length > 0 ? scopedCodes : null;
-        let summaryResult: { data: unknown; error: { message?: string } | null };
-        if (scope) {
-          // Resolve the division-scoped summary. A single transient failure is
-          // retried once: right after a migration changes a function signature,
-          // PostgREST's schema cache can briefly lag and return "function not
-          // found" — retrying lets it recover instead of permanently degrading.
-          let rpcRes = await supabase.rpc('get_dashboard_summary', {
-            category: category ?? null,
-            p_regcode: scope[0].regcode,
-            p_divcodes: [...new Set(scope.map((s) => s.divcode))],
-          });
-          if (rpcRes.error && active) {
-            await new Promise((r) => setTimeout(r, 900));
-            if (!active) return;
-            rpcRes = await supabase.rpc('get_dashboard_summary', {
-              category: category ?? null,
-              p_regcode: scope[0].regcode,
-              p_divcodes: [...new Set(scope.map((s) => s.divcode))],
-            });
+        const regcode = scope?.[0]?.regcode ?? null;
+        const divcodes = scope ? [...new Set(scope.map((s) => s.divcode))] : null;
+
+        // Helper: add division-scope filters to a PocketBase query builder
+        const addScope = (q: ReturnType<typeof supabase.from>) => {
+          if (regcode && divcodes) {
+            return q.eq('regcode', regcode).in('divcode', divcodes);
           }
-          if (rpcRes.error) {
-            // Scoped aggregation unavailable → fall back to the overall cache.
-            summaryResult = await supabase.from('dashboard_stats_cache').select('*').eq('id', 1).single();
-            setScopeDegraded(true);
-            setScopeError(rpcRes.error.message ?? 'The division-scoped aggregation failed.');
-          } else {
-            summaryResult = rpcRes;
-            setScopeDegraded(false);
-            setScopeError(null);
+          return q;
+        };
+
+        // Query all dashboard data in parallel, scoped if a division is selected
+        const [
+          empRes, payPeriodsRes, payEntriesRes, dedRes, groupsRes, recentRes, dedCodesRes,
+        ] = await Promise.all([
+          addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode', { count: 'exact', head: true })),
+          supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
+          addScope(supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions')),
+          addScope(supabase.from('payroll_deductions').select('id,dedcode,dedname,dedamt,agency,type,employee_id')),
+          supabase.from('payroll_groups').select('*'),
+          addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,divcode,basic,basic_salary').order('created_at', { ascending: false }).limit(5)),
+          supabase.from('deduction_codes').select('*'),
+        ]);
+        if (!active) return;
+
+        const totalRecords = empRes.count ?? 0;
+        const allEmps = empRes.data ?? [];
+        const activeEmployees = allEmps.filter((e) => e.status === 'Active' || !e.status).length;
+
+        const periods = (payPeriodsRes.data ?? []) as PayPeriod[];
+        const currentPeriod = periods[0] ?? null;
+        const entries = (payEntriesRes.data ?? []) as Record<string, unknown>[];
+
+        // Filter to current period entries
+        const currentEntries = currentPeriod
+          ? entries.filter((e) => e.pay_period_id === currentPeriod.id)
+          : [];
+        const computedEntries = currentEntries.filter((e) => e.status === 'Computed');
+        const pendingEntries = currentEntries.filter((e) => e.status !== 'Posted' && e.status !== 'Computed');
+        const postedEntries = currentEntries.filter((e) => e.status === 'Posted');
+
+        const totalGross = currentEntries.reduce((s, e) => s + Number(e.gross_pay ?? 0), 0);
+        const totalNet = currentEntries.reduce((s, e) => s + Number(e.net_pay ?? 0), 0);
+        const totalMandatory = currentEntries.reduce((s, e) => s + Number(e.mandatory_deductions ?? 0), 0);
+        const totalLoanDeds = currentEntries.reduce((s, e) => s + Number(e.actual_loan_deductions ?? 0), 0);
+
+        // Deduction totals by code
+        const deductions = (dedRes.data ?? []) as { dedcode: string; dedname: string; dedamt: number; agency?: string }[];
+        const dedCodesResData = (dedCodesRes.data ?? []) as { dedcode: string; dedname: string; description?: string }[];
+        const dedCodeMap = new Map(dedCodesResData.map((d) => [d.dedcode, d]));
+        const dedAgg = new Map<string, { code: string; name: string; count: number; total: number }>();
+        for (const d of deductions) {
+          const existing = dedAgg.get(d.dedcode);
+          if (existing) { existing.total += d.dedamt; existing.count++; } else {
+            const codeInfo = dedCodeMap.get(d.dedcode);
+            dedAgg.set(d.dedcode, { code: d.dedcode, name: d.dedname || codeInfo?.description || d.dedcode, count: 1, total: d.dedamt });
           }
-        } else {
-          summaryResult = await supabase.from('dashboard_stats_cache').select('*').eq('id', 1).single();
-          setScopeDegraded(false);
-          setScopeError(null);
         }
+        const dedTotalsByCode = [...dedAgg.values()].sort((a, b) => b.total - a.total);
+
+        // Group stats
+        const groups = (groupsRes.data ?? []) as PayrollGroup[];
+        // If scoped, count employees per group from allEmps; otherwise use full employee list
+        const groupStats = groups.map((g) => {
+          const min = g.stacode_min ?? 0;
+          const max = g.stacode_max ?? 701;
+          const count = allEmps.filter((e) => {
+            const stacode = Number(e.stacode ?? 0);
+            return stacode >= min && stacode <= max;
+          }).length;
+          return { ...g, count };
+        });
+
+        // Active loan accounts: employees with non-zero loan deductions
+        const activeLoanAccounts = currentEntries.filter((e) => Number(e.actual_loan_deductions ?? 0) > 0).length;
+
+        const summaryResult = {
+          data: {
+            totalRecords,
+            activeEmployees,
+            totalGross,
+            totalNet,
+            totalMandatory,
+            totalLoanDeds,
+            processedCount: computedEntries.length + postedEntries.length,
+            pendingCount: pendingEntries.length,
+            currentPeriod,
+            periodNet: totalNet,
+            groupStats,
+            unassignedCount: 0,
+            activeLoanAccounts,
+            dedTotalsByCode,
+            recentEmployees: (recentRes.data ?? []) as DashboardData['recentEmployees'],
+          },
+          error: null,
+        };
+        setScopeDegraded(false);
+        setScopeError(null);
 
         const [gsisToday, gsisMonth, pliToday, pliMonth, auditResult] = await Promise.all([
           supabase.from('gsis_import_logs').select('created_at,new_deductions,updated_deductions,failed_records').gte('created_at', todayStart),
@@ -311,6 +377,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
     { label: 'Manage Masterfile', desc: 'Add or edit employees', icon: Users, color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', view: 'employees', show: can('employees') },
     { label: 'Generate Reports', desc: 'Payroll & remittance', icon: FileSpreadsheet, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', view: 'reports', show: can('reports') },
     { label: 'Users & Roles', desc: 'Manage user accounts', icon: UserCog, color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', view: 'users', show: can('user_management') },
+    { label: 'Plantilla Allocation List', desc: 'Encode & export PAL form', icon: ListTree, color: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300', view: 'plantilla_allocation', show: can('salary') },
   ];
   const quickActions = allActions.filter((a) => a.show);
 

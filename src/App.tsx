@@ -376,7 +376,7 @@ export default function App() {
       case 'positionmgmt': return <PositionManagement initialTab="positions" />;
       case 'positionimport': return <PositionManagement initialTab="import" />;
       case 'plantilla': return <PlantillaPositions />;
-      case 'plantilla_allocation': return <PlantillaAllocationList />;
+      case 'plantilla_allocation': return <PlantillaAllocationList initialTab={viewTab as 'elementary' | 'junior' | 'senior' | undefined} />;
       case 'nonplantilla': return <NonPlantillaItems />;
       case 'namevalidation': return <NameValidation />;
       case 'ca_dashboard': return <CommAllowance profile={profile} />;

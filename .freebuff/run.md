@@ -18,6 +18,16 @@ npm run dev
 
 This runs `vite --host localhost --port 5173 --strictPort` (configured in `package.json`).
 
+## Production deploy (Hostinger + Cloudflare tunnel)
+
+- Frontend static host: `https://scriviapayroll.com` (Hostinger). Upload `frontend/dist/` here — **not** the root `dist/` (stale Supabase-era code).
+- **Works-right-now fallback (2026-09-05):** the fixed app is ALSO served by PocketBase itself from `pocketbase_bin/pb_public/` → open **https://api.scriviapayroll.com/** on any computer (same origin as the API, no localhost, no Hostinger needed). Re-copy `frontend/dist/*` → `pocketbase_bin/pb_public/` after every rebuild.
+- PocketBase API: `https://api.scriviapayroll.com` (Cloudflare tunnel → local PocketBase on 8090, launched as `pocketbase.exe serve --dir …\pb_data`; default publicDir is `…\pocketbase_bin\pb_public`).
+- Build the upload with `VITE_PB_URL=https://api.scriviapayroll.com` baked in — `frontend/.env.production` sets this, so plain `cd frontend && npm run build` is correct (Vite picks `.env.production` in build mode over `.env.local`).
+- Local dev uses `frontend/.env.local` with `VITE_PB_URL=http://127.0.0.1:8090` (gitignored).
+- `frontend/index.html` CSP `connect-src` already lists `https://api.scriviapayroll.com` and `https://scriviapayroll.com/`; dev entries use 127.0.0.1, not localhost.
+- `pb.ts` reads the URL exclusively from `import.meta.env.VITE_PB_URL` — no localhost fallback exists, so a public page can never dial a local PocketBase.
+
 ## Current state (2026-09-04)
 
 Two Vite dev servers coexist on port 5173, started at login:
@@ -87,4 +97,6 @@ The file is also validated to start with a SQL keyword (CREATE/ALTER/DO/etc.) be
 | Supabase Analytics | 127.0.0.1 | 54327 |
 
 ## Credentials
-- **Super Admin:** `adonaimagno@gmail.com` / `Admin123!`
+- **Super Admin:** `adonaimagno@gmail.com` / `Admin123!` (reset 2026-09-05; also enabled `allowEmailAuth` on the profiles collection — it was silently blocking all email logins before)
+- **PocketBase admin UI** (`http://localhost:8090/_/`, also `https://api.scriviapayroll.com/_/` via tunnel): `admin@scrivia.local` / `Admin123456!`
+  - Reset if lost: `cd pocketbase_bin && ./pocketbase.exe admin update admin@scrivia.local "Admin123456!"`

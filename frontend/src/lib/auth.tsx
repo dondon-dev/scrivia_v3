@@ -68,7 +68,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchProfile = useCallback(async (userId: string): Promise<UserProfile | null> => {
     try {
       const record = await pb.collection('profiles').getOne(userId);
-      return record as unknown as UserProfile;
+      // PocketBase stores email verification in its native `verified` auth field;
+      // the app-level gate reads `email_verified`, so map it here (was previously
+      // undefined for every record, blocking even verified accounts at sign-in).
+      const rec = record as unknown as Record<string, unknown>;
+      return { ...record, email_verified: rec.verified === true } as unknown as UserProfile;
     } catch {
       return null;
     }

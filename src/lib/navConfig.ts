@@ -92,11 +92,22 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'emp_records', label: 'Employee Records', icon: Contact, permission: 'employees', viewKey: 'employees' },
       { id: 'emp_plantilla', label: 'PSIPOP', icon: Briefcase, permission: 'salary', viewKey: 'plantilla' },
-      { id: 'emp_plantilla_alloc', label: 'Plantilla Allocation List', icon: ListTree, permission: 'salary', viewKey: 'plantilla_allocation' },
       { id: 'emp_nonplantilla', label: 'Non-Plantilla Items', icon: UserPlus, permission: 'employees', viewKey: 'nonplantilla' },
       { id: 'emp_status', label: 'Employment Status', icon: BadgeCheck, permission: 'employees', viewKey: 'employees' },
       { id: 'emp_name_validation', label: 'Name Validation', icon: FileCheck2, permission: 'employees', viewKey: 'namevalidation' },
       { id: 'emp_movement', label: 'Personnel Movement History', icon: GitBranch, permission: 'employees', viewKey: 'employees' },
+    ],
+    subGroups: [
+      {
+        id: 'emp_pal_group',
+        label: 'Plantilla Allocation List',
+        icon: ListTree,
+        items: [
+          { id: 'emp_pal_elem', label: 'Elementary', icon: School, permission: 'salary', viewKey: 'plantilla_allocation', tab: 'elementary' },
+          { id: 'emp_pal_jhs', label: 'Junior High School', icon: GraduationCap, permission: 'salary', viewKey: 'plantilla_allocation', tab: 'junior' },
+          { id: 'emp_pal_shs', label: 'Senior High School', icon: GraduationCap, permission: 'salary', viewKey: 'plantilla_allocation', tab: 'senior' },
+        ],
+      },
     ],
   },
 

@@ -648,19 +648,87 @@ export const INITIAL_AUDIT_LOGS: PSIPOPAuditLog[] = [];  // No default entries �
 
 const LS_KEY = 'deped_plantilla_positions';
 
+/**
+ * Background sync: push localStorage PSIPOP positions to PocketBase
+ * in batches. Only runs when PB is empty (data exists only in localStorage).
+ * Silently ignores errors — this is best-effort.
+ */
+let syncRunning = false;
+async function syncLocalStorageToPB(positions: PlantillaPosition[]): Promise<void> {
+  if (syncRunning) return; // already running
+  syncRunning = true;
+  try {
+    // Check if PB already has data — skip if so
+    const existing = await fetchAll<PlantillaPosition>(() =>
+      supabase.from('plantilla_positions').select('id').limit(1)
+    );
+    if (existing && existing.length > 0) return; // PB already has data
+
+    // Insert in batches — strip IDs so PB generates its own
+    const BATCH = 25;
+    for (let i = 0; i < positions.length; i += BATCH) {
+      const batch = positions.slice(i, i + BATCH).map((p) => {
+        const { id, ...rest } = p;
+        return rest;
+      });
+      try {
+        await supabase.from('plantilla_positions').insert(batch);
+      } catch {
+        // continue with next batch
+      }
+      // Small delay to avoid overwhelming PB
+      if (i + BATCH < positions.length) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    // Update localStorage to match PB
+    localStorage.setItem(LS_KEY, JSON.stringify(positions));
+  } finally {
+    syncRunning = false;
+  }
+}
+
+/**
+ * If every position lacks a school code, show the PAL re-import warning so the
+ * user knows Org. Code (2) won't auto-fill. Clears the flag once codes exist.
+ */
+function markReimportIfSchoolCodeMissing(list: PlantillaPosition[] | null | undefined): void {
+  if (!Array.isArray(list) || list.length === 0) return;
+  const needsBackfill = list.every((p) => !p.school_id);
+  if (needsBackfill) {
+    localStorage.setItem('psi_pop_needs_reimport', '1');
+  } else {
+    localStorage.removeItem('psi_pop_needs_reimport');
+  }
+}
+
 export async function loadPlantillaPositions(): Promise<PlantillaPosition[]> {
   try {
     const data = await fetchAll<PlantillaPosition>(() =>
       supabase.from('plantilla_positions').select('*').order('item_number', { ascending: true })
     );
-    if (data && data.length > 0) return data;
+    if (data && data.length > 0) {
+      // Backfill: if school_id is empty for all items, the PSIPOP was imported
+      // before the school code extraction fix. Mark for re-import.
+      markReimportIfSchoolCodeMissing(data);
+      return data;
+    }
   } catch {
     // fall through to localStorage
   }
 
   const saved = localStorage.getItem(LS_KEY);
   if (saved) {
-    try { return JSON.parse(saved); } catch { /* ignore */ }
+    try {
+      const parsed = JSON.parse(saved);
+      markReimportIfSchoolCodeMissing(parsed);
+      // Background sync: if PB is empty but localStorage has data,
+      // push localStorage records to PB so the Plantilla Positions page shows them.
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        syncLocalStorageToPB(parsed).catch(() => {}); // fire-and-forget
+      }
+      return parsed;
+    } catch { /* ignore */ }
   }
   // No hardcoded seed data — the Plantilla Intelligence Center starts empty
   // until the user uploads real PSIPOP PDF files.

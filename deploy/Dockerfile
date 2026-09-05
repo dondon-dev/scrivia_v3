@@ -16,7 +16,19 @@ RUN npm ci || npm install
 COPY frontend/ ./
 RUN npm run build
 
-# ── Stage 2: Production image ────────────────────────────────────────────
+# ── Stage 2: Build custom PocketBase binary ───────────────────────────────
+# The custom routes in pocketbase/main.go (e.g. /api/permissions, /api/regions)
+# must be compiled in — the stock PocketBase binary does NOT include them.
+FROM golang:1.23-alpine AS pb-builder
+
+RUN apk add --no-cache gcc musl-dev
+WORKDIR /build
+COPY pocketbase/ ./
+
+RUN go mod download \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/pocketbase .
+
+# ── Stage 3: Production image ────────────────────────────────────────────
 FROM alpine:3.19
 
 RUN apk add --no-cache \
@@ -27,8 +39,8 @@ RUN apk add --no-cache \
     tzdata \
     && adduser -D -h /opt/freebuff freebuff
 
-# PocketBase binary
-COPY --from=ghcr.io/pocketbase/pocketbase:latest /pocketbase /usr/local/bin/pocketbase
+# Custom PocketBase binary (built from pocketbase/main.go)
+COPY --from=pb-builder /out/pocketbase /usr/local/bin/pocketbase
 
 # Application files
 WORKDIR /opt/freebuff

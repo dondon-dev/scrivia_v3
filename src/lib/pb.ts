@@ -10,9 +10,19 @@
  */
 import PocketBase, { RecordService, type RecordModel } from 'pocketbase';
 
-// ── PocketBase instance ────────────────────────────────────────────────────
+// ── PocketBase URL resolution ───────────────────────────────────────────────
+// The API base URL comes exclusively from the build-time env var VITE_PB_URL:
+//   .env.local      → the local dev PocketBase   (see .env.local)
+//   .env.production → the deployed PocketBase    (see .env.production)
+// There is deliberately NO code fallback pointing at a localhost URL, so a
+// production bundle can never dial the visitor's own machine (that is what
+// caused the CSP / upgrade-insecure-requests failures on the deployed
+// scriviapayroll.com site). With no env var set, '/' means same-origin
+// (PocketBase serving the SPA + API from one origin, as in the Docker deploy).
 const PB_URL =
-  (import.meta as any).env?.VITE_POCKETBASE_URL ?? 'http://localhost:8090';
+  ((import.meta.env.VITE_PB_URL as string | undefined) ?? '')
+    .trim()
+    .replace(/\/+$/, '') || '/';
 
 export const pb = new PocketBase(PB_URL);
 pb.autoCancellation(false);
