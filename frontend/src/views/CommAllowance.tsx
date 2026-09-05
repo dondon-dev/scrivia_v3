@@ -542,7 +542,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
           <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0" />
           <div className="flex-1">
             <p className="font-semibold">Database setup incomplete.</p>
-            <p className="mt-0.5">Run the <strong>one consolidated setup script</strong> in your Supabase SQL Editor to create all 4 CA tables plus the <strong>category</strong> and <strong>stacode</strong> columns, and RLS policies — it also reloads the PostgREST schema cache so the app sees them immediately:</p>
+            <p className="mt-0.5">Apply the <strong>PocketBase CA migration</strong> (<code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">pb_migrations/</code>) to create all 4 CA collections plus the <strong>category</strong> and <strong>stacode</strong> fields — or run the consolidated setup script in your PocketBase Admin SQL console:</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => {
@@ -556,7 +556,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                 <ClipboardCopy className="w-3.5 h-3.5" />
                 <span id="ca-copy-sql">Copy Setup SQL</span>
               </button>
-              <code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">supabase/migrations/20260808_CA_complete_setup.sql</code>
+              <code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">src/sql/ca_setup.sql</code>
             </div>
             <p className="mt-2 text-xs opacity-80">{dbError}</p>
           </div>

@@ -177,9 +177,11 @@ export function caErrMsg(err: unknown): string {
 /** True when a Supabase/PostgREST error means one of the CA tables is missing
  *  (migration not applied) — covers relation-not-found (42P01), PostgREST
  *  schema-cache misses (PGRST205: "Could not find the table … in the schema
- *  cache") and generic "does not exist" variants. */
+ *  cache") and generic "does not exist" variants. Also matches PocketBase's
+ *  missing-collection wording so the migrated (pb_migrations) app trips the
+ *  same setup banner instead of a plain error. */
 export function caIsMissingTable(msg: string): boolean {
-  return /could not find the table|in the schema cache|PGRST205|relation .* does not exist|42P01|does not exist/i.test(msg);
+  return /could not find the table|in the schema cache|PGRST205|relation .* does not exist|42P01|does not exist|couldn't find collection|collection or record wasn't found|no collection with/i.test(msg);
 }
 
 /** Classify a school STACODE into its payroll category: 001–499 → Elementary,
