@@ -86,7 +86,7 @@ function emptyNewEmp(): NewEmpForm {
 // ── Computed-column totals (13)-(19) sums ─────────────────────────────────
 
 type TotalKeys = 'J' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'S';
-interface TotalRow { [k in TotalKeys]: number }
+type TotalRow = Record<TotalKeys, number>;
 
 const emptyTotals = (): TotalRow => ({ J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 });
 
@@ -844,12 +844,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
               </span>
             )}
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Department of Education — {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''}.{loading ? ' Loading saved sheet…' : level ? <> <strong className="text-slate-700 dark:text-slate-200">{PAL_LEVELS[level].label}</strong> list — STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}.</> : ' All school levels.'} Type an EMPNO; columns (1), (5), (6), (9) &amp; (10) auto-fill from Employee Records and the latest PSIPOP.
-          </p>
-          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-            Formulas: (13)=(12)-(10) Sal. Diff · (14)=(13)×2.5% PHIC · (15)=(13)×0.12 RLIP · (16)=(13)+(14)+(15) Total Monthly · (17)=(16)×months · (18)=(10)×months MYB+YEB · (19)=(17)+(18) Total Funding
-          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium ${pill.cls}`}>

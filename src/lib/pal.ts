@@ -121,12 +121,12 @@ export async function savePalList(list: PalListRecord): Promise<PalListRecord> {
     if (upd.data && upd.data.length > 0) record = { ...(upd.data[0] as PalListRecord), rows };
     if (upd.error) throw new Error(`Could not save PAL list: ${upd.error.message}`);
   } else {
-    const created = await supabase.from('pal_lists').create({
+    const created = await supabase.from('pal_lists').insert({
       ...meta,
       rows,
     });
     if (created.error) throw new Error(`Could not create PAL list: ${created.error.message}`);
-    record = created.data as PalListRecord;
+    record = (Array.isArray(created.data) ? created.data[0] : created.data) as PalListRecord;
   }
 
   // Mirror to localStorage (offline fallback)
@@ -228,7 +228,7 @@ export async function listSavedPalLists(
     if (error) return [];
     return (data as unknown as PalListRecord[]).map((rec) => {
       let rows: PalRow[] = [];
-      const raw = (rec as Record<string, unknown>).rows;
+      const raw = (rec as unknown as Record<string, unknown>).rows;
       if (typeof raw === 'string') { try { rows = JSON.parse(raw); } catch { rows = []; } }
       else if (Array.isArray(raw)) rows = raw as PalRow[];
       return { ...rec, rows };

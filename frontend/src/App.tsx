@@ -635,10 +635,11 @@ export default function App() {
 
         {/* Content — page transitions (fade-up 0.4s easeOut on every view change) */}
         <main className="flex-1 p-4 lg:p-8 overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-[#0B1220] bg-[radial-gradient(ellipse_at_top,rgba(15,76,255,0.045),transparent_55%)]">
-          <div className={`mx-auto ${viewKey === 'creator' ? 'max-w-full px-0' : 'max-w-7xl'}`}>
+          <div className={`mx-auto ${viewKey === 'creator' || viewKey === 'plantilla_allocation' ? 'max-w-full px-0' : 'max-w-7xl'} ${viewKey === 'plantilla_allocation' ? 'h-full flex flex-col' : ''}`}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={viewKey}
+                className={viewKey === 'plantilla_allocation' ? 'h-full flex flex-col' : undefined}
                 variants={pageVariants}
                 initial="initial"
                 animate="animate"

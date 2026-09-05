@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import {
   Plus, Search, Trash2, Download, X, AlertTriangle, CheckCircle2, Loader2,
-  ListTree, RefreshCw, Info, UserX, UserPlus,
+  ListTree, RefreshCw, UserX, UserPlus,
 } from 'lucide-react';
 import { supabase } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
@@ -261,13 +261,74 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     setLevel(initialTab ?? null);
   }, [initialTab]);
 
-  useEffect(() => {
-    try { const saved = localStorage.getItem(lsKey); if (saved) { const p = JSON.parse(saved) as PalRow[]; if (Array.isArray(p)) setRows(p); } } catch { /* */ }
-  }, [lsKey]);
+  // ── PocketBase persistence (pal_lists collection) ──────────────────────
+  // One record per regcode+divcode+level scope; the `rows` JSON column holds
+  // the whole working sheet so the list survives across devices/sessions.
+  const [palRecordId, setPalRecordId] = useState<string | null>(null);
+  const [palLoaded, setPalLoaded] = useState(false);
 
   useEffect(() => {
-    try { if (rows.length > 0) localStorage.setItem(lsKey, JSON.stringify(rows)); else localStorage.removeItem(lsKey); } catch { /* */ }
-  }, [rows, lsKey]);
+    let cancelled = false;
+    setPalLoaded(false);
+    setPalRecordId(null);
+    const code = scopedCodes?.[0];
+    (async () => {
+      try {
+        if (!code || !level) { setRows([]); return; }
+        const items = await supabase.from('pal_lists').select('*').eq('regcode', code.regcode).eq('divcode', code.divcode).eq('level', level);
+        const rec = (items.data as any[] | null)?.[0] ?? null;
+        if (cancelled) return;
+        if (rec) {
+          setPalRecordId(rec.id);
+          const parsed = Array.isArray(rec.rows) ? rec.rows as PalRow[] : [];
+          setRows(parsed);
+          if (typeof rec.months === 'number' && rec.months >= 1 && rec.months <= 24) setMonths(rec.months);
+        } else {
+          setRows([]);
+        }
+      } catch {
+        if (!cancelled) setRows([]);
+      } finally {
+        if (!cancelled) setPalLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lsKey, level, scopedCodes]);
+
+  // Save rows + months back to PocketBase (debounced).
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!palLoaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const code = scopedCodes?.[0];
+      if (!code || !level) return;
+      // Never create an empty record on first paint — wait for real content.
+      if (!palRecordId && rows.length === 0) return;
+      const scope = { regcode: code.regcode, divcode: code.divcode, level };
+      (async () => {
+        try {
+          const payload = {
+            ...scope,
+            region_name: selectedRegion?.region_name ?? '',
+            division_name: selectedDivision?.division_name ?? '',
+            months,
+            rows: JSON.stringify(rows),
+            status: rows.length > 0 ? 'active' : 'empty',
+          };
+          if (palRecordId) {
+            await supabase.from('pal_lists').update(payload).eq('id', palRecordId);
+          } else {
+            const created = await supabase.from('pal_lists').insert(payload);
+            // insert() resolves to { data: <single record> } (not an array).
+            const newRec = created.data as any;
+            if (newRec?.id) setPalRecordId(newRec.id);
+          }
+        } catch { /* non-blocking — UI keeps working; next save retries */ }
+      })();
+    }, 500);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [rows, months, palLoaded, palRecordId, level, scopedCodes, selectedRegion, selectedDivision]);
 
   useEffect(() => {
     setPsipopLoading(true); cachedPsipop = null;
@@ -328,7 +389,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       uid: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       empno: '', incumbent: '', positionTitle: '', itemNumber: '',
       grade: 0, step: 0, monthly: 0, poscode: '', employeeFound: false, psipopMatched: false,
-      note: 'Encode EMPNO to auto-fill from Employee Records & PSIPOP.',
+      note: 'Add EMPNO to auto-fill from Employee Records & PSIPOP.',
     }]);
     setPage(9999);
     setMessage(null);
@@ -651,9 +712,12 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           for (const [col, style] of [['A','50'],['B','51'],['E','52'],['F','53'],['G','54'],['I','56'],['J','57'],['K','56'],['L','57'],['M','58'],['N','58'],['O','58'],['P','58'],['Q','57'],['R','57'],['S','57']] as [string,string][]) {
             rowBody = replaceCell(rowBody, col, r, `<c r="${col}${r}" s="${style}"/>`);
           }
-          // Also clear T-U (remarks)
-          for (const col of ['T', 'U', 'V']) {
-            rowBody = replaceCell(rowBody, col, r, `<c r="${col}${r}" s="59"/>`);
+          // Clear remarks (T-V merged cell) — keep the template's per-cell
+          // styles so the box borders stay intact: T=s59 (left), U=s60 (middle),
+          // V=s61 (right). Forcing all three to s59 earlier dropped the right
+          // vertical border, leaving the Remarks column open on that side.
+          for (const [col, style] of [['T', '59'], ['U', '60'], ['V', '61']] as [string, string][]) {
+            rowBody = replaceCell(rowBody, col, r, `<c r="${col}${r}" s="${style}"/>`);
           }
         }
 
@@ -701,7 +765,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   // ── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-4">
+    <div className="h-full flex flex-col gap-4">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-black tracking-tight text-slate-800 dark:text-white flex items-center gap-2">
@@ -713,12 +777,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
               </span>
             )}
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Department of Education — {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''}.{level ? <> <strong className="text-slate-700 dark:text-slate-200">{PAL_LEVELS[level].label}</strong> list — STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}.</> : ' All school levels.'} Type an EMPNO; columns (1), (5), (6), (9) &amp; (10) auto-fill from Employee Records and the latest PSIPOP.
-          </p>
-          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-            Formulas: (13)=(12)-(10) Sal. Diff · (14)=(13)×2.5% PHIC · (15)=(13)×0.12 RLIP · (16)=(13)+(14)+(15) Total Monthly · (17)=(16)×months · (18)=(13)×12 MYB+YEB · (19)=(17)+(18) Total Funding
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={clearRows} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
@@ -769,17 +827,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
             No filled PSIPOP positions are loaded in this PocketBase (<code className="font-mono">plantilla_positions</code> is empty). Employee name, SG/step &amp; monthly rate will still auto-fill from Employee Records; <strong>Item No. (1)</strong> appears once you import the latest PSIPOP (Plantilla Intelligence Center) and re-open this page.
           </div>
         </div>
-      ) : (
-        <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          Latest PSIPOP basis: {psipop.year ? `FY ${psipop.year} · ` : ''}{psipop.items.length.toLocaleString()} filled items — Item No. (1) auto-matches by incumbent name.
-        </div>
-      )}
-
-      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-        <Info className="w-4 h-4 shrink-0" />
-        Position Title (6) resolves via Position Management masterfile (Position code → title), falling back to the matched PSIPOP item.
-      </div>
+      ) : null}
 
       {typeof window !== 'undefined' && localStorage.getItem('psi_pop_needs_reimport') === '1' && (
         <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -796,44 +844,46 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         </div>
       )}
 
-      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); handleQuickEncode(); }}>
+      <form className="flex flex-wrap items-center gap-x-4 gap-y-2" onSubmit={(e) => { e.preventDefault(); handleQuickEncode(); }}>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-          <input ref={quickRef} value={quickEmpno} onChange={(e) => setQuickEmpno(e.target.value)} placeholder="Type EMPNO, press Enter to encode…"
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+          <input ref={quickRef} value={quickEmpno} onChange={(e) => setQuickEmpno(e.target.value)} placeholder="Type EMPNO, press Enter to add…"
+            className="w-full pl-10 pr-4 py-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
         </div>
-        <button type="submit" disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Encode
+        <button type="submit" disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center gap-1.5 px-6 py-3 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Add
         </button>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400 pl-3 border-l border-slate-200 dark:border-slate-700">
+          <span><strong className="text-slate-700 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
+          <span><strong className="text-slate-700 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
+          <span className="text-emerald-600"><strong>{stats.withItem}</strong> with PSIPOP item</span>
+          {stats.missingPsipop > 0 && <span className="text-amber-600"><strong>{stats.missingPsipop}</strong> missing item no.</span>}
+          {stats.notFound > 0 && <span className="text-rose-600"><strong>{stats.notFound}</strong> EMPNO not found</span>}
+        </div>
       </form>
 
-      <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-        <span><strong className="text-slate-700 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
-        <span><strong className="text-slate-700 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
-        <span className="text-emerald-600"><strong>{stats.withItem}</strong> with PSIPOP item</span>
-        {stats.missingPsipop > 0 && <span className="text-amber-600"><strong>{stats.missingPsipop}</strong> missing item no.</span>}
-        {stats.notFound > 0 && <span className="text-rose-600"><strong>{stats.notFound}</strong> EMPNO not found</span>}
-      </div>
-
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex-1 min-h-0 flex flex-col">
         {rows.length === 0 ? (
-          <div className="py-16 text-center">
-            <ListTree className="w-10 h-10 mx-auto mb-3 text-slate-200 dark:text-slate-700" />
-            <p className="text-sm text-slate-400">No rows yet. Type an EMPNO above (or click Add Row) to start encoding.</p>
+          <div className="flex-1 flex items-center justify-center text-center">
+            <div>
+              <ListTree className="w-10 h-10 mx-auto mb-3 text-slate-200 dark:text-slate-700" />
+              <p className="text-sm text-slate-400">No rows yet. Type an EMPNO above (or click Add Row) to start encoding.</p>
+            </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <>
+          <div className="flex-1 min-h-0 overflow-auto">
+            <table className="w-full h-full text-sm">
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th className="text-left px-3 py-2.5 font-medium w-32">EMPNO</th>
-                  <th className="text-left px-3 py-2.5 font-medium min-w-[16rem]">Item No. (per latest PSIPOP) <span className="text-slate-400 normal-case">(1)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Org. Code <span className="text-slate-400 normal-case">(2)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Name of Incumbent <span className="text-slate-400 normal-case">(5)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Position Title <span className="text-slate-400 normal-case">(6)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium min-w-[10rem]">DepEd Approved Position <span className="text-slate-400 normal-case">(7)</span></th>
-                  <th className="text-center px-3 py-2.5 font-medium">SG/Step <span className="text-slate-400 normal-case">(9)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium">Monthly Rate <span className="text-slate-400 normal-case">(10)</span></th>
+                  <th className="text-left px-4 py-3 font-medium w-32">EMPNO</th>
+                  <th className="text-left px-4 py-3 font-medium min-w-[17rem]">Item No. (per latest PSIPOP) <span className="text-slate-400 normal-case">(1)</span></th>
+                  <th className="text-left px-4 py-3 font-medium">Org. Code <span className="text-slate-400 normal-case">(2)</span></th>
+                  <th className="text-left px-4 py-3 font-medium">Name of Incumbent <span className="text-slate-400 normal-case">(5)</span></th>
+                  <th className="text-left px-4 py-3 font-medium">Position Title <span className="text-slate-400 normal-case">(6)</span></th>
+                  <th className="text-left px-4 py-3 font-medium min-w-[12rem]">DepEd Approved Position <span className="text-slate-400 normal-case">(7)</span></th>
+                  <th className="text-center px-4 py-3 font-medium">SG/Step <span className="text-slate-400 normal-case">(9)</span></th>
+                  <th className="text-right px-4 py-3 font-medium">Monthly Rate <span className="text-slate-400 normal-case">(10)</span></th>
                   <th className="text-center px-3 py-2.5 font-medium">Approved SG <span className="text-slate-400 normal-case">(11)</span></th>
                   <th className="text-right px-3 py-2.5 font-medium">Approved Rate <span className="text-slate-400 normal-case">(12)</span></th>
                   <th className="text-right px-3 py-2.5 font-medium"></th>
@@ -844,11 +894,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                   const lookupHint = r.employeeFound && !r.psipopMatched;
                   return (
                     <tr key={r.uid} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors">
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-3">
                         <span className="font-mono font-semibold text-slate-800 dark:text-slate-100">{r.empno || '—'}</span>
                         {r.employeeFound && <button className="ml-1.5 align-middle" onClick={() => removeRow(r.uid)}><X className="w-3.5 h-3.5 text-slate-300 hover:text-rose-500" /></button>}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-3">
                         {r.itemNumber ? (
                           <button onClick={() => setPickerFor(r)} className="text-left font-mono text-[11px] leading-tight text-blue-700 dark:text-blue-300 hover:underline">
                             {r.itemNumber}{r.itemYear ? <span className="block text-[10px] text-slate-400">FY {r.itemYear}</span> : null}
@@ -860,14 +910,14 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           </button>
                         )}
                       </td>
-                      <td className="px-3 py-2 font-mono text-[12px] text-slate-600 dark:text-slate-300">{r.orgCode || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-3 font-mono text-[13px] text-slate-600 dark:text-slate-300">{r.orgCode || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
+                      <td className="px-4 py-3">
                         {r.incumbent ? <span className="font-medium text-slate-800 dark:text-slate-100 text-[13px]">{r.incumbent}</span>
                           : r.employeeFound ? <span className="text-slate-400 text-xs">—</span>
                           : <span className="inline-flex items-center gap-1 text-rose-600 text-xs"><UserX className="w-3.5 h-3.5" /> not found</span>}
                       </td>
-                      <td className="px-3 py-2 text-[13px] text-slate-700 dark:text-slate-200">{r.positionTitle || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}</td>
-                      <td className="px-3 py-2 relative">
+                      <td className="px-4 py-3 text-[13px] text-slate-700 dark:text-slate-200">{r.positionTitle || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}</td>
+                      <td className="px-4 py-3 relative">
                         <div className="relative">
                           <input type="text" value={approvedPosDropdown === r.uid ? approvedPosSearch : (r.approvedPosition || '')} placeholder="—"
                             onFocus={() => { setApprovedPosDropdown(r.uid); setApprovedPosSearch(r.approvedPosition || ''); }}
@@ -916,11 +966,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-center text-[13px]">{r.grade > 0 ? fmtGradeStep(r.grade, r.step) : '—'}</td>
-                      <td className="px-3 py-2 text-right text-[13px] tabular-nums">{r.monthly > 0 ? currency(r.monthly) : '—'}</td>
-                      <td className="px-3 py-2 text-center text-[13px] text-emerald-700 dark:text-emerald-300 font-medium">{r.approvedGrade || '—'}</td>
-                      <td className="px-3 py-2 text-right text-[13px] tabular-nums text-emerald-700 dark:text-emerald-300">{r.approvedMonthly ? currency(r.approvedMonthly) : '—'}</td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-4 py-3 text-center text-[13px]">{r.grade > 0 ? fmtGradeStep(r.grade, r.step) : '—'}</td>
+                      <td className="px-4 py-3 text-right text-[13px] tabular-nums">{r.monthly > 0 ? currency(r.monthly) : '—'}</td>
+                      <td className="px-4 py-3 text-center text-[13px] text-emerald-700 dark:text-emerald-300 font-medium">{r.approvedGrade || '—'}</td>
+                      <td className="px-4 py-3 text-right text-[13px] tabular-nums text-emerald-700 dark:text-emerald-300">{r.approvedMonthly ? currency(r.approvedMonthly) : '—'}</td>
+                      <td className="px-4 py-3 text-right">
                         <button onClick={() => removeRow(r.uid)} className="inline-flex items-center gap-1 text-[11px] text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md px-2 py-1 transition-colors" title="Remove">
                           <Trash2 className="w-3.5 h-3.5" /> Remove
                         </button>
@@ -940,10 +990,13 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
               </div>
             )}
           </div>
+          <Pagination pagination={{ page, setPage, totalPages, total: rows.length, pageSize: PAGE_SIZE }} label="employees" />
+          </>
         )}
+        <div className="border-t border-slate-100 dark:border-slate-800 px-4 py-2">
+          <p className="text-[10px] text-slate-400 dark:text-slate-500">Rows are saved to the {level ?? 'selected'} allocation list in PocketBase (pal_lists — one record per region + division + school level) until you clear them. The list shows 6 employees per page to match the printed PAL layout; Export produces the DBM-DepEd Annex R-1 PAL form — fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) and columns M-S compute automatically.</p>
+        </div>
       </div>
-
-      <Pagination pagination={{ page, setPage, totalPages, total: rows.length, pageSize: PAGE_SIZE }} label="employees" />
 
       {pickerFor && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm">
@@ -1195,7 +1248,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         </div>
       )}
 
-      <p className="text-[10px] text-slate-300 dark:text-slate-600">Rows are saved locally for this division and school level ({lsKey}) until you clear them. The list shows 6 employees per page to match the printed PAL layout; Export produces the DBM-DepEd Annex R-1 PAL form — fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) and columns M-S compute automatically.</p>
     </div>
   );
 }
