@@ -5,7 +5,7 @@ import {
   FileSpreadsheet, RefreshCw,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { downloadFile, currency, generateCsv, generateExcel, generatePayrollDbf } from '@/lib/reports';
 import { useAuth } from '@/lib/auth';
 import { useOrg, matchesOrgScope } from '@/lib/org';
@@ -80,7 +80,7 @@ export default function PayrollDbfManager({ category }: { category?: PayrollCate
         supabase.from('pay_periods').select('*').order('start_date', { ascending: false }),
         fetchAll(() => supabase.from('employees').select('*').order('last_name')),
       ]);
-      const scopedPer = (per ?? []).filter((p) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
+      const scopedPer = (per ?? []).filter((p: { division_id?: string | null; regcode?: string | null; divcode?: string | null }) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
       setPeriods(scopedPer);
       // Honor the selected Region/Division scope — REGCODE + DIVCODE are the
       // unique reference for one division's payroll.

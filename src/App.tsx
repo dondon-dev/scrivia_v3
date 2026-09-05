@@ -14,7 +14,7 @@ import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 import { usePermissions } from '@/lib/permissions';
 import { ROLE_LABELS, ROLE_COLORS, type UserRole } from '@/types/auth';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
 import { canManageUsers, isSuperAdminRole } from '@/lib/authz';
 import { getLockdown, unlockDatabase, activateLockdown, subscribeLockdown, syncLockdownFromDb } from '@/lib/lockdown';
@@ -360,6 +360,8 @@ export default function App() {
       case 'backup': return <BackupRestore />;
       case 'restore': return <RestoreData />;
       case 'smartimport': return <SmartImport />;
+      case 'smartimport_elementary': return <SmartImport initialCategory="elementary" />;
+      case 'smartimport_highschool': return <SmartImport initialCategory="highschool" />;
       case 'importbackup': return <ImportBackup />;
       case 'pliimport': return <PliImport />;
       case 'gsisimport': return <GsisImport />;

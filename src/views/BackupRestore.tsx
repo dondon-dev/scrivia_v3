@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { DatabaseBackup, Download, Upload, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 import { inCategory } from '@/lib/categories';
@@ -113,7 +113,7 @@ export default function BackupRestore() {
         if (error) throw error;
         // Count — assume all are upserts
         const { data: existing } = await supabase.from('employees').select('id').in('id', batch.map((e) => e.id));
-        const existingIds = new Set(existing?.map((r) => r.id) ?? []);
+        const existingIds = new Set<string>((existing as { id: string }[] ?? []).map((r) => r.id));
         for (const e of batch) {
           if (existingIds.has(e.id)) updated++;
           else inserted++;

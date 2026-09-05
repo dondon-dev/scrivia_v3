@@ -2,7 +2,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useState,
   type ReactNode,
 } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
 import { mergeFeatures, type Division, type Region } from '@/types/org';

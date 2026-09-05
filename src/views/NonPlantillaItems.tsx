@@ -3,7 +3,7 @@ import {
   Plus, Search, Pencil, Trash2, X, Download, Upload, AlertCircle,
   CheckCircle2, UserPlus, FileSpreadsheet, ChevronUp, ChevronDown,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 import { Pagination, usePagination } from '@/components/Pagination';

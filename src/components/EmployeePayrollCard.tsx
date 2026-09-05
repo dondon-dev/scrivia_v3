@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, ChevronLeft, ChevronRight, Printer, ShieldAlert, ShieldCheck, Landmark, Wallet, FileText, User, CreditCard, Building2, Briefcase } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { usePositions } from '@/lib/usePositions';
 import type { Employee, PayrollEntry, PayPeriod, PayrollDeduction, DeductionCode } from '@/types/payroll';
 import { computePayrollDeductions } from '@/lib/payroll';

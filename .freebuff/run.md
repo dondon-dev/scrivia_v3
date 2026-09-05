@@ -2,7 +2,7 @@
 
 ## Reproduce uncommitted artifacts
 
-This thread's workspace is the main checkout (`C:\scriviacloud`), so no env file copying is needed.
+This thread's workspace is the main checkout (`C:\scriviacloudV2`), so no env file copying is needed.
 
 Dependencies are pre-installed (`node_modules/` present with `bun.lock` and `package-lock.json`). If starting fresh:
 
@@ -17,6 +17,16 @@ npm run dev
 ```
 
 This runs `vite --host localhost --port 5173 --strictPort` (configured in `package.json`).
+
+## Current state (2026-09-04)
+
+Two Vite dev servers coexist on port 5173, started at login:
+
+- **Frontend copy (Preview target):** `node ...frontend\node_modules\vite\bin\vite.js --host localhost --port 5173 --strictPort`
+  — serves `frontend/src`, bound to `[::1]:5173`. `http://localhost:5173` resolves here (IPv6 first), so the browser/Preview app is the **frontend** tree. This is the live copy all feature work is verified against.
+- **Root copy:** `node node_modules\vite\bin\vite.js --host --port 5173` — serves the root `src/` tree, bound to `0.0.0.0:5173` (IPv4 `127.0.0.1`).
+
+PocketBase (`pocketbase_bin\pocketbase.exe serve`) listens on `127.0.0.1:8090`. Do NOT start another Vite on 5173 (`strictPort` will fail); if the frontend server is down, relaunch it from the `frontend/` directory.
 
 ## Auto-start on Windows login
 

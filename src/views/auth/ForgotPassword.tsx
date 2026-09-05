@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Mail, ArrowRight } from 'lucide-react';
 import { ScriviaLogo, ScriviaWordmark } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pb';
 import { turnstileEnabled, verifyTurnstileToken } from '@/lib/turnstile';
 import { TurnstileWidget, type TurnstileWidgetHandle } from '@/components/TurnstileWidget';
 
@@ -12,6 +12,7 @@ export default function ForgotPassword({ onSwitch }: { onSwitch: (view: 'login' 
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState('');
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -30,15 +31,23 @@ export default function ForgotPassword({ onSwitch }: { onSwitch: (view: 'login' 
     }
 
     setLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-      redirectTo: `${window.location.origin}/#reset`,
-    });
-    setLoading(false);
+    try {
+      // Call PocketBase hook to request password reset
+      const { error } = await pb.send('/api/auth/request-password-reset', {
+        method: 'POST',
+        body: { email: email.trim().toLowerCase(), redirect_url: `${window.location.origin}/#reset` },
+      });
+      setLoading(false);
 
-    // Always acknowledge identically so the screen cannot be used to discover
-    // which email addresses have an account.
-    if (error) console.error('Password reset request failed', error);
-    setSent(true);
+      // Always acknowledge identically so the screen cannot be used to discover
+      // which email addresses have an account.
+      if (error) console.error('Password reset request failed', error);
+      setSent(true);
+    } catch (err: any) {
+      setLoading(false);
+      console.error('Password reset request failed', err);
+      setSent(true);
+    }
   };
 
   if (sent) {

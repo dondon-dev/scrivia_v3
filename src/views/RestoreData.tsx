@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
-import { supabase, fetchAll, formatError } from '@/lib/supabase';
+import { supabase, fetchAll, formatError } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { decodeDbf, type DbfField } from '@/lib/dbf';
 import { syncMastfile, syncDedfile, type SyncResult } from '@/lib/restoreSync';

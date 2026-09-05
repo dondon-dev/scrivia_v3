@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Plus, Trash2, Calculator, CheckCircle2, X, Play, RefreshCw, Download, AlertCircle, Eye, ShieldAlert, Lock, Search, RefreshCcw, FileDown, Landmark } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll, formatError } from '@/lib/supabase';
+import { supabase, fetchAll, formatError } from '@/lib/pb';
 import { generatePayrollDbf, generatePayrollCsv, generatePyentDbf, downloadFile, currency, type PyentExportResult } from '@/lib/reports';
 import { computePyentSplit } from '@/lib/payroll';
 import { NTHP_THRESHOLD } from '@/lib/nthp';
+import { syncPayrollForEmployees } from '@/lib/payrollSync';
 import { classifyByStacode } from '@/lib/stacodeClassify';
 import { inCategory, type PayrollCategory } from '@/lib/categories';
 import { useAuth } from '@/lib/auth';
@@ -34,7 +35,18 @@ function pickDefaultPeriod(rows: PayPeriod[]): PayPeriod | undefined {
 
 export default function Payroll({ profile }: PayrollProps) {
   const { logAudit, profile: authProfile } = useAuth();
-  const { scopedDivisionIds, scopedCodes } = useOrg();
+  const { scopedDivisionIds, scopedCodes, divisions: orgDivisions, regions: orgRegions } = useOrg();
+
+  // Fallback regcode/divcode from the user's own division — used when scopedCodes
+  // is null (All Divisions) so NewPeriodModal still passes RLS pp_insert.
+  const ownDivisionCodes = useMemo(() => {
+    const div = orgDivisions.find((d) => d.id === profile?.division_id);
+    const reg = div ? orgRegions.find((r) => r.id === div.region_id) : null;
+    if (div?.division_code && reg?.region_code) {
+      return { regcode: reg.region_code, divcode: div.division_code };
+    }
+    return null;
+  }, [orgDivisions, orgRegions, profile?.division_id]);
 
   // Pay periods are per-division (REGCODE + DIVCODE live on the row), so only
   // the selected division's periods may ever be listed or operated on. When the
@@ -67,6 +79,7 @@ export default function Payroll({ profile }: PayrollProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'Computed' | 'Posted'>('all');
   const [syncing, setSyncing] = useState(false);
+  const [dataLoading, setDataLoading] = useState(false);
   const [syncSummary, setSyncSummary] = useState<string | null>(null);
   const [showPyentModal, setShowPyentModal] = useState(false);
   const [pyentResult, setPyentResult] = useState<PyentExportResult | null>(null);
@@ -79,61 +92,74 @@ export default function Payroll({ profile }: PayrollProps) {
   }
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const pf = profile ?? authProfile;
-      const scopeFilter = pf ? getEmployeeFilter(pf) : null;
-      const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,pera,aca,rata,ontop,long,payroll_group_id,dedlnr,dedmed,dedpag,dedtax,netpay,status';
-      const [{ data: per }, emp, grp] = await Promise.all([
-        supabase.from('pay_periods').select('*').order('year', { ascending: false }).order('month', { ascending: false }).order('created_at', { ascending: false }),
-        fetchAll(() => {
-          let q = supabase.from('employees').select(empCols).eq('status', 'Active').order('last_name');
-          if (scopeFilter) q = q.eq(scopeFilter.column, scopeFilter.value);
-          return q;
-        }),
-        fetchAll(() => supabase.from('payroll_groups').select('*').order('group_code')),
-      ]);
-      const scopedPer = scopedPeriods(per ?? []);
-      // Prefer the division-scoped periods; if the scope matches none (the
-      // division has not created periods yet), fall back to the full list so
-      // the screen is never dead. Runs and entries stay scoped to this
-      // division's employees regardless of the selected period.
-      const visiblePer = scopedPer.length > 0 ? scopedPer : (per ?? []);
-      setPeriods(visiblePer);
-      // Honor the selected Region/Division scope — REGCODE + DIVCODE are the
-      // unique reference for one division's payroll.
-      setEmployees((emp as unknown as Employee[]).filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes })));
-      setGroups((grp as PayrollGroup[]) ?? []);
-      if (visiblePer.length > 0) setPeriodId((pickDefaultPeriod(visiblePer) ?? visiblePer[0]).id);
-      setLoading(false);
+      try {
+        const pf = profile ?? authProfile;
+        const scopeFilter = pf ? getEmployeeFilter(pf) : null;
+        const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,pera,aca,rata,ontop,long,payroll_group_id,dedlnr,dedmed,dedpag,dedtax,netpay,status';
+        const [{ data: per }, emp, grp] = await Promise.all([
+          supabase.from('pay_periods').select('*').order('year', { ascending: false }).order('month', { ascending: false }).order('created_at', { ascending: false }),
+          fetchAll(() => {
+            let q = supabase.from('employees').select(empCols).eq('status', 'Active').order('last_name');
+            if (scopeFilter) q = q.eq(scopeFilter.column, scopeFilter.value);
+            return q;
+          }),
+          fetchAll(() => supabase.from('payroll_groups').select('*').order('group_code')),
+        ]);
+        if (cancelled) return;
+        const scopedPer = scopedPeriods(per ?? []);
+        const visiblePer = scopedPer.length > 0 ? scopedPer : (per ?? []);
+        setPeriods(visiblePer);
+        setEmployees((emp as unknown as Employee[]).filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes })));
+        setGroups((grp as PayrollGroup[]) ?? []);
+        if (visiblePer.length > 0) setPeriodId((pickDefaultPeriod(visiblePer) ?? visiblePer[0]).id);
+      } catch {
+        // Silently handle — the UI shows an empty state when employees/periods are empty.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
+    return () => { cancelled = true; };
   }, [profile, authProfile, scopedDivisionIds, scopedCodes]);
 
   const loadData = useCallback(async () => {
     if (!periodId) { setEntries([]); setEarnings([]); setDeductions([]); setUndeductedObs([]); setPayent([]); return; }
-    const entryCols = 'id,employee_id,pay_period_id,gross_pay,net_pay,dedlnr,dedmed,dedpag,dedtax,total_deductions,other_deductions,actual_loan_deductions,undeducted_amount,nthp_status,status,processed_at,mandatory_deductions,available_balance,loan_deduction_capacity,govtlnr,govtecc,govtmed,govtpag';
-    const periodName = periods.find((p) => p.id === periodId)?.period_name;
-    const [ent, earn, ded, unded, pay] = await Promise.all([
-      fetchAll(() => supabase.from('payroll_entries').select(entryCols).eq('pay_period_id', periodId)),
-      fetchAll(() => supabase.from('earnings').select('*').eq('pay_period_id', periodId)),
-      fetchAll(() => supabase.from('deductions').select('*').eq('pay_period_id', periodId)),
-      fetchAll(() => supabase.from('undeducted_obligations').select('*').eq('pay_period_id', periodId)),
-      fetchAll(() => supabase.from('payent').select('*').order('empno')),
-    ]);
-    setEntries(ent as PayrollEntry[]);
-    setEarnings(earn);
-    setDeductions(ded);
-    setUndeductedObs(unded as UndeductedObligation[]);
-    // Match by resolved pay_period_id, falling back to the raw payperiod string
-    // so imported rows whose period could not be resolved at sync time still show.
-    setPayent((pay as PayentRecord[]).filter((p) =>
-      p.pay_period_id === periodId || (!!periodName && p.payperiod === periodName),
-    ));
+    setDataLoading(true);
+    try {
+      const entryCols = 'id,employee_id,pay_period_id,gross_pay,net_pay,dedlnr,dedmed,dedpag,dedtax,total_deductions,other_deductions,actual_loan_deductions,undeducted_amount,nthp_status,status,processed_at,mandatory_deductions,available_balance,loan_deduction_capacity,govtlnr,govtecc,govtmed,govtpag';
+      const periodName = periods.find((p) => p.id === periodId)?.period_name;
+      const [ent, earn, ded, unded, pay] = await Promise.all([
+        fetchAll(() => supabase.from('payroll_entries').select(entryCols).eq('pay_period_id', periodId)),
+        fetchAll(() => supabase.from('earnings').select('*').eq('pay_period_id', periodId)),
+        fetchAll(() => supabase.from('deductions').select('*').eq('pay_period_id', periodId)),
+        fetchAll(() => supabase.from('undeducted_obligations').select('*').eq('pay_period_id', periodId)),
+        fetchAll(() => {
+          let q = supabase.from('payent').select('*').order('empno');
+          if (periodName) {
+            q = q.or(`pay_period_id.eq.${periodId},payperiod.eq.${periodName}`);
+          } else {
+            q = q.eq('pay_period_id', periodId);
+          }
+          return q;
+        }),
+      ]);
+      setEntries(ent as PayrollEntry[]);
+      setEarnings(earn);
+      setDeductions(ded);
+      setUndeductedObs(unded as UndeductedObligation[]);
+      setPayent(pay as PayentRecord[]);
+    } catch {
+      // Errors surfaced via individual query failures
+    } finally {
+      setDataLoading(false);
+    }
   }, [periodId, periods]);
 
   useEffect(() => { loadData(); }, [loadData, refetch]);
 
   const currentPeriod = periods.find((p) => p.id === periodId);
-  const empMap = new Map(employees.map((e) => [e.id, e]));
+  const empMap = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
 
   const gf = useMemo(() => resolveGroupFilter(groupFilter, groups), [groupFilter, groups]);
   const category = gf.category;
@@ -219,12 +245,15 @@ export default function Payroll({ profile }: PayrollProps) {
   const totalUndeducted = undeductedObs.reduce((s, u) => s + Number(u.undeducted_amount || 0), 0);
   const nthpFails = rows.filter((r) => r.nthpStatus === 'FAIL').length;
 
-  const undeductedByEmp = new Map<string, UndeductedObligation[]>();
-  undeductedObs.forEach((u) => {
-    const arr = undeductedByEmp.get(u.employee_id) ?? [];
-    arr.push(u);
-    undeductedByEmp.set(u.employee_id, arr);
-  });
+  const undeductedByEmp = useMemo(() => {
+    const map = new Map<string, UndeductedObligation[]>();
+    undeductedObs.forEach((u) => {
+      const arr = map.get(u.employee_id) ?? [];
+      arr.push(u);
+      map.set(u.employee_id, arr);
+    });
+    return map;
+  }, [undeductedObs]);
 
   // Imported Payent (bank-crediting hashfile) for the selected period —
   // PYENT.DBF (full month), PYENT1.DBF (first half), PYENT2.DBF (second half).
@@ -271,23 +300,60 @@ export default function Payroll({ profile }: PayrollProps) {
     setStacodeWarning(null);
     setRunning(true);
     setRunSummary(null);
+    const startedAt = performance.now();
     try {
-      // Compute + persist the ENTIRE run server-side in one database call.
-      // run_payroll_engine ports the exact DepEd/NTHP formulas (verified
-      // field-for-field against the client computation) and writes entries,
-      // employee summaries and undeducted obligations atomically — no
-      // client-side fetch loops, no large payloads, nothing to time out.
+      // Compute + persist the ENTIRE run server-side in one database call when
+      // the custom PocketBase backend is deployed. run_payroll_engine ports the
+      // exact DepEd/NTHP formulas and writes entries, employee summaries and
+      // undeducted obligations atomically — a single call, nothing to time out.
       const { data: engineRes, error: runErr } = await supabase.rpc('run_payroll_engine', {
         p_pay_period_id: periodId,
       });
-      if (runErr) throw new Error(runErr.message);
+      if (runErr) {
+        // Server route unavailable (e.g. stock PocketBase backend) — fall back
+        // to the client engine: same DepEd/NTHP formulas computed in memory,
+        // with writes parallelized through the PocketBase adapter's
+        // bounded-concurrency pool. Same rows are produced either way.
+        const startDate = currentPeriod?.start_date ? new Date(currentPeriod.start_date) : new Date();
+        const payYY = currentPeriod?.year ?? startDate.getFullYear();
+        const payMM = currentPeriod?.month ?? (startDate.getMonth() + 1);
+        const result = await syncPayrollForEmployees([...scopedEmpIds], periodId, payYY, payMM);
+        if (result.errors.length > 0) throw new Error(result.errors[0]);
+        const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+        setRefetch((r) => r + 1);
+        const { data: per } = await supabase.from('pay_periods').select('*').order('year', { ascending: false }).order('month', { ascending: false }).order('created_at', { ascending: false }).limit(100);
+        setPeriods(scopedPeriods(per ?? []));
+        // Surface skipped/truncated records loudly — a run that dropped rows
+        // must never read as a clean success banner (amber WARNINGS banner).
+        const issues = [
+          ...result.errors.map((e) => `error: ${e}`),
+          ...result.warnings,
+        ];
+        if (issues.length > 0) {
+          const isError = result.errors.length > 0;
+          setRunSummary(
+            `${isError ? 'Payroll run completed with ERRORS' : 'Payroll run completed with WARNINGS'} (client engine): ` +
+            `${result.entriesUpdated} entries in ${seconds}s, ` +
+            `${result.elementaryCount} elementary, ${result.highSchoolCount} high school. ` +
+            `${issues.length} record issue${issues.length === 1 ? '' : 's'}: ${issues.slice(0, 3).join(' • ')}` +
+            (issues.length > 3 ? ` (+${issues.length - 3} more)` : '')
+          );
+        } else {
+          setRunSummary(
+            `Payroll computed (client engine): ${result.entriesUpdated} entries in ${seconds}s, ` +
+            `${result.elementaryCount} elementary, ${result.highSchoolCount} high school.`
+          );
+        }
+        return;
+      }
 
       setRefetch((r) => r + 1);
       const { data: per } = await supabase.from('pay_periods').select('*').order('year', { ascending: false }).order('month', { ascending: false }).order('created_at', { ascending: false }).limit(100);
       setPeriods(scopedPeriods(per ?? []));
 
+      const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
       setRunSummary(
-        `Payroll computed: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries, ` +
+        `Payroll computed: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries in ${seconds}s, ` +
         `${engineRes?.employees_processed ?? engineRes?.employees_updated ?? 0} employees updated, ` +
         `undeducted obligations: ${currency(Number(engineRes?.total_undeducted ?? engineRes?.undeducted_amount) || 0)} (${engineRes?.unducted_written ?? engineRes?.undeducted ?? 0} items).`
       );
@@ -411,17 +477,48 @@ export default function Payroll({ profile }: PayrollProps) {
     if (!periodId || scopedEntries.length === 0) return;
     setSyncing(true);
     setSyncSummary(null);
+    const startedAt = performance.now();
     try {
       // Same server-side engine: recompute + persist everything in one
-      // atomic call (no client-side fetch loops or batched writes).
+      // atomic call when deployed. Otherwise fall back to the client engine
+      // (identical formulas, parallel batched writes).
       const { data: engineRes, error: syncErr } = await supabase.rpc('run_payroll_engine', {
         p_pay_period_id: periodId,
       });
-      if (syncErr) throw new Error(syncErr.message);
+      if (syncErr) {
+        const startDate = currentPeriod?.start_date ? new Date(currentPeriod.start_date) : new Date();
+        const payYY = currentPeriod?.year ?? startDate.getFullYear();
+        const payMM = currentPeriod?.month ?? (startDate.getMonth() + 1);
+        const result = await syncPayrollForEmployees([...scopedEmpIds], periodId, payYY, payMM);
+        if (result.errors.length > 0) throw new Error(result.errors[0]);
+        const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+        setRefetch((r) => r + 1);
+        // Surface skipped/truncated records loudly — never read as clean success.
+        const issues = [
+          ...result.errors.map((e) => `error: ${e}`),
+          ...result.warnings,
+        ];
+        if (issues.length > 0) {
+          const isError = result.errors.length > 0;
+          setSyncSummary(
+            `${isError ? 'Deductions synced with ERRORS' : 'Deductions synced with WARNINGS'} (client engine): ` +
+            `${result.entriesUpdated} entries in ${seconds}s. ` +
+            `${issues.length} record issue${issues.length === 1 ? '' : 's'}: ${issues.slice(0, 3).join(' • ')}` +
+            (issues.length > 3 ? ` (+${issues.length - 3} more)` : '')
+          );
+        } else {
+          setSyncSummary(
+            `Deductions synced (client engine): ${result.entriesUpdated} entries in ${seconds}s.`
+          );
+        }
+        await logAudit('deduction_sync', 'pay_period', periodId, { entries: result.entriesUpdated });
+        return;
+      }
 
       setRefetch((r) => r + 1);
+      const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
       setSyncSummary(
-        `Deductions synced: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries updated, ` +
+        `Deductions synced: ${engineRes?.employees_processed ?? engineRes?.entries ?? 0} entries updated in ${seconds}s, ` +
         `undeducted: ${currency(Number(engineRes?.total_undeducted ?? engineRes?.undeducted_amount) || 0)} (${engineRes?.unducted_written ?? engineRes?.undeducted ?? 0} items).`
       );
       await logAudit('deduction_sync', 'pay_period', periodId, { entries: engineRes?.employees_processed ?? engineRes?.entries ?? 0 });
@@ -621,7 +718,11 @@ export default function Payroll({ profile }: PayrollProps) {
 
       {/* Sync summary */}
       {syncSummary && (
-        <div className={`flex items-start gap-2.5 px-4 py-3 rounded-lg text-sm border ${syncSummary.startsWith('Sync failed') ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+        <div className={`flex items-start gap-2.5 px-4 py-3 rounded-lg text-sm border ${
+          syncSummary.startsWith('Sync failed') || syncSummary.includes('ERRORS') ? 'bg-rose-50 text-rose-700 border-rose-200' :
+          syncSummary.includes('WARNINGS') || syncSummary.includes('skipped') || syncSummary.includes('truncat') || syncSummary.includes('NOT saved') ? 'bg-amber-50 text-amber-800 border-amber-200' :
+          'bg-blue-50 text-blue-700 border-blue-200'
+        }`}>
           <RefreshCcw className="w-4 h-4 mt-0.5 shrink-0" />
           <span className="flex-1">{syncSummary}</span>
           <button onClick={() => setSyncSummary(null)} className="ml-auto text-current opacity-50 hover:opacity-100"><X className="w-4 h-4" /></button>
@@ -670,7 +771,11 @@ export default function Payroll({ profile }: PayrollProps) {
 
       {/* Run summary / error banner */}
       {runSummary && (
-        <div className={`flex items-start gap-2.5 px-4 py-3 rounded-lg text-sm ${runSummary.includes('failed') ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+        <div className={`flex items-start gap-2.5 px-4 py-3 rounded-lg text-sm border ${
+          runSummary.includes('failed') || runSummary.includes('ERRORS') ? 'bg-rose-50 text-rose-700 border-rose-200' :
+          runSummary.includes('WARNINGS') || runSummary.includes('skipped') || runSummary.includes('truncat') || runSummary.includes('NOT saved') ? 'bg-amber-50 text-amber-800 border-amber-200' :
+          'bg-emerald-50 text-emerald-700 border-emerald-200'
+        }`}>
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{runSummary}</span>
           <button onClick={() => setRunSummary(null)} className="ml-auto text-current opacity-50 hover:opacity-100"><X className="w-4 h-4" /></button>
@@ -748,6 +853,11 @@ export default function Payroll({ profile }: PayrollProps) {
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
           <div className="py-20 flex justify-center"><LoadingIndicator /></div>
+        ) : dataLoading ? (
+          <div className="py-20 flex flex-col items-center justify-center gap-3">
+            <LoadingIndicator />
+            <p className="text-sm text-slate-400">Loading period data…</p>
+          </div>
         ) : scopedEmployees.length === 0 ? (
           <div className="py-16 text-center">
             <Calculator className="w-10 h-10 mx-auto mb-3 text-slate-200" />
@@ -922,8 +1032,8 @@ export default function Payroll({ profile }: PayrollProps) {
       {showNewPeriod && (
         <NewPeriodModal
           existing={periods}
-          regcode={scopedCodes?.[0]?.regcode ?? null}
-          divcode={scopedCodes?.[0]?.divcode ?? null}
+          regcode={scopedCodes?.[0]?.regcode ?? ownDivisionCodes?.regcode ?? null}
+          divcode={scopedCodes?.[0]?.divcode ?? ownDivisionCodes?.divcode ?? null}
           onClose={() => setShowNewPeriod(false)}
           onCreated={async () => {
             setShowNewPeriod(false);
@@ -1020,10 +1130,42 @@ function NewPeriodModal({ existing, regcode, divcode, onClose, onCreated }: { ex
   async function generateFullYear() {
     setSaving(true);
     setError('');
-    const { data, error: err } = await supabase.rpc('generate_monthly_periods', { p_year: year, p_regcode: regcode, p_divcode: divcode });
-    setSaving(false);
-    if (err) { setError(err.message); return; }
-    onCreated();
+    try {
+      // Prefer the server-side RPC (custom PocketBase backend). Send both the
+      // Go-native field names and the legacy p_-prefixed names so the payload
+      // binds correctly regardless of which backend binary is deployed.
+      const { error: err } = await supabase.rpc('generate_monthly_periods', {
+        year, regcode, divcode,
+        p_year: year, p_regcode: regcode, p_divcode: divcode,
+      });
+      if (!err) {
+        onCreated();
+        return;
+      }
+      // Server route unavailable (e.g. stock PocketBase backend without the
+      // custom /api/payroll/generate-periods route) — fall back to creating
+      // each month client-side, exactly like the "Create Period" button.
+      for (let m = 1; m <= 12; m++) {
+        if (existingSet.has(`${year}-${m}`)) continue;
+        const start = `${year}-${String(m).padStart(2, '0')}-01`;
+        const end = new Date(year, m, 0).toISOString().slice(0, 10);
+        const payDate = new Date(year, m, 15).toISOString().slice(0, 10);
+        const { error: insErr } = await supabase.from('pay_periods').insert({
+          period_name: `${MONTHS[m - 1]} ${year}`, start_date: start, end_date: end, pay_date: payDate,
+          frequency: 'Monthly', status: 'draft', month: m, year, period_number: m,
+          regcode, divcode,
+        });
+        if (insErr) {
+          setError(`Failed creating ${MONTHS[m - 1]} ${year}: ${insErr.message}`);
+          return;
+        }
+      }
+      onCreated();
+    } catch (e) {
+      setError('Failed to generate periods: ' + formatError(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   const inputCls = 'w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400';

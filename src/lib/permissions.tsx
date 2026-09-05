@@ -3,7 +3,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { ROLE_PERMISSIONS, type UserRole } from '@/types/auth';
 
 /**

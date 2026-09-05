@@ -19,7 +19,7 @@ export type ViewKey =
   | 'dashboard' | 'employees' | 'payroll' | 'dedfile' | 'reports'
   | 'salary' | 'dedmaster' | 'dedengine' | 'taxcalc'
   | 'stacode' | 'users' | 'audit' | 'backup' | 'restore'
-  | 'smartimport' | 'pliimport' | 'gsisimport' | 'creator' | 'importbackup'
+  | 'smartimport' | 'smartimport_elementary' | 'smartimport_highschool' | 'pliimport' | 'gsisimport' | 'creator' | 'importbackup'
   | 'org_division' | 'org_elementary' | 'org_highschool' | 'org_units' | 'org_directory' | 'org_regions'
   | 'positionmgmt' | 'positionimport' | 'plantilla' | 'nonplantilla'
   | 'namevalidation' | 'initial_payroll' | 'ips_system' | 'signatories' | 'coming_soon'
@@ -116,6 +116,15 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: 'pay_calendar', label: 'Payroll Calendar', icon: Calendar, permission: 'payroll', viewKey: 'payroll' },
     ],
     subGroups: [
+      {
+        id: 'pay_smart_import',
+        label: 'Smart Import',
+        icon: Database,
+        items: [
+          { id: 'smart_import_elementary', label: 'Elementary School Import', icon: School, permission: 'dbf_restore', viewKey: 'smartimport_elementary' },
+          { id: 'smart_import_highschool', label: 'High School Import', icon: GraduationCap, permission: 'dbf_restore', viewKey: 'smartimport_highschool' },
+        ],
+      },
       {
         id: 'pay_other_group',
         label: 'Other Payroll',

@@ -1,4 +1,4 @@
-import { supabase, fetchAll, chunkedIn, formatError } from '@/lib/supabase';
+import { supabase, fetchAll, chunkedIn, formatError } from '@/lib/pb';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { syncMastfile, syncDedfile, loadDivisionDirectory, resolveDivisionId, type SyncResult, type SyncScope } from '@/lib/restoreSync';
 import { inCategory, categoryOfStacode, type PayrollCategory } from '@/lib/categories';
@@ -377,7 +377,7 @@ async function forwardIncludedToDeductions(records: DbfRecord[], periodName?: st
   const periodIdMap = await resolvePeriodIds(rows, errors);
   const { data: dedCodes } = await supabase.from('deduction_codes').select('dedcode,dedname,type');
   const codeName = new Map<string, { dedname: string; type: string }>(
-    (dedCodes ?? []).map((c) => [c.dedcode, { dedname: c.dedname, type: c.type }]),
+    (dedCodes ?? []).map((c: { dedcode: string; dedname: string; type: string }) => [c.dedcode, { dedname: c.dedname, type: c.type }]),
   );
 
   // Delete this period's previously imported INCLUDED rows (re-import refresh)
@@ -493,21 +493,23 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
 
   const resolvedPeriod = periodName || '';
 
-  // Group by empno to collect deduction-level data
-  const byEmp = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[]; type: string; fname: string; mi: string; lname: string; appel: string; netpay: number; dedid: string; termm: string; teryy: string; policyno: string; policydate: string | null; agent: string; absno: number; underhr: number; undermin: number; status: string; update_date: string | null; paydate: string | null; editor: string; tm: string; ty: string; agency: string; principal: number; interest: number; charges: number; proceeds: number; qs: string }>();
+  // Group by empno+payperiod to collect deduction-level data per period
+  const byEmpPeriod = new Map<string, { stacode: string; divcode: string; regcode: string; payperiod: string; reason: string; deductions: { dedcode: string; dedamt: number; effyy: number; effmm: number }[]; type: string; fname: string; mi: string; lname: string; appel: string; netpay: number; dedid: string; termm: string; teryy: string; policyno: string; policydate: string | null; agent: string; absno: number; underhr: number; undermin: number; status: string; update_date: string | null; paydate: string | null; editor: string; tm: string; ty: string; agency: string; principal: number; interest: number; charges: number; proceeds: number; qs: string }>();
   for (const rec of filtered) {
     const empno = str(rec, 'EMPNO');
     if (!empno) continue;
+    const payperiod = str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod;
     const dedcode = str(rec, 'DEDCODE') || str(rec, 'CODE');
     const dedamt = num(rec, 'DEDAMT') || num(rec, 'AMOUNT') || 0;
     const effyy = Math.floor(num(rec, 'EFFYY') || 0);
     const effmm = Math.floor(num(rec, 'EFFMM') || 0);
-    if (!byEmp.has(empno)) {
-      byEmp.set(empno, {
+    const key = `${empno}|${payperiod}`;
+    if (!byEmpPeriod.has(key)) {
+      byEmpPeriod.set(key, {
         stacode: str(rec, 'STACODE'),
         divcode: str(rec, 'DIVCODE'),
         regcode: str(rec, 'REGCODE'),
-        payperiod: str(rec, 'PAYPERIOD') || str(rec, 'PERIOD') || resolvedPeriod,
+        payperiod,
         reason: str(rec, 'REASON') || str(rec, 'REMARKS') || str(rec, 'REMARK') || 'EXCLUDED FROM PAYROLL',
         deductions: [],
         type: str(rec, 'TYPE'),
@@ -540,18 +542,14 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
       });
     }
     if (dedcode && dedamt > 0) {
-      byEmp.get(empno)!.deductions.push({ dedcode, dedamt, effyy, effmm });
+      byEmpPeriod.get(key)!.deductions.push({ dedcode, dedamt, effyy, effmm });
     }
   }
 
   const rows: Record<string, unknown>[] = [];
-  for (const [empno, data] of byEmp) {
-    // Store deduction-level data as JSON in reason field
-    const reasonJson = data.deductions.length > 0
-      ? JSON.stringify({ base: data.reason, deds: data.deductions })
-      : data.reason;
+  for (const [key, data] of byEmpPeriod) {
+    const empno = key.split('|')[0];
     rows.push({
-      empno,
       stacode: data.stacode,
       divcode: data.divcode,
       regcode: data.regcode,
@@ -587,14 +585,21 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
     });
   }
 
-  const result = await upsertTable('dbf_excluded', rows, ['empno'], (r) => `${r.empno}`, 'id,empno');
+  const result = await upsertTable('dbf_excluded', rows, ['empno', 'payperiod'], (r) => `${r.empno}|${r.payperiod}`, 'id,empno,payperiod');
 
   // Set priority = 2 for EXCLUDED deductions (least priority, deducted LAST)
-  const excludedEmpnos = [...new Set(rows.map((r) => r.empno).filter(Boolean))];
-  if (excludedEmpnos.length > 0) {
-    for (let i = 0; i < excludedEmpnos.length; i += 100) {
-      const batch = excludedEmpnos.slice(i, i + 100);
-      await supabase.from('payroll_deductions').update({ priority: 2 }).in('empno', batch);
+  // Scope to the specific payperiod(s) from this import to avoid corrupting
+  // deduction priority for periods where the employee is NOT excluded.
+  const excludedEmpPeriods = rows.map((r) => ({ empno: r.empno as string, payperiod: r.payperiod as string }));
+  if (excludedEmpPeriods.length > 0) {
+    // Build a list of distinct payperiods from this import
+    const periods = [...new Set(excludedEmpPeriods.map((r) => r.payperiod))];
+    for (const period of periods) {
+      const empnosInPeriod = [...new Set(excludedEmpPeriods.filter((r) => r.payperiod === period).map((r) => r.empno))];
+      for (let i = 0; i < empnosInPeriod.length; i += 100) {
+        const batch = empnosInPeriod.slice(i, i + 100);
+        await supabase.from('payroll_deductions').update({ priority: 2 }).in('empno', batch).eq('payperiod', period);
+      }
     }
   }
 
@@ -616,9 +621,9 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
 async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: string | null): Promise<string[]> {
   const errors: string[] = [];
   let resolvedPeriod = periodName || '';
-  // Fallback to current open period if none specified
+  // Fallback to current open/draft period if none specified
   if (!resolvedPeriod) {
-    const { data: openPeriod } = await supabase.from('pay_periods').select('period_name').eq('status', 'open').order('created_at', { ascending: false }).limit(1).maybeSingle();
+    const { data: openPeriod } = await supabase.from('pay_periods').select('period_name').in('status', ['open', 'draft']).order('created_at', { ascending: false }).limit(1).maybeSingle();
     if (openPeriod) resolvedPeriod = openPeriod.period_name;
   }
 
@@ -652,7 +657,7 @@ async function forwardExcludedToUndeducted(records: DbfRecord[], periodName?: st
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
   const periodIdMap = await resolvePeriodIds(rows, errors);
   const { data: dedCodes } = await supabase.from('deduction_codes').select('dedcode,dedname');
-  const codeName = new Map<string, string>((dedCodes ?? []).map((c) => [c.dedcode, c.dedname]));
+  const codeName = new Map<string, string>((dedCodes ?? []).map((c: { dedcode: string; dedname: string }) => [c.dedcode, c.dedname]));
 
   // Clear previously imported EXCLUDED obligations for these periods (re-import refresh)
   const periodIds = [...new Set(rows.map((r) => periodIdMap.get(r.payperiod)).filter((x): x is string => !!x))];

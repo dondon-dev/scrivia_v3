@@ -133,9 +133,16 @@ export interface Employee {
   depdate3: string | null;
   depdate4: string | null;
 
+  // Additional earnings (DepEd APDS — included in gross pay)
+  hazard_pay: number;
+  salary_differential: number;
+  other_compensation: number;
+  other_earnings: number;
+
   // Payroll Group
   payroll_group_id: string | null;
   distcode: string;
+  division_id: string | null;
 }
 
 export interface PayrollGroup {

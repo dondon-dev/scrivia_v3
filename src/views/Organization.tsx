@@ -5,7 +5,7 @@ import {
   GraduationCap, Briefcase, MapPin, Eye, ChevronRight, X,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useOrg } from '@/lib/org';
 import type { SchoolWithStats, SchoolType } from '@/types/schools';
 import SchoolManagement from '@/components/SchoolManagement';

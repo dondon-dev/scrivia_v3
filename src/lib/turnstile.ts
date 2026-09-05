@@ -12,7 +12,7 @@
  * the browser.
  */
 
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pb';
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
 
@@ -63,13 +63,14 @@ declare global {
 /* ── server-side verification ─────────────────────────────────────────── */
 
 /**
- * Verify a Turnstile token via the Supabase Edge Function `turnstile-verify`.
+ * Verify a Turnstile token via the PocketBase API endpoint `turnstile-verify`.
  * Returns true only when Cloudflare confirmed the token. Safe to call from
  * any auth screen — the secret key stays on the server.
  */
 export async function verifyTurnstileToken(token: string): Promise<boolean> {
   try {
-    const { data, error } = await supabase.functions.invoke('turnstile-verify', {
+    const { data, error } = await pb.send('/api/turnstile-verify', {
+      method: 'POST',
       body: { token },
     });
     return !error && !!data && data.success === true;

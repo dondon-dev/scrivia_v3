@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 
 export interface SalaryScheduleEntry {
   id: string;

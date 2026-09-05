@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 
 export interface OmniDevMessage {
   role: 'user' | 'assistant';

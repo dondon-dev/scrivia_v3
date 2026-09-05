@@ -5,7 +5,7 @@ import {
   FileUp, Inbox,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 

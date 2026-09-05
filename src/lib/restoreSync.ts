@@ -1,4 +1,4 @@
-import { supabase, fetchAll, chunkedIn } from '@/lib/supabase';
+import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { classifyByStacode } from '@/lib/stacodeClassify';
 import { recomputeEmployeeNetPay, bulkRecomputeNetPay } from '@/lib/recompute';

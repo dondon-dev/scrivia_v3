@@ -8,7 +8,7 @@ import {
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { validateUpload } from '@/lib/uploadSecurity';
 import { downloadFile, generateCsv, currency } from '@/lib/reports';
 import {

@@ -10,7 +10,7 @@ import LoadingIndicator from '@/components/LoadingIndicator';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
 import { useOrg } from '@/lib/org';
-import { supabase, formatError } from '@/lib/supabase';
+import { supabase, formatError } from '@/lib/pb';
 import {
   SYNC_ORDER, TABLE_LABELS, TABLE_DESCRIPTIONS, TABLE_TO_DB,
   extractTableName, previewDbf, executeSync, rollbackSession, loadSyncSessions,
@@ -31,7 +31,11 @@ interface ProgressState {
   message: string;
 }
 
-export default function SmartImport() {
+interface SmartImportProps {
+  initialCategory?: PayrollCategory | null;
+}
+
+export default function SmartImport({ initialCategory = null }: SmartImportProps) {
   const { user, profile, logAudit } = useAuth();
   const { scopedCodes } = useOrg();
   // The division context of the current upload: when exactly one division is
@@ -42,7 +46,9 @@ export default function SmartImport() {
     if (scopedCodes && scopedCodes.length === 1) return scopedCodes[0];
     return null;
   }, [scopedCodes]);
-  const [groupFilter, setGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
+  const [groupFilter, setGroupFilter] = useState<GroupFilterValue>(
+    initialCategory ? { kind: 'category', category: initialCategory } : { kind: 'all' }
+  );
   const [periodName, setPeriodName] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [previews, setPreviews] = useState<FilePreview[]>([]);
@@ -273,7 +279,7 @@ export default function SmartImport() {
           </p>
         </div>
         <div className="ml-auto">
-          <GroupFilter value={groupFilter} onChange={setGroupFilter} />
+          {!initialCategory && <GroupFilter value={groupFilter} onChange={setGroupFilter} />}
         </div>
       </div>
 

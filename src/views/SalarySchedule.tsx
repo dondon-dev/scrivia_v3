@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Upload, Download, RefreshCw, AlertCircle, CheckCircle2, Table2, Trash2 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { currency, downloadFile } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
 import type { SalaryScheduleEntry } from '@/types/payroll';

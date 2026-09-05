@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ScrollText, Search, Filter } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 import { Pagination } from '@/components/Pagination';

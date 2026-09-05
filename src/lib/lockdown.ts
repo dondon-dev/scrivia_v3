@@ -17,7 +17,7 @@
  * been applied yet.
  */
 
-import { supabase } from './supabase';
+import { supabase } from './pb';
 
 export interface LockdownState {
   locked: boolean;

@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { X, FileDown, CheckCircle, AlertTriangle, Download, ShieldCheck } from 'lucide-react';
-import { formatError } from '@/lib/supabase';
+import { formatError } from '@/lib/pb';
 import { generatePyentDbf, downloadFile, currency, type PyentExportResult } from '@/lib/reports';
 import { computePyentSplit } from '@/lib/payroll';
 import type { Employee, PayrollEntry } from '@/types/payroll';

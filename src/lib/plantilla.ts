@@ -1,4 +1,4 @@
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 

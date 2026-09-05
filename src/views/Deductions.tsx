@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Upload, Search, Trash2, Plus, X, FileText, CheckCircle2, AlertTriangle, Download, Info } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { parseDeductionFile, matchRowsToEmployees, type ParseResult } from '@/lib/textParser';
 import { generateDeductionDbf, downloadFile, currency } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
@@ -42,7 +42,7 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
       // Honor the selected Region/Division scope — REGCODE + DIVCODE are the
       // unique reference for one division's payroll.
       setEmployees((emp as unknown as Employee[]).filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes })));
-      const scopedPer = (per ?? []).filter((p) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
+      const scopedPer = (per ?? []).filter((p: { division_id?: string | null; regcode?: string | null; divcode?: string | null }) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
       setPeriods(scopedPer);
       setDedCodes(codes as DeductionCode[]);
       if (scopedPer.length > 0) setPeriodId(scopedPer[0].id);

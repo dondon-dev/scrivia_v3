@@ -3,7 +3,7 @@ import {
   Bell, Megaphone, ListTodo, AlertTriangle, Activity as ActivityIcon,
   ArrowRight, RefreshCw, Calendar, Users as UsersIcon, Wallet, ShieldCheck,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 import type { AuditLog } from '@/types/auth';

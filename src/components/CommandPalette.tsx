@@ -5,7 +5,7 @@ import { NAV_SECTIONS, type NavItem } from '@/lib/navConfig';
 import type { PayrollCategory } from '@/lib/categories';
 import { usePermissions } from '@/lib/permissions';
 import { useOrg, codeScope } from '@/lib/org';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { scaleIn } from '@/lib/motion';
 import type { UserProfile } from '@/types/auth';
 
@@ -96,7 +96,7 @@ export default function CommandPalette({ profile, open, onOpenChange, onNavigate
         }
         const { data, error } = await empQuery;
         if (error) { setEmpHits([]); return; }
-        setEmpHits((data ?? []).map((r) => ({
+        setEmpHits((data ?? []).map((r: { id: string; fname?: string; lname?: string; empno?: string; employee_number?: string; stacode?: string; poscode?: string }) => ({
           id: r.id,
           label: [r.lname, r.fname].filter(Boolean).join(', ') || (r.empno || 'Employee'),
           meta: [r.empno || r.employee_number, r.stacode, r.poscode].filter(Boolean).join(' · '),

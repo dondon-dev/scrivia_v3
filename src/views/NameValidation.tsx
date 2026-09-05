@@ -5,7 +5,7 @@ import {
   CheckCircle2, AlertTriangle, UserMinus, UserX, HelpCircle, RefreshCw,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
 import { usePagination, Pagination } from '@/components/Pagination';
 import { loadPlantillaPositions, type PlantillaPosition } from '@/lib/plantilla';

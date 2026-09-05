@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FileText, Download, Calculator, Building2, User, Landmark } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { computeW2Tax, TAX_EXEMPTIONS } from '@/lib/govPayrollComputation';
 
 /** BIR Form 2316 field groupings (Annual Compensation Income Tax Return) */
@@ -56,9 +56,13 @@ export default function W2TaxAnnual() {
       const uniqueIds = [...empMap.keys()];
       const { data: empData } = await supabase
         .from('employees')
-        .select('id, empno, employee_number, fname, first_name, lname, last_name, mi, tin, basic, basic_salary, govtlnr, govtmed, govtpag')
+        .select('id, employee_number, first_name, last_name, middle_name, tin, basic, basic_salary, govtlnr, govtmed, govtpag')
         .in('id', uniqueIds);
-      const empLookup = new Map((empData ?? []).map((e: any) => [e.id, e]));
+      type EmpLookup = { id: string; employee_number?: string; first_name?: string; last_name?: string; middle_name?: string; tin?: string };
+
+      const empLookup = new Map<string, EmpLookup>(
+        (empData ?? []).map((e: { id: string; employee_number?: string; first_name?: string; last_name?: string; middle_name?: string; tin?: string }) => [e.id, e])
+      );
 
       const rows: Bir2316Row[] = [];
       let grandComp = 0, grandTaxable = 0, grandTaxDue = 0, grandTaxPaid = 0, grandPayable = 0, grandRefund = 0;
@@ -77,15 +81,15 @@ export default function W2TaxAnnual() {
           }))
         );
 
-        const emp = empLookup.get(empId) ?? {};
-        const empNo = emp.empno ?? emp.employee_number ?? empId;
-        const fname = emp.fname ?? emp.first_name ?? '';
-        const lname = emp.lname ?? emp.last_name ?? '';
+        const emp = empLookup.get(empId);
+        const empNo = emp?.employee_number ?? empId;
+        const fname = emp?.first_name ?? '';
+        const lname = emp?.last_name ?? '';
 
         const row: Bir2316Row = {
           empNo,
-          name: `${lname}, ${fname} ${emp.mi ?? ''}`.trim(),
-          tin: emp.tin ?? '',
+          name: `${lname}, ${fname} ${emp?.middle_name ?? ''}`.trim(),
+          tin: emp?.tin ?? '',
           compensationIncome: computation.totalBasic,
           nonTaxable: 0,
           totalDeductions: computation.totalLnr + computation.totalMed + computation.totalPag,

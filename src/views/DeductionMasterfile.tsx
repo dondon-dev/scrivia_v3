@@ -4,7 +4,7 @@ import {
   CheckCircle2, AlertTriangle, AlertCircle, ClipboardList, FileBarChart,
   CalendarClock, Coins, ShieldCheck, ChevronDown, Info, History, MoreVertical,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { downloadFile, currency, generateCsv, generateDedfileDbf, DEDFILE_FIELDS } from '@/lib/reports';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { validateUpload } from '@/lib/uploadSecurity';

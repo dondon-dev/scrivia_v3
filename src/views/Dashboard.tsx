@@ -10,7 +10,7 @@ import {
   ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap,
   Check, Circle, Building, MapPin, Sparkles, Brain, Hash, RefreshCw, type LucideIcon,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { currency } from '@/lib/reports';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';

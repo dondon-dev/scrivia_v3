@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Mail, Check, AlertCircle, RefreshCw } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pb';
 import { EMAIL_JUST_VERIFIED_KEY, PENDING_SIGNUP_EMAIL_KEY } from '@/lib/auth';
 import LoadingIndicator from '@/components/LoadingIndicator';
 
@@ -38,25 +38,25 @@ export default function EmailVerification({ onSwitch }: { onSwitch: (view: 'logi
         confirmVerified();
         return;
       }
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) return;
-      // auth.users.email_confirmed_at is the ground truth: Supabase sets it
-      // when the user clicks the confirmation link. The profiles.email_verified
-      // flag is only a derived copy and may lag if the sync RPC is missing —
-      // a session with email_confirmed_at set means verification succeeded.
-      if (!session.user.email_confirmed_at) return;
-      await supabase.rpc('mark_email_verified');
+      const token = pb.authStore.token;
+      const model = pb.authStore.model;
+      if (!token || !model) return;
+      // PocketBase sets email_confirmed_at on the auth record when verification link is clicked
+      if (!(model as any).verified && !(model as any).email_confirmed_at) return;
+      try {
+        await pb.send('/api/auth/mark-verified', { method: 'POST' });
+      } catch {
+        // ignore
+      }
       sessionStorage.setItem(EMAIL_JUST_VERIFIED_KEY, '1');
       confirmVerified();
     };
 
     void tryConfirm();
 
-    // The page really does update automatically: listen for session changes
-    // (including the same session arriving via another tab) and poll as a
-    // fallback so a slow link click still flips the screen to "Email Verified!".
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-      void tryConfirm();
+    // Listen for auth state changes
+    const unsubscribe = pb.authStore.onChange(() => {
+      if (!cancelled) void tryConfirm();
     });
     const poll = setInterval(() => void tryConfirm(), 4000);
 
@@ -66,7 +66,7 @@ export default function EmailVerification({ onSwitch }: { onSwitch: (view: 'logi
       cancelled = true;
       clearInterval(poll);
       clearTimeout(resendTimer);
-      subscription.unsubscribe();
+      unsubscribe();
     };
   }, []);
 
@@ -78,25 +78,30 @@ export default function EmailVerification({ onSwitch }: { onSwitch: (view: 'logi
     const email = resendEmail.trim().toLowerCase();
     localStorage.setItem(PENDING_SIGNUP_EMAIL_KEY, email);
 
-    const { error } = await supabase.auth.resend({
-      type: 'signup',
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    });
-    setResending(false);
+    try {
+      // Call PocketBase hook to resend verification email
+      const { error } = await pb.send('/api/auth/resend-verification', {
+        method: 'POST',
+        body: { email, redirect_url: window.location.origin },
+      });
+      setResending(false);
 
-    if (error) {
-      const msg = error.message.toLowerCase();
-      if (msg.includes('rate') || msg.includes('too many')) {
-        setResendError('Too many requests. Please wait a minute before trying again.');
-      } else if (msg.includes('not found') || msg.includes('no user') || msg.includes('invalid')) {
-        setResendError('No account found with that email address. Check the spelling or register a new account.');
-      } else {
-        setResendError(error.message || 'Unable to resend the verification email. Please try again.');
+      if (error) {
+        const msg = error?.message?.toLowerCase() ?? '';
+        if (msg.includes('rate') || msg.includes('too many')) {
+          setResendError('Too many requests. Please wait a minute before trying again.');
+        } else if (msg.includes('not found') || msg.includes('no user') || msg.includes('invalid')) {
+          setResendError('No account found with that email address. Check the spelling or register a new account.');
+        } else {
+          setResendError(error.message || 'Unable to resend the verification email. Please try again.');
+        }
+        return;
       }
-      return;
+      setResendSent(true);
+    } catch (err: any) {
+      setResending(false);
+      setResendError(err?.message || 'Unable to resend the verification email. Please try again.');
     }
-    setResendSent(true);
   };
 
   const proceedToLogin = () => {

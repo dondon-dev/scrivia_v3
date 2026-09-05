@@ -2,7 +2,7 @@
 // All database writes go through Supabase; the batch size keeps each round-trip
 // within PostgREST limits for 50k+ record uploads.
 
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import type { MatchedRecord } from '@/lib/pliParser';
 
 export interface ImportProgress {

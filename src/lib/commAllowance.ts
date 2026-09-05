@@ -4,7 +4,7 @@
 import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { supabase, fetchAll } from './supabase';
+import { supabase, fetchAll } from './pb';
 import { generateCsv, downloadFile, currency } from './reports';
 import { normalizeRole } from '@/lib/authz';
 import type { UserRole } from '@/types/auth';

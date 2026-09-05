@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Pagination } from '@/components/Pagination';
 import { useServerPagination } from '@/lib/useServerPagination';
 import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import { generateMasterfileDbf, downloadFile, currency } from '@/lib/reports';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';

@@ -1,4 +1,4 @@
-import { supabase, fetchAll, chunkedIn } from '@/lib/supabase';
+import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { computePayrollDeductions } from '@/lib/payroll';
 import { processEmployeeDeductions } from '@/lib/nthp';
 import type { Employee, PayrollDeduction, DeductionCode } from '@/types/payroll';

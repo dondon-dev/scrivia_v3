@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Building2, ChevronDown, School, GraduationCap, Home, Layers, Check } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { CATEGORIES, type PayrollCategory } from '@/lib/categories';
 import type { PayrollGroup } from '@/types/payroll';
 

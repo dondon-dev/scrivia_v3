@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Shield, FileText, Calculator, AlertTriangle, CheckCircle2, Download } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { computeGSISLifeRetirement, computeGovtLifeRetirement, computeGovtECC, GSIS_LOAN_TYPES, GSIS_PREMIUM_TYPES } from '@/lib/govPayrollComputation';
 import { exportGsisRemittanceExcel, buildLoanBillingRecords, type PremiumRecord, type LoanBillingRecord } from '@/lib/gsisRemittanceExport';
 

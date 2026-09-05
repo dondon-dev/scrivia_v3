@@ -1,0 +1,64 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Litestream — continuous SQLite backup to Cloudflare R2 (or AWS S3)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Install:  curl -sL https://github.com/litestream/litestream/releases/latest/download/litestream-linux-amd64.tar.gz | tar xz
+# Run:      litestream replicate -config /etc/litestream.yml
+#
+# Environment variables:
+#   R2_ACCESS_KEY_ID      — Cloudflare R2 access key
+#   R2_SECRET_ACCESS_KEY  — Cloudflare R2 secret key
+#   R2_BUCKET             — R2 bucket name (default: scrivia-backups)
+#   R2_ACCOUNT_ID         — Cloudflare account ID
+#
+# Backup storage cost: $0/month for ≤10 GB (Cloudflare R2 free tier)
+# ═══════════════════════════════════════════════════════════════════════════
+
+dbs:
+  # ── Primary application database ─────────────────────────────────────────
+  - path: /var/lib/freebuff/data/pb_data.db
+    replicas:
+      # Cloudflare R2 (recommended — $0/month for ≤10 GB)
+      - type: s3
+        bucket: pocketbase-backups
+        path: production/pb_data.db
+        endpoint: https://7ac4b0a9d5dcfd296a82563dcdc89200.r2.cloudflarestorage.com
+        region: auto
+        access-key-id: 75e8f66cc65629ce6c095a005af81dc7
+        secret-access-key: 93f33b3a46f3f38933e160e6ed9de69aec2c6cb259ff2c87fa8ff0cbf5373e5b
+        force-path-style: true
+        # Sync every second (asynchronous, non-blocking)
+        sync-interval: 1s
+        # Retain snapshots for point-in-time recovery
+        retention: 168h   # 7 days
+        retention-check-interval: 1h
+        # Snapshot every 24 hours
+        snapshot-interval: 24h
+
+  # ── PocketBase internal data (uploads, logs) ─────────────────────────────
+  - path: /var/lib/freebuff/data/pb_mails.db
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET:-scrivia-backups}
+        path: production/pb_mails.db
+        endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        force-path-style: true
+        sync-interval: 5s
+        retention: 72h
+
+# ── Restore command ────────────────────────────────────────────────────────
+# To restore to a specific point in time:
+#
+#   litestream restore \
+#     -config /etc/litestream.yml \
+#     -o /var/lib/freebuff/data/pb_data.db \
+#     s3://scrivia-backups/production/pb_data.db
+#
+# To see available snapshots:
+#
+#   litestream snapshots \
+#     -config /etc/litestream.yml \
+#     s3://scrivia-backups/production/pb_data.db

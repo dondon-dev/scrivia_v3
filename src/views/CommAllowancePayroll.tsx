@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import caSetupSql from '../../supabase/migrations/20260808_CA_complete_setup.sql?raw';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { usePositions } from '@/lib/usePositions';
 import { Pagination, usePagination } from '@/components/Pagination';

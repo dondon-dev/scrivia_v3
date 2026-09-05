@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { downloadFile, generateCsv } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
 import { usePagination, Pagination } from '@/components/Pagination';

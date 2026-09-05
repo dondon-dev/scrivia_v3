@@ -10,7 +10,7 @@ interface TabDef {
   label: string;
   icon: LucideIcon;
   description: string;
-  component: () => JSX.Element;
+  component: React.ComponentType;
 }
 
 const TABS: TabDef[] = [
@@ -19,7 +19,7 @@ const TABS: TabDef[] = [
     label: 'Smart Import',
     icon: Database,
     description: 'Upload DBF files (MASTFILE, DEDFILE, DIVTABLE, STNTABLE, PAYROLLS, PYENT) — auto-synced into the payroll system',
-    component: SmartImport,
+    component: () => <SmartImport />,
   },
   {
     key: 'backup',

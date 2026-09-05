@@ -1,8 +1,25 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from 'react';
-import type { Session, User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pb';
 import { verifyTurnstileToken } from '@/lib/turnstile';
 import type { UserProfile } from '@/types/auth';
+
+// PocketBase-compatible auth types
+interface PbUser {
+  id: string;
+  email: string;
+  email_confirmed_at: string | null;
+  verified?: boolean;
+  [key: string]: any;
+}
+
+interface PbSession {
+  user: PbUser;
+  access_token: string;
+  [key: string]: any;
+}
+
+type User = PbUser;
+type Session = PbSession;
 
 interface AuthState {
   user: User | null;
@@ -43,9 +60,7 @@ const INACTIVITY_TIMEOUT = 15 * 60 * 1000;
 const REMEMBER_ME_KEY = 'payrollpro_remember';
 const SESSION_ACTIVE_KEY = 'payrollpro_session_active';
 
-/** Set when a confirmation-link session successfully marks the profile verified. */
 export const EMAIL_JUST_VERIFIED_KEY = 'scrivia_email_just_verified';
-/** Email most recently used at sign-up / resend, so the verify screen can prefill. */
 export const PENDING_SIGNUP_EMAIL_KEY = 'scrivia_pending_email';
 
 const EMPTY_AUTH_STATE: AuthState = {
@@ -58,33 +73,16 @@ const EMPTY_AUTH_STATE: AuthState = {
   pendingMfaCode: null,
 };
 
-/**
- * True when the URL hash carries a freshly-issued confirmation token (Supabase
- * appends `#access_token=...&type=signup|invite|...` after the user clicks the
- * email link). Recovery links (`type=recovery`) are password-reset links, not
- * confirmation links, so they are deliberately excluded.
- */
 function hasVerificationToken(): boolean {
   const hash = window.location.hash;
   if (/type=recovery/.test(hash)) return false;
   return /(access_token|type=(signup|invite|magiclink|email_change|email|sms))/.test(hash);
 }
 
-/**
- * True when the identifier looks like a phone number (contains digits and is
- * not an email address). Anything containing "@" is treated as an email.
- */
 function isPhoneIdentifier(value: string): boolean {
   return !value.includes('@') && /\d/.test(value);
 }
 
-/**
- * Normalizes a phone number toward E.164 (what Supabase Auth expects):
- *  - keeps an existing "+" prefix as-is,
- *  - converts an international "00..." prefix to "+",
- *  - converts a PH local format leading "0" (e.g. 09171234567) to +63...,
- *  - otherwise returns the digits as typed.
- */
 function normalizePhone(value: string): string {
   const digits = value.replace(/[^\d+]/g, '');
   if (digits.startsWith('+')) return digits;
@@ -110,33 +108,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mfaSessionRef = useRef<{ identifier: string; isPhone: boolean; password: string } | null>(null);
 
   const fetchProfile = useCallback(async (userId: string): Promise<UserProfile | null> => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-    if (error) return null;
-    return data as UserProfile | null;
+    try {
+      const record = await pb.collection('profiles').getOne(userId);
+      return record as unknown as UserProfile;
+    } catch {
+      return null;
+    }
   }, []);
 
-  /**
-   * Resolves the authoritative email-verification state for a signed-in user.
-   *
-   * auth.users.email_confirmed_at is the ground truth: Supabase sets it when
-   * the user clicks the confirmation link. profiles.email_verified is only a
-   * derived copy that can go stale (e.g. when the mark_email_verified RPC is
-   * missing because migrations were never pushed to the project), which would
-   * otherwise lock already-verified users out forever. When the auth provider
-   * says the email is confirmed, the account is verified — sync the derived
-   * flag best-effort and proceed.
-   */
   const resolveVerifiedProfile = useCallback(async (user: User, profile: UserProfile): Promise<UserProfile> => {
     if (profile.email_verified || !user.email_confirmed_at) return profile;
-    // Best-effort sync of the derived flag — never a login blocker.
-    const { error } = await supabase.rpc('mark_email_verified');
-    if (!error) {
+    try {
+      await pb.send('/api/auth/mark-verified', { method: 'POST' });
       const fresh = await fetchProfile(user.id);
       if (fresh) return fresh;
+    } catch {
+      // ignore
     }
     return { ...profile, email_verified: true };
   }, [fetchProfile]);
@@ -147,28 +134,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     recordId?: string,
     details?: Record<string, unknown>,
   ) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('audit_logs').insert({
-      user_id: user.id,
-      user_email: user.email,
-      action,
-      record_type: recordType ?? null,
-      record_id: recordId ?? null,
-      details: details ?? null,
-    });
+    try {
+      const user = pb.authStore.model;
+      if (!user) return;
+      await pb.collection('audit_logs').create({
+        user_id: user.id,
+        user_email: user.email,
+        action,
+        record_type: recordType ?? null,
+        record_id: recordId ?? null,
+        details: details ?? null,
+      });
+    } catch {
+      // ignore
+    }
   }, []);
 
-  /**
-   * Applies the session gate for a live session and returns the profile the
-   * user may keep, or null after signing the session out.
-   *
-   * Critical: when the session just arrived from a confirmation link, the
-   * profile is still `email_verified = false` and must be marked verified here
-   * BEFORE the approval gate can sign out. Otherwise the link's token is
-   * consumed by supabase-js and thrown away — the "I clicked the link but
-   * nothing happened" bug that leaves accounts stuck unverified forever.
-   */
   const applySessionGate = useCallback(async (user: User): Promise<UserProfile | null> => {
     let profile = await fetchProfile(user.id);
     const fromVerificationLink = hasVerificationToken();
@@ -177,13 +158,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile = await resolveVerifiedProfile(user, profile);
     }
     if (fromVerificationLink && profile?.email_verified) {
-      // Let the verify screen show "Email Verified!" even though this session
-      // is about to be signed out (pending approval users must not keep it).
       sessionStorage.setItem(EMAIL_JUST_VERIFIED_KEY, '1');
     }
 
     if (!profile || !profile.email_verified || profile.status !== 'approved') {
-      await supabase.auth.signOut();
+      pb.authStore.clear();
       return null;
     }
     return profile;
@@ -193,50 +172,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
     inactivityTimer.current = setTimeout(() => {
       (async () => {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = pb.authStore.model;
         if (user) {
-          await supabase.from('audit_logs').insert({
-            user_id: user.id,
-            user_email: user.email,
-            action: 'auto_logout_inactivity',
-          });
+          try {
+            await pb.collection('audit_logs').create({
+              user_id: user.id,
+              user_email: user.email,
+              action: 'auto_logout_inactivity',
+            });
+          } catch { }
         }
-        await supabase.auth.signOut();
+        pb.authStore.clear();
         sessionStorage.removeItem(SESSION_ACTIVE_KEY);
         setState(s => ({ ...s, user: null, profile: null, session: null, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
       })();
     }, INACTIVITY_TIMEOUT);
   }, []);
 
-  // The verification code is generated, hashed and stored entirely server-side;
-  // the browser never receives it.
   const issueOtp = useCallback(async (email: string): Promise<boolean> => {
-    const { error } = await supabase.rpc('issue_mfa_code', { p_email: email.toLowerCase() });
-    return !error;
+    try {
+      const { error } = await pb.send('/api/auth/mfa/issue', {
+        method: 'POST',
+        body: { p_email: email.toLowerCase() },
+      });
+      return !error;
+    } catch {
+      return false;
+    }
   }, []);
 
   useEffect(() => {
     let mounted = true;
 
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      // Check if we have a valid auth store
+      const token = pb.authStore.token;
+      const model = pb.authStore.model;
+
       if (!mounted) return;
 
-      if (session?.user) {
+      if (token && model) {
         const isRemembered = localStorage.getItem(REMEMBER_ME_KEY) === 'true';
         const sessionActive = sessionStorage.getItem(SESSION_ACTIVE_KEY);
         const fromVerificationLink = hasVerificationToken();
 
-        // A session that just arrived from a confirmation link is short-lived:
-        // it exists only so the profile can be marked verified, so it must
-        // survive the remember-me gate.
         if (!isRemembered && !sessionActive && !fromVerificationLink) {
-          await supabase.auth.signOut();
+          pb.authStore.clear();
           setState(EMPTY_AUTH_STATE);
           return;
         }
 
-        const profile = await applySessionGate(session.user);
+        const profile = await applySessionGate(model as unknown as User);
         if (!mounted) return;
 
         if (!profile) {
@@ -244,42 +230,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        setState({ user: session.user, profile, session, loading: false, needsMfa: false, mfaEmail: null, pendingMfaCode: null });
+        setState({ user: model as unknown as User, profile, session: { user: model as unknown as User, access_token: token }, loading: false, needsMfa: false, mfaEmail: null, pendingMfaCode: null });
         resetInactivityTimer();
       } else {
         setState(EMPTY_AUTH_STATE);
       }
     })();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted) return;
-      (async () => {
-        if (event === 'SIGNED_OUT' || !session) {
-          sessionStorage.removeItem(SESSION_ACTIVE_KEY);
-          if (!mfaSessionRef.current) {
-            setState({ user: null, profile: null, session: null, loading: false, needsMfa: false, mfaEmail: null, pendingMfaCode: null });
-          }
-          return;
-        }
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          const profile = await applySessionGate(session.user);
-          if (!mounted) return;
-          if (!profile) {
-            // applySessionGate already signed the session out (unverified,
-            // pending approval, or missing profile); the SIGNED_OUT event that
-            // follows resets the state.
-            return;
-          }
-          setState(prev => ({
-            ...prev,
-            user: session.user,
-            profile,
-            session,
-            loading: false,
-          }));
-          resetInactivityTimer();
-        }
-      })();
+    const unsubscribe = pb.authStore.onChange(() => {
+      const hasToken = !!pb.authStore.token;
+      if (!hasToken && !mfaSessionRef.current) {
+        setState({ user: null, profile: null, session: null, loading: false, needsMfa: false, mfaEmail: null, pendingMfaCode: null });
+      }
     });
 
     const activityEvents = ['mousedown', 'keydown', 'touchstart', 'scroll'];
@@ -288,7 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       mounted = false;
-      subscription.unsubscribe();
+      unsubscribe();
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       activityEvents.forEach(e => window.removeEventListener(e, handleActivity));
     };
@@ -296,78 +258,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (identifier: string, password: string, rememberMe: boolean, turnstileToken?: string): Promise<{ error: string | null; needsMfa?: boolean; mfaCode?: string }> => {
     try {
-      // Cloudflare Turnstile: when the login form produced a token, verify it
-      // server-side before attempting authentication. If the site key is not
-      // configured, the client never sends a token and this is skipped.
       if (turnstileToken && !(await verifyTurnstileToken(turnstileToken))) {
         return { error: 'Security verification failed. Please refresh the page and try again.' };
       }
 
-      // The login form accepts an email address OR a phone number; Supabase
-      // Auth has a dedicated phone path, so branch on the identifier shape.
       const isPhone = isPhoneIdentifier(identifier);
-      const { data, error } = await supabase.auth.signInWithPassword(
-        isPhone ? { phone: normalizePhone(identifier), password } : { email: identifier, password }
-      );
-
-      if (error) {
-        await supabase.from('login_attempts').insert({ email: identifier, success: false, failure_reason: error.code ?? 'invalid_credentials' });
-        await supabase.rpc('record_failed_login', { p_email: identifier.toLowerCase() });
-        // Surface the two most common blocked states instead of a generic
-        // 'invalid credentials' so the user knows what to do.
-        if (error.code === 'email_not_confirmed') {
+      let authData;
+      try {
+        authData = await pb.collection('profiles').authWithPassword(isPhone ? normalizePhone(identifier) : identifier, password);
+      } catch (err: any) {
+        await pb.collection('login_attempts').create({ email: identifier, success: false, failure_reason: err?.message ?? 'invalid_credentials' });
+        await pb.send('/api/auth/record-failed-login', { method: 'POST', body: { p_email: identifier.toLowerCase() } });
+        if (err?.message?.includes('confirm') || err?.message?.includes('verify')) {
           return { error: 'Your email address has not been verified yet. Check your inbox for the verification link and click it before signing in.' };
         }
         return { error: 'Invalid email/phone or password.' };
       }
 
-      if (!data.user) return { error: 'Invalid email/phone or password.' };
+      if (!authData.record) return { error: 'Invalid email/phone or password.' };
 
-      let profile = await fetchProfile(data.user.id);
+      let profile = await fetchProfile(authData.record.id);
 
-      // Profile could not be loaded (missing row, RLS, unapplied migration).
-      // Continuing would silently dump the user back to the login screen after
-      // a successful auth — fail loudly with an actionable message instead.
       if (!profile) {
-        await supabase.auth.signOut();
+        pb.authStore.clear();
         return { error: 'Your account record could not be loaded. Please contact your administrator.' };
       }
 
       if (profile.status !== 'approved') {
-        await supabase.auth.signOut();
+        pb.authStore.clear();
         if (profile.status === 'pending_approval') {
           return { error: 'Your account is pending administrator approval. You will be notified once approved.' };
         }
         return { error: 'This account cannot sign in. Please contact your administrator.' };
       }
 
-      // auth.users.email_confirmed_at (set by Supabase when the link is
-      // clicked) is the authoritative verification signal; the derived
-      // profiles.email_verified flag can be stale, so resolve before gating.
-      profile = await resolveVerifiedProfile(data.user, profile);
+      profile = await resolveVerifiedProfile(authData.record as unknown as User, profile);
 
-      // Without this check, signIn 'succeeds' and the onAuthStateChange guard
-      // silently signs the user right back out — an invisible login loop.
       if (!profile.email_verified) {
-        await supabase.auth.signOut();
+        pb.authStore.clear();
         return { error: 'Your email has not been verified yet. Check your inbox and click the verification link, or request a new one, before signing in.' };
       }
 
-      // Multi-factor: no session may exist until the code has been verified
-      // server-side, so sign the just-created session out and hold the
-      // credentials in memory only. The OTP is emailed to the account's
-      // registered email (a phone sign-in still has an email to receive it).
-      const accountEmail = data.user.email ?? identifier;
       if (profile?.mfa_enabled) {
-        const issued = await issueOtp(accountEmail);
+        const issued = await issueOtp(authData.record.email ?? identifier);
         if (!issued) return { error: 'Unable to start verification. Please try again.' };
 
         mfaSessionRef.current = { identifier, isPhone, password };
-        await supabase.auth.signOut();
+        pb.authStore.clear();
         setState(prev => ({
           ...prev,
           needsMfa: true,
-          mfaEmail: accountEmail,
+          mfaEmail: authData.record.email ?? identifier,
           pendingMfaCode: null,
           user: null,
           session: null,
@@ -377,7 +318,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: null, needsMfa: true };
       }
 
-      // Set session keys before any RPC so the session is recognized as active
       if (rememberMe) {
         localStorage.setItem(REMEMBER_ME_KEY, 'true');
       } else {
@@ -385,11 +325,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       sessionStorage.setItem(SESSION_ACTIVE_KEY, Date.now().toString());
 
-      // Logging — non-blocking, must not prevent login
-      supabase.from('login_attempts').insert({ email: identifier, user_id: data.user.id, success: true }).then(() => {});
-      supabase.rpc('record_successful_login').then(() => {});
+      pb.collection('login_attempts').create({ email: identifier, user_id: authData.record.id, success: true }).catch(() => {});
+      pb.send('/api/auth/record-successful-login', { method: 'POST' }).catch(() => {});
 
-      setState(prev => ({ ...prev, user: data.user, session: data.session, profile, needsMfa: false, mfaEmail: null, pendingMfaCode: null, loading: false }));
+      setState(prev => ({ ...prev, user: authData.record as unknown as User, session: { user: authData.record as unknown as User, access_token: authData.token }, profile, needsMfa: false, mfaEmail: null, pendingMfaCode: null, loading: false }));
       resetInactivityTimer();
       return { error: null };
     } catch {
@@ -402,78 +341,83 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const pending = mfaSessionRef.current;
     if (!email || !pending) return { error: 'Session expired. Please log in again.' };
 
-    const { data: result, error: rpcError } = await supabase.rpc('verify_mfa_code', {
-      p_email: email.toLowerCase(),
-      p_code: code,
-    });
-    if (rpcError) return { error: 'Unable to verify the code. Please try again.' };
+    try {
+      const { data: result, error: rpcError } = await pb.send('/api/auth/mfa/verify', {
+        method: 'POST',
+        body: { p_email: email.toLowerCase(), p_code: code },
+      });
+      if (rpcError) return { error: 'Unable to verify the code. Please try again.' };
 
-    const outcome = (result ?? {}) as { ok?: boolean; reason?: string; remaining?: number };
-    if (!outcome.ok) {
-      if (outcome.reason === 'too_many_attempts' || outcome.reason === 'expired') {
+      const outcome = (result ?? {}) as { ok?: boolean; reason?: string; remaining?: number };
+      if (!outcome.ok) {
+        if (outcome.reason === 'too_many_attempts' || outcome.reason === 'expired') {
+          mfaSessionRef.current = null;
+          setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
+          return { error: 'Verification failed. Please log in again.' };
+        }
+        const remaining = outcome.remaining;
+        return {
+          error: typeof remaining === 'number' && remaining > 0
+            ? `Invalid code. ${remaining} attempt(s) remaining.`
+            : 'Invalid code.',
+        };
+      }
+
+      let authData;
+      try {
+        authData = await pb.collection('profiles').authWithPassword(
+          pending.isPhone ? normalizePhone(pending.identifier) : pending.identifier,
+          pending.password
+        );
+      } catch {
         mfaSessionRef.current = null;
         setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
-        return { error: 'Verification failed. Please log in again.' };
+        return { error: 'Session expired. Please log in again.' };
       }
-      const remaining = outcome.remaining;
-      return {
-        error: typeof remaining === 'number' && remaining > 0
-          ? `Invalid code. ${remaining} attempt(s) remaining.`
-          : 'Invalid code.',
-      };
-    }
+      mfaSessionRef.current = null;
+      if (!authData.record) {
+        setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
+        return { error: 'Session expired. Please log in again.' };
+      }
 
-    // Only now is a session created — reusing the same identifier type (email
-    // or phone) the user signed in with.
-    const { data, error } = await supabase.auth.signInWithPassword(
-      pending.isPhone
-        ? { phone: normalizePhone(pending.identifier), password: pending.password }
-        : { email: pending.identifier, password: pending.password }
-    );
-    mfaSessionRef.current = null;
-    if (error || !data.user) {
-      setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
-      return { error: 'Session expired. Please log in again.' };
-    }
+      let profile = await fetchProfile(authData.record.id);
+      if (!profile) {
+        pb.authStore.clear();
+        setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
+        return { error: 'Your account record could not be loaded. Please contact your administrator.' };
+      }
+      if (profile.status !== 'approved') {
+        pb.authStore.clear();
+        setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
+        return { error: 'This account cannot sign in. Please contact your administrator.' };
+      }
+      profile = await resolveVerifiedProfile(authData.record as unknown as User, profile);
+      if (!profile.email_verified) {
+        pb.authStore.clear();
+        setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
+        return { error: 'Your email has not been verified yet. Please verify your email before signing in.' };
+      }
 
-    let profile = await fetchProfile(data.user.id);
-    if (!profile) {
-      await supabase.auth.signOut();
-      setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
-      return { error: 'Your account record could not be loaded. Please contact your administrator.' };
-    }
-    if (profile.status !== 'approved') {
-      await supabase.auth.signOut();
-      setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
-      return { error: 'This account cannot sign in. Please contact your administrator.' };
-    }
-    // Authoritative check: the auth provider confirmed the email (see
-    // resolveVerifiedProfile for why the derived flag alone is not enough).
-    profile = await resolveVerifiedProfile(data.user, profile);
-    if (!profile.email_verified) {
-      await supabase.auth.signOut();
-      setState(prev => ({ ...prev, needsMfa: false, mfaEmail: null, pendingMfaCode: null }));
-      return { error: 'Your email has not been verified yet. Please verify your email before signing in.' };
-    }
+      sessionStorage.setItem(SESSION_ACTIVE_KEY, Date.now().toString());
 
-    sessionStorage.setItem(SESSION_ACTIVE_KEY, Date.now().toString());
+      pb.collection('login_attempts').create({ email, user_id: authData.record.id, success: true }).catch(() => {});
+      pb.send('/api/auth/record-successful-login', { method: 'POST' }).catch(() => {});
 
-    // Logging — non-blocking
-    supabase.from('login_attempts').insert({ email, user_id: data.user.id, success: true }).then(() => {});
-    supabase.rpc('record_successful_login').then(() => {});
-
-    setState(prev => ({
-      ...prev,
-      user: data.user,
-      session: data.session,
-      profile,
-      needsMfa: false,
-      mfaEmail: null,
-      pendingMfaCode: null,
-      loading: false,
-    }));
-    resetInactivityTimer();
-    return { error: null };
+      setState(prev => ({
+        ...prev,
+        user: authData.record as unknown as User,
+        session: { user: authData.record as unknown as User, access_token: authData.token },
+        profile,
+        needsMfa: false,
+        mfaEmail: null,
+        pendingMfaCode: null,
+        loading: false,
+      }));
+      resetInactivityTimer();
+      return { error: null };
+    } catch {
+      return { error: 'An unexpected error occurred. Please try again.' };
+    }
   }, [state.mfaEmail, fetchProfile, resetInactivityTimer, resolveVerifiedProfile]);
 
   const resendMfa = useCallback(async (): Promise<{ error: string | null; mfaCode?: string }> => {
@@ -486,34 +430,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUp = useCallback(async (data: SignUpData, turnstileToken?: string): Promise<{ error: string | null }> => {
     try {
-      // Cloudflare Turnstile: block bot sign-ups before calling Supabase.
       if (turnstileToken && !(await verifyTurnstileToken(turnstileToken))) {
         return { error: 'Security verification failed. Please refresh the page and try again.' };
       }
 
-      const { error } = await supabase.auth.signUp({
-        email: data.email,
-        password: data.password,
-        options: {
-          data: {
-            first_name: data.firstName,
-            last_name: data.lastName,
-            mobile_number: data.mobileNumber,
-            username: data.username || null,
-            office_assignment: data.officeAssignment,
-            position_designation: data.positionDesignation,
-            employee_number: data.employeeNumber,
-          },
-          // Point the confirmation link back at this app regardless of the
-          // Supabase project's configured Site URL / redirect allow-list.
-          emailRedirectTo: window.location.origin,
-        },
-      });
-      if (error) {
-        console.error('Sign-up failed', error);
+      try {
+        await pb.collection('profiles').create({
+          email: data.email,
+          password: data.password,
+          passwordConfirm: data.password,
+          first_name: data.firstName,
+          last_name: data.lastName,
+          mobile_number: data.mobileNumber,
+          username: data.username || null,
+          office_assignment: data.officeAssignment,
+          position_designation: data.positionDesignation,
+          employee_number: data.employeeNumber,
+        });
+      } catch (err: any) {
+        console.error('Sign-up failed', err);
         return { error: 'Unable to complete registration. Please check your details and try again.' };
       }
-      // Remember the address so the verify screen can prefill the resend form.
       localStorage.setItem(PENDING_SIGNUP_EMAIL_KEY, data.email.toLowerCase());
       return { error: null };
     } catch {
@@ -522,11 +459,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = pb.authStore.model;
     if (user) {
-      await supabase.from('audit_logs').insert({ user_id: user.id, user_email: user.email, action: 'logout' });
+      try {
+        await pb.collection('audit_logs').create({ user_id: user.id, user_email: user.email, action: 'logout' });
+      } catch { }
     }
-    await supabase.auth.signOut();
+    pb.authStore.clear();
     sessionStorage.removeItem(SESSION_ACTIVE_KEY);
     sessionStorage.removeItem(EMAIL_JUST_VERIFIED_KEY);
     localStorage.removeItem(REMEMBER_ME_KEY);
@@ -542,9 +481,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateProfile = useCallback(async (updates: Partial<UserProfile>): Promise<{ error: string | null }> => {
     if (!state.user) return { error: 'Not authenticated.' };
-    const { error } = await supabase.from('profiles').update(updates).eq('id', state.user.id);
-    if (error) {
-      console.error('Profile update failed', error);
+    try {
+      await pb.collection('profiles').update(state.user.id, updates);
+    } catch (err: any) {
+      console.error('Profile update failed', err);
       return { error: 'Unable to save your changes. Please try again.' };
     }
     await refreshProfile();

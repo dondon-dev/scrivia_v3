@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Award,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
 import { useOrg } from '@/lib/org';
@@ -160,7 +160,7 @@ export default function DivisionOffice() {
           .from('schools')
           .select('id')
           .eq('division_id', divisionId);
-        (divSchools ?? []).forEach((s) => divisionSchoolIds.add((s as { id: string }).id));
+        (divSchools ?? []).forEach((s: { id: string }) => divisionSchoolIds.add(s.id));
       }
       const scopedFilter = (rows: unknown[]) =>
         divisionSchoolIds.size

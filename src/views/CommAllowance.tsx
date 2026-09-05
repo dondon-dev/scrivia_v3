@@ -10,7 +10,7 @@ import {
   CheckCircle2, Eye, ClipboardCopy,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope } from '@/lib/org';
 import { usePositions } from '@/lib/usePositions';

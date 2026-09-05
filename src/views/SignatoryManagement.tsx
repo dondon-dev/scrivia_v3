@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Save, Plus, Trash2, CheckCircle2, Circle, RefreshCw } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useOrg, codeScope, matchesOrgScope } from '@/lib/org';
 import { SIGNATORY_ROLES, type Signatory } from '@/types/initialPayroll';
 import { useAuth } from '@/lib/auth';

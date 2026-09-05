@@ -4,7 +4,7 @@ import {
   CheckCircle2, Circle, AlertCircle, RefreshCw, X, ChevronDown, ChevronRight,
   History, Zap, Upload, Search, Pencil, Calculator, Undo2,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg, codeScope, matchesOrgScope } from '@/lib/org';
 import { isSuperAdminRole } from '@/lib/authz';

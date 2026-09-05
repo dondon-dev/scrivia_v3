@@ -9,7 +9,7 @@ import {
   DollarSign, Percent, Zap, Eye, EyeOff, Copy,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import type {
   PayrollDefinition,

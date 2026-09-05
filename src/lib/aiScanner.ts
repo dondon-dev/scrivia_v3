@@ -1,4 +1,4 @@
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from './pb';
 
 /**
  * SCRIVIA Intelligence™ — payroll exception scanner.

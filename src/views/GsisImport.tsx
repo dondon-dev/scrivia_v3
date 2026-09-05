@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { validateUpload } from '@/lib/uploadSecurity';
 import { downloadFile, generateCsv, currency } from '@/lib/reports';
 import {

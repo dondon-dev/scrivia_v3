@@ -5,7 +5,7 @@ import {
   Banknote, Wallet, TrendingDown, AlertCircle, CheckCircle2,
   Info, Power, Database, FileText,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
 import { downloadFile, currency, generateCsv } from '@/lib/reports';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';

@@ -17,7 +17,7 @@ const FULL_SETUP_SQL = `${regionsDivisionsSetupSql}
 -- Fix: self-healing upsert_division (resolves the region by id, then by code)
 -- ============================================================================
 ${regionsDivisionsFixSql}`;
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { isSuperAdminRole } from '@/lib/authz';
 import { useOrg } from '@/lib/org';

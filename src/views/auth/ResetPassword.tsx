@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Eye, EyeOff, ArrowRight, Check, AlertCircle } from 'lucide-react';
 import { ScriviaLogo, ScriviaWordmark } from '@/components/ScriviaLogo';
-import { supabase } from '@/lib/supabase';
+import { pb } from '@/lib/pb';
 import { validatePassword } from '@/lib/validation';
 
 export default function ResetPassword({ onSwitch }: { onSwitch: (view: 'login' | 'signup' | 'forgot' | 'verify' | 'reset') => void }) {
@@ -14,20 +14,23 @@ export default function ResetPassword({ onSwitch }: { onSwitch: (view: 'login' |
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // Supabase sends the access token in the URL hash after clicking the email link
+    // PocketBase sends the access token in the URL hash after clicking the email link
     const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        setReady(true);
-      } else {
-        // Try to get the session from the URL hash
-        const hash = window.location.hash;
-        if (hash.includes('access_token') || hash.includes('type=recovery')) {
-          const { error } = await supabase.auth.getSession();
-          if (!error) setReady(true);
+      const hash = window.location.hash;
+      if (hash.includes('access_token') || hash.includes('type=recovery')) {
+        // The token is in the hash - PocketBase will pick it up automatically
+        // We just need to wait for the auth store to populate
+        let attempts = 0;
+        while (!pb.authStore.token && attempts < 20) {
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
         }
+        if (pb.authStore.token) {
+          setReady(true);
+        }
+      } else {
+        setReady(true);
       }
-      setReady(true);
     };
     checkSession();
   }, []);
@@ -42,14 +45,24 @@ export default function ResetPassword({ onSwitch }: { onSwitch: (view: 'login' |
     if (!canSubmit) return;
 
     setLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-    setLoading(false);
+    try {
+      // Call PocketBase hook to confirm password reset
+      const { error } = await pb.send('/api/auth/confirm-password-reset', {
+        method: 'POST',
+        body: { password },
+      });
+      setLoading(false);
 
-    if (error) {
-      console.error('Password update failed', error);
+      if (error) {
+        console.error('Password update failed', error);
+        setError('Unable to update your password. Please request a new reset link and try again.');
+      } else {
+        setSuccess(true);
+      }
+    } catch (err: any) {
+      setLoading(false);
+      console.error('Password update failed', err);
       setError('Unable to update your password. Please request a new reset link and try again.');
-    } else {
-      setSuccess(true);
     }
   };
 

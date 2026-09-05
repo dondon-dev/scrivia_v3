@@ -1,0 +1,42 @@
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.env
+
+/src/generated/prisma
+
+# Database backups
+backups/*.sql
+backups/*.zip
+*.dump
+
+# Build artifacts
+*.tsbuildinfo
+
+# Temp files
+query
+skills-lock.json
+
+# PocketBase
+pocketbase_bin/pb_data/*.db
+pocketbase_bin/pb_data/*.db-wal
+pocketbase_bin/pb_data/*.db-shm

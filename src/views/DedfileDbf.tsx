@@ -4,7 +4,7 @@ import {
   Copy, AlertTriangle, AlertCircle, CheckCircle2,
   FileSpreadsheet, Table2, Info, History, ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { downloadFile, currency, generateCsv, generateExcel, generateDedfileDbf } from '@/lib/reports';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { validateUpload } from '@/lib/uploadSecurity';

@@ -4,7 +4,7 @@ import {
   FileDown, ClipboardList, BookOpen, BarChart3, Search, ShieldAlert, Landmark, HeartPulse, Home, Wallet,
   AlertCircle, Printer, Building, CalendarDays, RefreshCw,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import { usePagination, Pagination } from '@/components/Pagination';
 import {
@@ -130,7 +130,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
       // to the division's own employees below; if the scope matches no period
       // (the division has not created one yet), fall back to the full list so
       // the Report Center is never left dead with no selectable period.
-      const scopedPeriods = (per.data ?? []).filter((p) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
+      const scopedPeriods = (per.data ?? []).filter((p: { division_id?: string | null; regcode?: string | null; divcode?: string | null }) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
       const visiblePeriods = scopedPeriods.length > 0 ? scopedPeriods : (per.data ?? []);
       setEmployees((emp as unknown as Employee[]).filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes })));
       setPeriods(visiblePeriods);
@@ -141,7 +141,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
       // the newest open/draft period. Periods are sorted with a created_at
       // tiebreaker, so duplicate month periods (e.g. a legacy "Aug 2026" vs the
       // real "August 2026") resolve to the one that actually holds the payroll.
-      setPeriodId((cur) => (cur && visiblePeriods.some((p) => p.id === cur) ? cur : (pickDefaultPeriod(visiblePeriods)?.id ?? '')));
+      setPeriodId((cur) => (cur && visiblePeriods.some((p: { id: string }) => p.id === cur) ? cur : (pickDefaultPeriod(visiblePeriods)?.id ?? '')));
       setLastSynced(new Date());
       setLoading(false);
     })();

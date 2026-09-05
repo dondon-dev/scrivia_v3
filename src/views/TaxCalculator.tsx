@@ -13,7 +13,7 @@ import {
   Search,
   UserCheck,
 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/supabase';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
 import type { Employee } from '@/types/payroll';
 

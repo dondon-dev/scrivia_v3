@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Wallet, TrendingUp, Landmark, FileText, Calendar, User, Building2, BadgePercent, Receipt, Clock } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/pb';
 import { currency } from '@/lib/reports';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import type { UserProfile } from '@/types/auth';

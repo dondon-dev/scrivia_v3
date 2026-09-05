@@ -29,14 +29,23 @@ backups/*.sql
 backups/*.zip
 *.dump
 
-# Supabase auto-sync (destructive - drops columns and policies)
-supabase/migrations/*_studio_sync.sql
-
 # Build artifacts
 *.tsbuildinfo
 
 # Temp files
 query
 skills-lock.json
-supabase/remote_schema.sql
-supabase/migrations/*_remote_schema.sql
+.aider*
+
+# PocketBase
+pocketbase_bin/pb_data/*.db
+pocketbase_bin/pb_data/*.db-wal
+pocketbase_bin/pb_data/*.db-shm
+
+# Local runtime & backups (not for VCS)
+pocketbase_bin/
+pb_output.log*
+*.log.err
+
+# Local secrets / auth tokens
+.pb_token
