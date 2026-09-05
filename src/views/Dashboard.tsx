@@ -166,7 +166,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
         const [
           empRes, payPeriodsRes, payEntriesRes, dedRes, groupsRes, recentRes, dedCodesRes,
         ] = await Promise.all([
-          addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode', { count: 'exact', head: true })),
+          addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode')),
           supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
           addScope(supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions')),
           addScope(supabase.from('payroll_deductions').select('id,dedcode,dedname,dedamt,agency,type,employee_id')),
@@ -176,8 +176,8 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
         ]);
         if (!active) return;
 
-        const totalRecords = empRes.count ?? 0;
-        const allEmps = empRes.data ?? [];
+        const allEmps = (empRes.data ?? []) as { status?: string | null; stacode?: string | number | null }[];
+        const totalRecords = allEmps.length;
         const activeEmployees = allEmps.filter((e) => e.status === 'Active' || !e.status).length;
 
         const periods = (payPeriodsRes.data ?? []) as PayPeriod[];

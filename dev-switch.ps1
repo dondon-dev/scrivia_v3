@@ -16,7 +16,7 @@ $form.Controls.Add($startButton)
 $form.Controls.Add($stopButton)
 
 $startButton.Add_Click({
-    Start-Process powershell -ArgumentList "-NoExit","-Command","cd C:\scriviacloudV2\pocketbase_bin; .\pocketbase.exe serve"
+    Start-Process powershell -ArgumentList "-NoExit","-Command","cd C:\scriviacloudV2\pocketbase_bin; .\pocketbase.exe serve --http=0.0.0.0:8090"
     Start-Process powershell -ArgumentList "-NoExit","-Command","cd C:\scriviacloudV2\frontend; npm run dev"
 })
 

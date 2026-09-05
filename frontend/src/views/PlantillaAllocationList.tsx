@@ -176,11 +176,16 @@ function pickPsipopItem(emp: Employee, index: { byName: Map<string, PlantillaPos
  * Org. Code (2) = the school/facility code from the PSIPOP header
  * (e.g. '1801.0010' from '1801.0010 BUBUYAN INTEGRATED SCHOOL'). Deliberately
  * does NOT fall back to the item's AREA code — that is a different code system
- * and would put a wrong value into the PAL.
+ * and would put a wrong value into the PAL. School codes look like
+ * 'NNNN.NNNN' (4 digits, dot, 4 digits); anything else is treated as an area
+ * code and dropped, so a school-code-less row shows '—' instead of '1536'.
  */
 function psipopOrgCode(item: PlantillaPosition): string {
-  // Prefer school_code (e.g. '1801.0010') over area code (e.g. '1536')
-  return String(item.school_id || item.area || '');
+  // school_id holds the PSIPOP header school code (e.g. '1801.0010'); an area
+  // code like '1536' or a 'SCH-…' synthetic id is never a valid PAL org code.
+  const raw = String(item.school_id || '').trim();
+  if (/^\d{4}\.\d{4}/.test(raw)) return raw;
+  return '';
 }
 
 // ── Employee lookup ───────────────────────────────────────────────────────
@@ -284,6 +289,12 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       let changed = false;
       const next = prev.map((r) => {
         let patched = { ...r };
+        // Drop any stored orgCode that isn't a real school code (older rows got
+        // the PSIPOP AREA code, e.g. '1536', which must never appear in the PAL).
+        if (patched.orgCode && !/^\d{4}\.\d{4}/.test(patched.orgCode)) {
+          patched = { ...patched, orgCode: '' };
+          changed = true;
+        }
         // Backfill orgCode from PSIPOP if empty
         if (!patched.orgCode && patched.itemNumber) {
           const item = psipop.items.find((p) => p.item_number === patched.itemNumber) || posByItem.get(patched.itemNumber);
@@ -453,10 +464,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       itemNumber: f.itemNumber.trim(),
       grade, step, monthly,
       poscode: f.poscode,
-      orgCode: f.orgCode.trim() || undefined,
-      approvedPosition: (f.approvedPosition || f.positionTitle).trim() || undefined,
-      approvedGrade: f.approvedGrade.trim() || undefined,
-      approvedMonthly: Number(f.approvedMonthly) || undefined,
+      orgCode: f.orgCode.trim(),
+      approvedPosition: (f.approvedPosition || f.positionTitle).trim(),
+      approvedGrade: f.approvedGrade.trim(),
+      approvedMonthly: Number(f.approvedMonthly),
       employeeFound: true,
       psipopMatched: false,
     };
@@ -604,14 +615,14 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           //   O (15) = (13) × 0.12   RLIP                     M × 0.12
           //   P (16) = (13)+(14)+(15) Total Monthly Req.      M + N + O
           //   Q (17) = (16) × months Current Year Req.        P × months
-          //   R (18) = (13) × 2       MYB + YEB Differential  M × 2
+          //   R (18) = (13) × 12      MYB + YEB Differential  M × 12
           //   S (19) = (17)+(18)      Total Funding Req.      Q + R
           const mVal = r2(appRate - rate);
           const nVal = r2(mVal * 0.025);
           const oVal = r2(mVal * 0.12);
           const pVal = r2(mVal + nVal + oVal);
           const qVal = r2(pVal * months);
-          const rrVal = r2(rate * months);
+          const rrVal = r2(mVal * 12);
           const sVal = r2(qVal + rrVal);
           totals.J = r2(totals.J + rate);
           totals.L = r2(totals.L + appRate);
@@ -631,8 +642,8 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           rowBody = replaceCell(rowBody, 'P', r, `<c r="P${r}" s="58"><f>M${r}+N${r}+O${r}</f><v>${r2(pVal)}</v></c>`);
           // Q (17) = P × months (Current Year Requirements)
           rowBody = replaceCell(rowBody, 'Q', r, `<c r="Q${r}" s="57"><f>P${r}*${months}</f><v>${r2(qVal)}</v></c>`);
-          // R (18) = (10) × months (MYB + YEB Differential = current year monthly × months)
-          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>J${r}*${months}</f><v>${r2(rrVal)}</v></c>`);
+          // R (18) = (13) × 12 (MYB + YEB Differential = Sal. Differential × 12)
+          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>M${r}*12</f><v>${r2(rrVal)}</v></c>`);
           // S (19) = Q + R (Total Funding Requirements)
           rowBody = replaceCell(rowBody, 'S', r, `<c r="S${r}" s="57"><f>Q${r}+R${r}</f><v>${r2(sVal)}</v></c>`);
         } else {
@@ -706,7 +717,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
             Department of Education — {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''}.{level ? <> <strong className="text-slate-700 dark:text-slate-200">{PAL_LEVELS[level].label}</strong> list — STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}.</> : ' All school levels.'} Type an EMPNO; columns (1), (5), (6), (9) &amp; (10) auto-fill from Employee Records and the latest PSIPOP.
           </p>
           <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-            Formulas: (13)=(12)-(10) Sal. Diff · (14)=(13)×2.5% PHIC · (15)=(13)×0.12 RLIP · (16)=(13)+(14)+(15) Total Monthly · (17)=(16)×months · (18)=(10)×months MYB+YEB · (19)=(17)+(18) Total Funding
+            Formulas: (13)=(12)-(10) Sal. Diff · (14)=(13)×2.5% PHIC · (15)=(13)×0.12 RLIP · (16)=(13)+(14)+(15) Total Monthly · (17)=(16)×months · (18)=(13)×12 MYB+YEB · (19)=(17)+(18) Total Funding
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -849,6 +860,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           </button>
                         )}
                       </td>
+                      <td className="px-3 py-2 font-mono text-[12px] text-slate-600 dark:text-slate-300">{r.orgCode || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
                       <td className="px-3 py-2">
                         {r.incumbent ? <span className="font-medium text-slate-800 dark:text-slate-100 text-[13px]">{r.incumbent}</span>
                           : r.employeeFound ? <span className="text-slate-400 text-xs">—</span>
@@ -904,7 +916,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 font-mono text-[12px] text-slate-600 dark:text-slate-300">{r.orgCode || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
                       <td className="px-3 py-2 text-center text-[13px]">{r.grade > 0 ? fmtGradeStep(r.grade, r.step) : '—'}</td>
                       <td className="px-3 py-2 text-right text-[13px] tabular-nums">{r.monthly > 0 ? currency(r.monthly) : '—'}</td>
                       <td className="px-3 py-2 text-center text-[13px] text-emerald-700 dark:text-emerald-300 font-medium">{r.approvedGrade || '—'}</td>

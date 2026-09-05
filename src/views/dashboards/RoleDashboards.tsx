@@ -12,7 +12,7 @@ import { currency } from '@/lib/reports';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import { usePermissions } from '@/lib/permissions';
-import { useOrg } from '@/lib/org';
+import { useOrg, codeScope } from '@/lib/org';
 import {
   ROLE_LABELS, ROLE_DESCRIPTIONS, type UserProfile, type UserRole,
 } from '@/types/auth';
@@ -84,41 +84,113 @@ interface DashboardStats {
 function useDashboardStats() {
   const [data, setData] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const { scopedCodes } = useOrg();
 
   useEffect(() => {
     let active = true;
     (async () => {
-      const { data: c, error } = await supabase
-        .from('dashboard_stats_cache')
-        .select('*')
-        .eq('id', 1)
-        .single();
-      if (!active) return;
-      if (error || !c) {
-        setLoading(false);
-        return;
+      try {
+        // Query PocketBase collections directly so the role dashboards always
+        // reflect live payroll data (the old dashboard_stats_cache snapshot was
+        // never populated and its schema had drifted).
+        const scope = scopedCodes && scopedCodes.length > 0 ? scopedCodes : null;
+        const regcode = scope?.[0]?.regcode ?? null;
+        const divcodes = scope ? [...new Set(scope.map((s) => s.divcode))] : null;
+
+        const addScope = (q: ReturnType<typeof supabase.from>) => {
+          if (regcode && divcodes) {
+            return q.eq('regcode', regcode).in('divcode', divcodes);
+          }
+          return q;
+        };
+
+        const [
+          empRes, payPeriodsRes, payEntriesRes, dedRes, groupsRes, recentRes, dedCodesRes,
+        ] = await Promise.all([
+          addScope(supabase.from('employees').select('id,status,stacode')),
+          supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
+          addScope(supabase.from('payroll_entries').select('id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions')),
+          addScope(supabase.from('payroll_deductions').select('dedcode,dedname,dedamt')),
+          supabase.from('payroll_groups').select('*'),
+          addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,basic,basic_salary').order('created_at', { ascending: false }).limit(6)),
+          supabase.from('deduction_codes').select('*'),
+        ]);
+        if (!active) return;
+
+        const allEmps = (empRes.data ?? []) as { status?: string | null; stacode?: string | number | null }[];
+        const totalRecords = allEmps.length;
+        const activeEmployees = allEmps.filter((e) => e.status === 'Active' || !e.status).length;
+        const unassignedCount = allEmps.filter((e) => !e.stacode || e.stacode === '' || e.stacode === '000').length;
+
+        const periods = (payPeriodsRes.data ?? []) as PayPeriod[];
+        const currentPeriod = periods[0] ?? null;
+        const entries = (payEntriesRes.data ?? []) as Record<string, unknown>[];
+
+        const currentEntries = currentPeriod
+          ? entries.filter((e) => e.pay_period_id === currentPeriod.id)
+          : [];
+        const computedEntries = currentEntries.filter((e) => e.status === 'Computed');
+        const postedEntries = currentEntries.filter((e) => e.status === 'Posted');
+        const pendingEntries = currentEntries.filter((e) => e.status !== 'Posted' && e.status !== 'Computed');
+
+        const totalGross = currentEntries.reduce((s, e) => s + Number(e.gross_pay ?? 0), 0);
+        const totalNet = currentEntries.reduce((s, e) => s + Number(e.net_pay ?? 0), 0);
+        const totalMandatory = currentEntries.reduce((s, e) => s + Number(e.mandatory_deductions ?? 0), 0);
+        const totalLoanDeds = currentEntries.reduce((s, e) => s + Number(e.actual_loan_deductions ?? 0), 0);
+        const activeLoanAccounts = currentEntries.filter((e) => Number(e.actual_loan_deductions ?? 0) > 0).length;
+
+        // Deduction totals by code
+        const deductions = (dedRes.data ?? []) as { dedcode: string; dedname: string; dedamt: number }[];
+        const dedCodesResData = (dedCodesRes.data ?? []) as { dedcode: string; dedname: string; description?: string }[];
+        const dedCodeMap = new Map(dedCodesResData.map((d) => [d.dedcode, d]));
+        const dedAgg = new Map<string, { code: string; name: string; count: number; total: number }>();
+        for (const d of deductions) {
+          const existing = dedAgg.get(d.dedcode);
+          if (existing) { existing.total += d.dedamt; existing.count++; } else {
+            const codeInfo = dedCodeMap.get(d.dedcode);
+            dedAgg.set(d.dedcode, { code: d.dedcode, name: d.dedname || codeInfo?.description || d.dedcode, count: 1, total: d.dedamt });
+          }
+        }
+        const dedTotalsByCode = [...dedAgg.values()].sort((a, b) => b.total - a.total);
+
+        // Group stats (count employees per group by STACODE range)
+        const groups = (groupsRes.data ?? []) as PayrollGroup[];
+        const groupStats = groups.map((g) => {
+          const min = g.stacode_min ?? 0;
+          const max = g.stacode_max ?? 701;
+          const count = allEmps.filter((e) => {
+            const stacode = Number(e.stacode ?? 0);
+            return stacode >= min && stacode <= max;
+          }).length;
+          return { ...g, count };
+        });
+
+        setData({
+          totalRecords,
+          activeEmployees,
+          totalGross,
+          totalNet,
+          totalMandatory,
+          totalLoanDeds,
+          processedCount: computedEntries.length + postedEntries.length,
+          pendingCount: pendingEntries.length,
+          currentPeriod,
+          periodNet: totalNet,
+          groupStats,
+          unassignedCount,
+          activeLoanAccounts,
+          dedTotalsByCode,
+          recentEmployees: (recentRes.data ?? []) as DashboardStats['recentEmployees'],
+        });
+      } catch {
+        if (!active) return;
+        setData(null);
+      } finally {
+        if (active) setLoading(false);
       }
-      setData({
-        totalRecords: c.total_records,
-        activeEmployees: c.active_employees,
-        totalGross: Number(c.total_gross),
-        totalNet: Number(c.total_net),
-        totalMandatory: Number(c.total_mandatory),
-        totalLoanDeds: Number(c.total_loan_deds),
-        processedCount: c.processed_count,
-        pendingCount: c.pending_count,
-        currentPeriod: c.current_period ?? null,
-        periodNet: Number(c.period_net),
-        groupStats: c.group_stats ?? [],
-        unassignedCount: c.unassigned_count,
-        activeLoanAccounts: c.active_loan_accounts,
-        dedTotalsByCode: c.ded_totals_by_code ?? [],
-        recentEmployees: c.recent_employees ?? [],
-      });
-      setLoading(false);
     })();
     return () => { active = false; };
-  }, []);
+  }, [scopedCodes]);
 
   return { data, loading };
 }

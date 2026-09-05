@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import {
   Plus, Search, Trash2, Download, X, AlertTriangle, CheckCircle2, Loader2,
-  ListTree, RefreshCw, Info, UserX, UserPlus,
+  ListTree, RefreshCw, Info, UserX, UserPlus, Save, FileText, Landmark,
 } from 'lucide-react';
 import { supabase } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
@@ -11,6 +11,12 @@ import { loadPlantillaPositions, type PlantillaPosition } from '@/lib/plantilla'
 import type { Employee } from '@/types/payroll';
 import { currency } from '@/lib/reports';
 import { usePagination, Pagination } from '@/components/Pagination';
+import { useAuth } from '@/lib/auth';
+import {
+  DEFAULT_AGENCY, computePalRow, deletePalList, loadPalList, palLocalKey,
+  savePalList,
+  type PalListMeta, type PalRow, type PalListRecord,
+} from '@/lib/pal';
 
 // ── School-level sub-menus (STACODE ranges) ────────────────────────────────
 
@@ -40,33 +46,6 @@ function inStacodeRange(v: unknown, range: [number, number] | null): boolean {
   return n >= range[0] && n <= range[1];
 }
 
-// ── Row model ─────────────────────────────────────────────────────────────
-
-interface PalRow {
-  uid: string;
-  empno: string;
-  empId?: string;
-  itemNumber: string;
-  itemYear?: number;
-  incumbent: string;
-  positionTitle: string;
-  grade: number;
-  step: number;
-  monthly: number;
-  poscode: string;
-  /** Organizational code per PSIPOP (column B) */
-  orgCode?: string;
-  /** DepEd Approved Position (column G/7) — user fills manually */
-  approvedPosition?: string;
-  /** Approved Salary Grade (column K/11) — auto-filled from Position Management */
-  approvedGrade?: string;
-  /** Approved Monthly Rate (column L/12) — auto-filled from Position Management */
-  approvedMonthly?: number;
-  employeeFound: boolean;
-  psipopMatched: boolean;
-  note?: string;
-}
-
 const fmtGradeStep = (g: number, s: number) => (g > 0 ? `${g}${s > 0 ? ` S${s}` : ''}` : '');
 
 // The DBM-DepEd PAL template fits 6 employees per printed page.
@@ -86,19 +65,50 @@ interface NewEmpForm {
   step: number;
   monthly: number;
   orgCode: string;
-  /** DepEd Approved Position (column G/7) — from Position Management */
   approvedPosition: string;
-  /** Approved Salary Grade (column K/11) — from Position Management, e.g. "12 S1" */
   approvedGrade: string;
-  /** Approved Step (sub-slot of K) */
   approvedStep: string;
-  /** Approved Monthly Rate (column L/12) — from Position Management */
   approvedMonthly: number;
+  transferOrgCode: string;
+  transferSchool: string;
+  dateApproval: string;
+  remarks: string;
 }
 
 function emptyNewEmp(): NewEmpForm {
-  return { empno: '', itemNumber: '', lname: '', fname: '', mi: '', poscode: '', positionTitle: '', grade: 0, step: 1, monthly: 0, orgCode: '', approvedPosition: '', approvedGrade: '', approvedStep: '', approvedMonthly: 0 };
+  return {
+    empno: '', itemNumber: '', lname: '', fname: '', mi: '', poscode: '', positionTitle: '',
+    grade: 0, step: 1, monthly: 0, orgCode: '', approvedPosition: '', approvedGrade: '', approvedStep: '', approvedMonthly: 0,
+    transferOrgCode: '', transferSchool: '', dateApproval: '', remarks: '',
+  };
 }
+
+// ── Computed-column totals (13)-(19) sums ─────────────────────────────────
+
+type TotalKeys = 'J' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' | 'S';
+interface TotalRow { [k in TotalKeys]: number }
+
+const emptyTotals = (): TotalRow => ({ J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 });
+
+const sumSheet = (arr: PalRow[], months: number): TotalRow => {
+  const t = emptyTotals();
+  for (const r of arr) {
+    const c = computePalRow(r, months);
+    t.J += Number(r.monthly) || 0;
+    t.L += Number(r.approvedMonthly) || 0;
+    t.M += c.salDifferential;
+    t.N += c.phic;
+    t.O += c.rlip;
+    t.P += c.totalMonthly;
+    t.Q += c.currentYearReq;
+    t.R += c.yebDifferential;
+    t.S += c.totalFunding;
+  }
+  for (const k of Object.keys(t) as TotalKeys[]) t[k] = Math.round(t[k] * 100) / 100;
+  return t;
+};
+
+const fmtTot = (n: number) => (n === 0 ? '—' : currency(n));
 
 // ── Name matching helpers ─────────────────────────────────────────────────
 
@@ -172,14 +182,7 @@ function pickPsipopItem(emp: Employee, index: { byName: Map<string, PlantillaPos
   return { item: best, ambiguous: false };
 }
 
-/**
- * Org. Code (2) = the school/facility code from the PSIPOP header
- * (e.g. '1801.0010' from '1801.0010 BUBUYAN INTEGRATED SCHOOL'). Deliberately
- * does NOT fall back to the item's AREA code — that is a different code system
- * and would put a wrong value into the PAL.
- */
 function psipopOrgCode(item: PlantillaPosition): string {
-  // Prefer school_code (e.g. '1801.0010') over area code (e.g. '1536')
   return String(item.school_id || item.area || '');
 }
 
@@ -212,17 +215,27 @@ function incumbentName(e: Employee): string {
   return [l, [f, m].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 
+const inputCls = 'w-full px-1.5 py-1 rounded border border-slate-200 dark:border-slate-700 text-[11px] tabular-nums bg-white dark:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 focus:border-emerald-400 placeholder:text-slate-300 dark:placeholder:text-slate-600';
+
 // ── View ──────────────────────────────────────────────────────────────────
 
 export default function PlantillaAllocationList({ initialTab }: { initialTab?: PalLevel }) {
   const { scopedDivisionIds, scopedCodes, selectedDivision, selectedRegion, divisions } = useOrg();
   const { positions: allPositions, lookup: lookupPosition } = usePositions();
+  const { profile, logAudit } = useAuth();
 
   const [rows, setRows] = useState<PalRow[]>([]);
+  const [meta, setMeta] = useState<PalListMeta>(() => ({
+    regcode: '', divcode: '', region_name: '', division_name: '',
+    agency: DEFAULT_AGENCY, education: '', level: 'all', months: 12,
+    status: 'draft', created_by: '', updated_by: '',
+  }));
+  const [loading, setLoading] = useState(true);
+  const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [quickEmpno, setQuickEmpno] = useState('');
   const [resolving, setResolving] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [months, setMonths] = useState(12);
   const [level, setLevel] = useState<PalLevel | null>(initialTab ?? null);
   const [psipop, setPsipop] = useState<{ items: PlantillaPosition[]; year: number | null; byName: Map<string, PlantillaPosition[]> } | null>(null);
   const [psipopLoading, setPsipopLoading] = useState(true);
@@ -242,37 +255,147 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   const [apprPosSearch, setApprPosSearch] = useState('');
   const quickRef = useRef<HTMLInputElement>(null);
 
-  // Pagination — 6 EMPNO per page (matches the printed PAL page size)
-  const { page, setPage, totalPages, pagedItems } = usePagination(rows, PAGE_SIZE);
+  const rowsRef = useRef<PalRow[]>([]);
+  const metaRef = useRef<PalListMeta | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const profileRef = useRef<{ name: string; email: string }>({ name: '', email: '' });
 
-  const scope = useMemo(() => ({ scopedDivisionIds, scopedCodes }), [scopedDivisionIds, scopedCodes]);
-
-  const lsKey = useMemo(() => {
-    const code = scopedCodes?.[0] ? `${scopedCodes[0].regcode}_${scopedCodes[0].divcode}` : 'all';
-    return `pal_rows_${code}_${level ?? 'all'}`;
-  }, [scopedCodes, level]);
+  useEffect(() => {
+    if (!profile) { profileRef.current = { name: '', email: '' }; return; }
+    profileRef.current = {
+      name: [profile.last_name, profile.first_name].filter(Boolean).join(', '),
+      email: profile.email ?? '',
+    };
+  }, [profile]);
 
   useEffect(() => {
     setLevel(initialTab ?? null);
   }, [initialTab]);
 
-  useEffect(() => {
-    try { const saved = localStorage.getItem(lsKey); if (saved) { const p = JSON.parse(saved) as PalRow[]; if (Array.isArray(p)) setRows(p); } } catch { /* */ }
-  }, [lsKey]);
+  // Pagination — 6 EMPNO per page (matches the printed PAL page size)
+  const { page, setPage, totalPages, pagedItems } = usePagination(rows, PAGE_SIZE);
 
+  const scope = useMemo(() => ({ scopedDivisionIds, scopedCodes }), [scopedDivisionIds, scopedCodes]);
+
+  // ── Persistence ─────────────────────────────────────────────────────────
+
+  const doSave = useCallback(async () => {
+    const m = metaRef.current;
+    if (!m) return;
+    setSaveState('saving');
+    const list: PalListRecord = {
+      ...m,
+      rows: rowsRef.current,
+      updated_by: profileRef.current.name || profileRef.current.email || 'worksheet',
+      created_by: m.created_by || profileRef.current.name || profileRef.current.email || 'worksheet',
+    };
+    try {
+      const saved = await savePalList(list);
+      setMeta((prev) => ({
+        ...prev,
+        id: saved.id ?? prev.id,
+        created_at: saved.created_at ?? prev.created_at,
+        updated_at: saved.updated_at ?? prev.updated_at,
+        created_by: saved.created_by || m.created_by,
+        updated_by: saved.updated_by || m.updated_by,
+      }));
+      metaRef.current = { ...m, id: saved.id ?? m.id };
+      setLastSavedAt(Date.now());
+      setSaveState('saved');
+      if (saved.id) void logAudit('pal_list_saved', 'pal_lists', saved.id, { divcode: m.divcode, level: m.level, rows: rowsRef.current.length });
+    } catch (e) {
+      setSaveState('error');
+      setMessage({ tone: 'err', text: `Autosave failed — ${e instanceof Error ? e.message : String(e)}. Changes are kept locally and will retry on the next edit.` });
+    }
+  }, [logAudit]);
+
+  const scheduleSave = useCallback(() => {
+    setSaveState('dirty');
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = null; void doSave(); }, 700);
+  }, [doSave]);
+
+  const updateRows = useCallback((updater: (rs: PalRow[]) => PalRow[]) => {
+    setRows((rs) => {
+      const next = updater(rs);
+      if (next === rs) return rs;
+      rowsRef.current = next;
+      scheduleSave();
+      return next;
+    });
+  }, [scheduleSave]);
+
+  const updateMeta = useCallback((patch: Partial<PalListMeta>) => {
+    setMeta((m) => {
+      const next = { ...m, ...patch };
+      metaRef.current = next;
+      return next;
+    });
+    scheduleSave();
+  }, [scheduleSave]);
+
+  const patchRow = useCallback((uid: string, patch: Partial<PalRow>) => {
+    updateRows((rs) => rs.map((r) => (r.uid === uid
+      ? { ...r, ...patch, note: patch.note !== undefined ? patch.note : r.note }
+      : r)));
+  }, [updateRows]);
+
+  const codeKey = useMemo(() => {
+    const c = scopedCodes?.[0];
+    return c ? `${c.regcode}_${c.divcode}` : 'all';
+  }, [scopedCodes]);
+
+  // Load the DB-backed sheet whenever scope or school level changes.
   useEffect(() => {
-    try { if (rows.length > 0) localStorage.setItem(lsKey, JSON.stringify(rows)); else localStorage.removeItem(lsKey); } catch { /* */ }
-  }, [rows, lsKey]);
+    let active = true;
+    if (saveTimer.current) { window.clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const c = scopedCodes?.[0] ?? null;
+    const lv = level ?? 'all';
+    setLoading(true);
+    (async () => {
+      const actualScope = {
+        regcode: c?.regcode ?? '',
+        divcode: c?.divcode ?? '',
+        region_name: selectedRegion?.region_name ?? '',
+        division_name: selectedDivision?.division_name ?? divisions.find((d) => c && d.division_code === c.divcode)?.division_name ?? '',
+      };
+      const rec = await loadPalList(actualScope, lv);
+      if (!active) return;
+      const nextMeta: PalListMeta = {
+        id: rec.id,
+        regcode: rec.regcode || actualScope.regcode,
+        divcode: rec.divcode || actualScope.divcode,
+        region_name: rec.region_name || actualScope.region_name,
+        division_name: rec.division_name || actualScope.division_name,
+        agency: rec.agency || DEFAULT_AGENCY,
+        education: rec.education || (lv === 'all' ? '' : PAL_LEVELS[lv as PalLevel]?.label ?? ''),
+        level: lv,
+        months: rec.months || 12,
+        status: rec.status || 'draft',
+        created_by: rec.created_by || '',
+        updated_by: rec.updated_by || '',
+        created_at: rec.created_at,
+        updated_at: rec.updated_at,
+      };
+      metaRef.current = nextMeta;
+      setMeta(nextMeta);
+      rowsRef.current = rec.rows;
+      setRows(rec.rows);
+      setLoading(false);
+      setSaveState(rec.rows.length > 0 || Boolean(rec.id) ? 'saved' : 'idle');
+      if (rec.rows.length > 0 || Boolean(rec.id)) setLastSavedAt(Date.now());
+    })();
+    return () => { active = false; };
+  }, [scopedCodes, selectedRegion, selectedDivision, divisions, level]);
 
   useEffect(() => {
     setPsipopLoading(true); cachedPsipop = null;
     loadPsipopIndex().then((idx) => setPsipop(idx)).catch(() => setPsipop({ items: [], year: null, byName: new Map() })).finally(() => setPsipopLoading(false));
   }, []);
 
-  // Backfill orgCode for existing rows that were encoded before the school_id fix
+  // Backfill orgCode for existing rows + clear spurious auto-approved positions.
   useEffect(() => {
     if (!psipop || psipop.items.length === 0) return;
-    // Also build a lookup from all PSIPOP positions (including non-filled) for orgCode backfill
     let allPositions: PlantillaPosition[] = [];
     try {
       const raw = localStorage.getItem('deped_plantilla_positions');
@@ -280,11 +403,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     } catch { /* */ }
     const posByItem = new Map<string, PlantillaPosition>();
     for (const p of allPositions) { if (p.item_number) posByItem.set(p.item_number, p); }
-    setRows((prev) => {
+    updateRows((prev) => {
       let changed = false;
       const next = prev.map((r) => {
         let patched = { ...r };
-        // Backfill orgCode from PSIPOP if empty
         if (!patched.orgCode && patched.itemNumber) {
           const item = psipop.items.find((p) => p.item_number === patched.itemNumber) || posByItem.get(patched.itemNumber);
           if (item) {
@@ -292,7 +414,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
             if (orgCode) { patched.orgCode = orgCode; changed = true; }
           }
         }
-        // Clear approvedPosition if it matches positionTitle (was auto-filled from PSIPOP, not a user selection)
         if (patched.approvedPosition && patched.approvedPosition === patched.positionTitle) {
           patched = { ...patched, approvedPosition: '' };
           changed = true;
@@ -301,7 +422,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       });
       return changed ? next : prev;
     });
-  }, [psipop]);
+  }, [psipop, updateRows]);
 
   const divisionLabel = useMemo(() => {
     if (selectedDivision) return {
@@ -312,8 +433,15 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     return { division: 'All Divisions', region: '' };
   }, [selectedDivision, selectedRegion, divisions, scopedCodes]);
 
+  // ── Row mutations ───────────────────────────────────────────────────────
+
+  function handleLevelChange(lv: PalLevel | null) {
+    if (saveTimer.current) { setSaveState('saving'); void doSave(); }
+    setLevel(lv);
+  }
+
   const addBlankRow = () => {
-    setRows((r) => [...r, {
+    updateRows((r) => [...r, {
       uid: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       empno: '', incumbent: '', positionTitle: '', itemNumber: '',
       grade: 0, step: 0, monthly: 0, poscode: '', employeeFound: false, psipopMatched: false,
@@ -336,11 +464,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     if (emp.outOfLevel) {
       const lv = level ? PAL_LEVELS[level] : null;
       base.note = `${emp.emp?.stacode ? `STACODE ${emp.emp.stacode}` : 'No STACODE on record'} — outside the ${lv?.label ?? ''} list (STACODE ${lv ? `${String(lv.range[0]).padStart(3, '0')}–${String(lv.range[1]).padStart(3, '0')}` : ''}). Switch to the matching sub-menu to encode this employee.`;
-      setRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus(); return;
+      updateRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus(); return;
     }
     if (!emp.emp) {
       base.note = `EMPNO ${v} was not found in the current division's Employee Records.`;
-      setRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus(); return;
+      updateRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus(); return;
     }
     base.employeeFound = true; base.empId = emp.emp.id;
     base.incumbent = incumbentName(emp.emp);
@@ -357,16 +485,13 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         base.itemNumber = item.item_number || '';
         base.itemYear = Number(item.fiscal_year) || psipop.year || undefined;
         base.psipopMatched = true;
-        // Organizational Code (2) = school code from PSIPOP header (e.g. '1801.0010')
         base.orgCode = psipopOrgCode(item);
-        // Column G (7) — DepEd Approved Position from PSIPOP item
         base.approvedPosition = item.position_title || base.positionTitle || '';
         if (!base.positionTitle) base.positionTitle = item.position_title || '';
       } else if (ambiguous) {
         base.note = `Multiple latest-PSIPOP items match "${base.incumbent}" — search & pick the item.`;
       } else {
         base.note = `No filled latest-PSIPOP item matched "${base.incumbent}" — search to assign, or leave Item No. blank.`;
-        // No PSIPOP match — fall back to Position Management for approved position
         base.approvedPosition = base.positionTitle || '';
       }
     } else {
@@ -374,11 +499,26 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       base.approvedPosition = base.positionTitle || '';
     }
 
-    setRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus();
+    updateRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus();
   }
 
-  function removeRow(uid: string) { setRows((r) => r.filter((x) => x.uid !== uid)); }
-  function clearRows() { if (!confirm('Clear all encoded rows on this list?')) return; setRows([]); }
+  const removeRow = (uid: string) => { updateRows((r) => r.filter((x) => x.uid !== uid)); };
+
+  async function clearRows() {
+    if (!confirm('Clear all encoded rows on this list? This deletes the saved PocketBase sheet for this division and school level.')) return;
+    if (saveTimer.current) { window.clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const m = metaRef.current;
+    if (m && (rowsRef.current.length > 0 || Boolean(m.id))) {
+      try {
+        await deletePalList(m.regcode, m.divcode, m.level);
+        setSaveState('saved'); setLastSavedAt(Date.now());
+      } catch (e) {
+        setMessage({ tone: 'warn', text: `Cleared locally, but DB delete failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    }
+    setRows([]); rowsRef.current = [];
+    void logAudit('pal_list_cleared', 'pal_lists', m?.id, { divcode: m?.divcode, level: m?.level });
+  }
 
   // ── New Employee card (worksheet-local, no database write) ───────────────
 
@@ -454,6 +594,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       grade, step, monthly,
       poscode: f.poscode,
       orgCode: f.orgCode.trim() || undefined,
+      transferOrgCode: f.transferOrgCode.trim() || undefined,
+      transferSchool: f.transferSchool.trim() || undefined,
+      dateApproval: f.dateApproval || undefined,
+      remarks: f.remarks.trim() || undefined,
       approvedPosition: (f.approvedPosition || f.positionTitle).trim() || undefined,
       approvedGrade: f.approvedGrade.trim() || undefined,
       approvedMonthly: Number(f.approvedMonthly) || undefined,
@@ -477,10 +621,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         base.note = `No filled latest-PSIPOP item matched "${incumbent}" — Item No. can be assigned manually.`;
       }
     }
-    setRows((r) => [...r, base]);
+    updateRows((r) => [...r, base]);
     setPage(9999);
     setShowNewEmp(false);
-    setMessage({ tone: 'ok', text: `Added ${incumbent} (${base.empno}) to the allocation list — this worksheet row stays local and is not written to Employee Records.` });
+    setMessage({ tone: 'ok', text: `Added ${incumbent} (${base.empno}) to the allocation list — this worksheet row is saved to the PAL sheet (not Employee Records).` });
   }
 
   const stats = useMemo(() => {
@@ -506,7 +650,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   }, [psipop, pickerFor, pickerQuery]);
 
   function applyPickedItem(uid: string, item: PlantillaPosition) {
-    setRows((rs) => rs.map((r) => {
+    updateRows((rs) => rs.map((r) => {
       if (r.uid !== uid) return r;
       const next = { ...r, itemNumber: item.item_number || '', itemYear: Number(item.fiscal_year) || psipop?.year || undefined, psipopMatched: true, approvedPosition: item.position_title || r.approvedPosition || '' };
       if (!next.positionTitle) next.positionTitle = item.position_title || '';
@@ -532,15 +676,12 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       const zip = await JSZip.loadAsync(await resp.arrayBuffer());
       let sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
 
-      // Data rows 14-19 (template has 6 rows)
       const FIRST_ROW = 14;
       const NUM_ROWS = 6;
       const data = exportable.slice(0, NUM_ROWS);
 
-      // Helper: escape XML special chars
       const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-      // Helper: replace a cell in a row body by column letter
       const replaceCell = (body: string, col: string, rowNum: number, xml: string) => {
         const re1 = new RegExp(`<c r="${col}${rowNum}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
         const re2 = new RegExp(`<c r="${col}${rowNum}"[^>]*\/>`);
@@ -549,12 +690,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         return out;
       };
 
-      // Column totals — written into "Sub-total for this page" (row 25) and
-      // "Total this page/Grand Total" (row 27) after the data rows are filled.
       const totals: Record<string, number> = { J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 };
       const r2 = (x: number) => Math.round(x * 100) / 100;
+      const months = meta.months || 12;
 
-      // Process ALL 6 rows: first clear everything, then fill encoded employees
       for (let idx = 0; idx < NUM_ROWS; idx++) {
         const r = FIRST_ROW + idx;
         const emp = idx < data.length ? data[idx] : null;
@@ -564,11 +703,14 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         let rowBody = rowMatch[2];
 
         if (emp) {
-          // ── Fill encoded employee data ──
           const itemNo = esc(emp.itemNumber || '');
           const orgCode = esc(emp.orgCode || '');
+          const transferOrg = esc(emp.transferOrgCode || '');
+          const transferSchool = esc(emp.transferSchool || '');
           const name = esc(emp.incumbent || '');
           const posTitle = esc(emp.positionTitle || '');
+          const dateAppr = esc(emp.dateApproval || '');
+          const remarks = esc(emp.remarks || '');
           const sgStep = esc(fmtGradeStep(emp.grade, emp.step));
           const rate = emp.monthly || 0;
 
@@ -576,36 +718,33 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           rowBody = replaceCell(rowBody, 'B', r, orgCode
             ? `<c r="B${r}" s="51" t="inlineStr"><is><t>${orgCode}</t></is></c>`
             : `<c r="B${r}" s="51"/>`);
+          rowBody = replaceCell(rowBody, 'C', r, transferOrg
+            ? `<c r="C${r}" s="51" t="inlineStr"><is><t>${transferOrg}</t></is></c>`
+            : `<c r="C${r}" s="51"/>`);
+          rowBody = replaceCell(rowBody, 'D', r, transferSchool
+            ? `<c r="D${r}" s="52" t="inlineStr"><is><t>${transferSchool}</t></is></c>`
+            : `<c r="D${r}" s="52"/>`);
           rowBody = replaceCell(rowBody, 'E', r, `<c r="E${r}" s="52" t="inlineStr"><is><t>${name}</t></is></c>`);
           rowBody = replaceCell(rowBody, 'F', r, `<c r="F${r}" s="53" t="inlineStr"><is><t>${posTitle}</t></is></c>`);
           rowBody = replaceCell(rowBody, 'I', r, `<c r="I${r}" s="56" t="inlineStr"><is><t>${sgStep}</t></is></c>`);
           rowBody = replaceCell(rowBody, 'J', r, `<c r="J${r}" s="57"><v>${rate}</v></c>`);
 
-          // G — DepEd Approved Position (from UI input, column 7)
           const appPos = esc(emp.approvedPosition || '');
           rowBody = replaceCell(rowBody, 'G', r, appPos
             ? `<c r="G${r}" s="54" t="inlineStr"><is><t>${appPos}</t></is></c>`
             : `<c r="G${r}" s="54"/>`);
-          // H — Date (leave empty for user)
-          rowBody = replaceCell(rowBody, 'H', r, `<c r="H${r}" s="55"/>`);
-          // K — Approved SG (auto-filled from Position Management Step 1)
+          rowBody = replaceCell(rowBody, 'H', r, dateAppr
+            ? `<c r="H${r}" s="55" t="inlineStr"><is><t>${dateAppr}</t></is></c>`
+            : `<c r="H${r}" s="55"/>`);
           const appGrade = esc(emp.approvedGrade || '');
           rowBody = replaceCell(rowBody, 'K', r, appGrade
             ? `<c r="K${r}" s="56" t="inlineStr"><is><t>${appGrade}</t></is></c>`
             : `<c r="K${r}" s="56"/>`);
-          // L — Approved Monthly Rate (auto-filled from Position Management Step 1)
           const appRate = emp.approvedMonthly || 0;
           rowBody = replaceCell(rowBody, 'L', r, appRate > 0
             ? `<c r="L${r}" s="57"><v>${appRate}</v></c>`
             : `<c r="L${r}" s="57"/>`);
-          // M–S (13)-(19) follow the arithmetic baked into the PAL.xlsx sample:
-          //   M (13) = (12) − (10)   Sal. Differential        L − J
-          //   N (14) = (13) × 2.5%   PHIC                     M × 2.5%
-          //   O (15) = (13) × 0.12   RLIP                     M × 0.12
-          //   P (16) = (13)+(14)+(15) Total Monthly Req.      M + N + O
-          //   Q (17) = (16) × months Current Year Req.        P × months
-          //   R (18) = (13) × 2       MYB + YEB Differential  M × 2
-          //   S (19) = (17)+(18)      Total Funding Req.      Q + R
+
           const mVal = r2(appRate - rate);
           const nVal = r2(mVal * 0.025);
           const oVal = r2(mVal * 0.12);
@@ -623,25 +762,20 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           totals.R = r2(totals.R + rrVal);
           totals.S = r2(totals.S + sVal);
           rowBody = replaceCell(rowBody, 'M', r, `<c r="M${r}" s="58"><f>L${r}-J${r}</f><v>${r2(mVal)}</v></c>`);
-          // N (14) = M × 2.5% (PHIC)
           rowBody = replaceCell(rowBody, 'N', r, `<c r="N${r}" s="58"><f>M${r}*0.025</f><v>${r2(nVal)}</v></c>`);
-          // O (15) = M × 0.12 (RLIP)
           rowBody = replaceCell(rowBody, 'O', r, `<c r="O${r}" s="58"><f>M${r}*0.12</f><v>${r2(oVal)}</v></c>`);
-          // P (16) = M + N + O (Total Monthly Requirements)
           rowBody = replaceCell(rowBody, 'P', r, `<c r="P${r}" s="58"><f>M${r}+N${r}+O${r}</f><v>${r2(pVal)}</v></c>`);
-          // Q (17) = P × months (Current Year Requirements)
           rowBody = replaceCell(rowBody, 'Q', r, `<c r="Q${r}" s="57"><f>P${r}*${months}</f><v>${r2(qVal)}</v></c>`);
-          // R (18) = (10) × months (MYB + YEB Differential = current year monthly × months)
           rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>J${r}*${months}</f><v>${r2(rrVal)}</v></c>`);
-          // S (19) = Q + R (Total Funding Requirements)
           rowBody = replaceCell(rowBody, 'S', r, `<c r="S${r}" s="57"><f>Q${r}+R${r}</f><v>${r2(sVal)}</v></c>`);
+          rowBody = replaceCell(rowBody, 'T', r, remarks
+            ? `<c r="T${r}" s="59" t="inlineStr"><is><t>${remarks}</t></is></c>`
+            : `<c r="T${r}" s="59"/>`);
         } else {
-          // ── Clear entire row (remove template sample data) ──
-          for (const [col, style] of [['A','50'],['B','51'],['E','52'],['F','53'],['G','54'],['I','56'],['J','57'],['K','56'],['L','57'],['M','58'],['N','58'],['O','58'],['P','58'],['Q','57'],['R','57'],['S','57']] as [string,string][]) {
+          for (const [col, style] of [['A','50'],['B','51'],['C','51'],['D','52'],['E','52'],['F','53'],['G','54'],['H','55'],['I','56'],['J','57'],['K','56'],['L','57'],['M','58'],['N','58'],['O','58'],['P','58'],['Q','57'],['R','57'],['S','57'],['T','59']] as [string,string][]) {
             rowBody = replaceCell(rowBody, col, r, `<c r="${col}${r}" s="${style}"/>`);
           }
-          // Also clear T-U (remarks)
-          for (const col of ['T', 'U', 'V']) {
+          for (const col of ['U', 'V']) {
             rowBody = replaceCell(rowBody, col, r, `<c r="${col}${r}" s="59"/>`);
           }
         }
@@ -649,10 +783,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         sheet = sheet.replace(rowMatch[0], rowMatch[1] + rowBody + rowMatch[3]);
       }
 
-      // ── Sub-total for this page (row 25) & Total this page/Grand Total (row 27) ──
-      // Write the sum of every numeric column into both rows. Row 26 (Total
-      // previous page) stays blank — this template fits one page, so nothing
-      // is carried forward; the template's sample figures are overwritten.
       const totalCols = ['J', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'] as const;
       for (const trow of [25, 27]) {
         const tRowRe = new RegExp(`(<row r="${trow}"[^>]*>)(.*?)(<\/row>)`, 's');
@@ -671,21 +801,33 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         sheet = sheet.replace(tRowMatch[0], tRowMatch[1] + tBody + tRowMatch[3]);
       }
 
-      // Write back to zip — formulas need recalculation on open so M-S stay
-      // correct after the user fills G/H/K/L in Excel.
       zip.file('xl/worksheets/sheet1.xml', sheet);
       const wbRaw = await zip.file('xl/workbook.xml')!.async('string');
       zip.file('xl/workbook.xml', wbRaw.replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>'));
       const outBuf = await zip.generateAsync({ type: 'blob' });
       const fname = `PAL_${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
       saveAs(outBuf, fname);
-      setMessage({ tone: 'ok', text: `Exported ${Math.min(exportable.length, 6)} employee${exportable.length === 1 ? '' : 's'} to ${fname}. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
+      setMessage({ tone: 'ok', text: `Exported ${Math.min(exportable.length, 6)} employee${exportable.length === 1 ? '' : 's'} to ${fname}. Columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) are pre-filled — columns M-S compute automatically in Excel.` });
     } catch (err) {
       setMessage({ tone: 'err', text: `Export failed: ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       setExporting(false);
     }
   }
+
+  // ── Totals for the table footer ─────────────────────────────────────────
+
+  const pageTotal = useMemo(() => sumSheet(pagedItems, meta.months), [pagedItems, meta.months]);
+  const grandTotal = useMemo(() => sumSheet(rows, meta.months), [rows, meta.months]);
+
+  const savePill = () => {
+    if (saveState === 'saving') return { cls: 'text-blue-700 bg-blue-50 border-blue-200', icon: <Loader2 className="w-3 h-3 animate-spin" />, text: 'Saving…' };
+    if (saveState === 'dirty') return { cls: 'text-amber-700 bg-amber-50 border-amber-200', icon: <Save className="w-3 h-3" />, text: 'Unsaved changes…' };
+    if (saveState === 'error') return { cls: 'text-rose-700 bg-rose-50 border-rose-200', icon: <AlertTriangle className="w-3 h-3" />, text: 'Save failed' };
+    if (saveState === 'saved' && lastSavedAt) return { cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', icon: <CheckCircle2 className="w-3 h-3" />, text: `Saved ${new Date(lastSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` };
+    return { cls: 'text-slate-500 bg-slate-50 border-slate-200', icon: <Info className="w-3 h-3" />, text: 'No changes yet' };
+  };
+  const pill = savePill();
 
   // ── Render ──────────────────────────────────────────────────────────────
 
@@ -703,19 +845,27 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
             )}
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Department of Education — {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''}.{level ? <> <strong className="text-slate-700 dark:text-slate-200">{PAL_LEVELS[level].label}</strong> list — STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}.</> : ' All school levels.'} Type an EMPNO; columns (1), (5), (6), (9) &amp; (10) auto-fill from Employee Records and the latest PSIPOP.
+            Department of Education — {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''}.{loading ? ' Loading saved sheet…' : level ? <> <strong className="text-slate-700 dark:text-slate-200">{PAL_LEVELS[level].label}</strong> list — STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}.</> : ' All school levels.'} Type an EMPNO; columns (1), (5), (6), (9) &amp; (10) auto-fill from Employee Records and the latest PSIPOP.
           </p>
           <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
             Formulas: (13)=(12)-(10) Sal. Diff · (14)=(13)×2.5% PHIC · (15)=(13)×0.12 RLIP · (16)=(13)+(14)+(15) Total Monthly · (17)=(16)×months · (18)=(10)×months MYB+YEB · (19)=(17)+(18) Total Funding
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={clearRows} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            <Trash2 className="w-3.5 h-3.5" /> Clear
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium ${pill.cls}`}>
+            {pill.icon} {pill.text}
+          </span>
+          <button onClick={() => { if (saveTimer.current) { window.clearTimeout(saveTimer.current); saveTimer.current = null; } void doSave(); }}
+            disabled={saveState === 'saving' || saveState === 'saved'} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            <Save className="w-3.5 h-3.5" /> Save now
+          </button>
+          <button onClick={() => { void clearRows(); }} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            <Trash2 className="w-3.5 h-3.5" /> Clear sheet
           </button>
           <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
             Months:
-            <input type="number" min={1} max={24} value={months} onChange={(e) => setMonths(Math.max(1, Math.min(24, parseInt(e.target.value) || 12)))}
+            <input type="number" min={1} max={24} value={meta.months}
+              onChange={(e) => updateMeta({ months: Math.max(1, Math.min(24, parseInt(e.target.value, 10) || 12)) })}
               className="w-14 px-2 py-1.5 rounded-md border border-slate-200 text-center text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
           </label>
           <button onClick={exportExcel} disabled={rows.length === 0 || exporting} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
@@ -732,14 +882,14 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
 
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 mr-1">School Level</span>
-        <button type="button" onClick={() => setLevel(null)}
+        <button type="button" onClick={() => handleLevelChange(null)}
           className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${level === null ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
           All Levels
         </button>
         {PAL_LEVEL_ITEMS.map((it) => {
           const active = level === it.key;
           return (
-            <button key={it.key} type="button" onClick={() => setLevel(it.key)}
+            <button key={it.key} type="button" onClick={() => handleLevelChange(it.key)}
               className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${active ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
               {it.short} · STACODE {String(PAL_LEVELS[it.key].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[it.key].range[1]).padStart(3, '0')}
             </button>
@@ -747,125 +897,152 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         })}
       </div>
 
-      {psipopLoading ? (
-        <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading latest PSIPOP items…
-        </div>
-      ) : !psipop || psipop.items.length === 0 ? (
-        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          <div>
-            No filled PSIPOP positions are loaded in this PocketBase (<code className="font-mono">plantilla_positions</code> is empty). Employee name, SG/step &amp; monthly rate will still auto-fill from Employee Records; <strong>Item No. (1)</strong> appears once you import the latest PSIPOP (Plantilla Intelligence Center) and re-open this page.
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          Latest PSIPOP basis: {psipop.year ? `FY ${psipop.year} · ` : ''}{psipop.items.length.toLocaleString()} filled items — Item No. (1) auto-matches by incumbent name.
-        </div>
-      )}
-
-      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-        <Info className="w-4 h-4 shrink-0" />
-        Position Title (6) resolves via Position Management masterfile (Position code → title), falling back to the matched PSIPOP item.
-      </div>
-
-      {typeof window !== 'undefined' && localStorage.getItem('psi_pop_needs_reimport') === '1' && (
-        <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span><strong>Org. Code (2)</strong> uses the school code from the PSIPOP header (e.g., "1801.0011"). Re-import your PSIPOP PDF to populate it automatically.</span>
-        </div>
-      )}
-
-      {message && (
-        <div className={`flex items-center gap-2 text-xs rounded-lg px-3 py-2 border ${message.tone === 'ok' ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : message.tone === 'err' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
-          {message.tone === 'ok' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
-          <span>{message.text}</span>
-          <button className="ml-auto text-slate-400 hover:text-slate-600" onClick={() => setMessage(null)}><X className="w-3.5 h-3.5" /></button>
-        </div>
-      )}
-
-      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); handleQuickEncode(); }}>
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-          <input ref={quickRef} value={quickEmpno} onChange={(e) => setQuickEmpno(e.target.value)} placeholder="Type EMPNO, press Enter to encode…"
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
-        </div>
-        <button type="submit" disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Encode
-        </button>
-      </form>
-
-      <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
-        <span><strong className="text-slate-700 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
-        <span><strong className="text-slate-700 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
-        <span className="text-emerald-600"><strong>{stats.withItem}</strong> with PSIPOP item</span>
-        {stats.missingPsipop > 0 && <span className="text-amber-600"><strong>{stats.missingPsipop}</strong> missing item no.</span>}
-        {stats.notFound > 0 && <span className="text-rose-600"><strong>{stats.notFound}</strong> EMPNO not found</span>}
-      </div>
-
+      {/* ── DBM-DepEd Annex R-I paper form header ── */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        {rows.length === 0 ? (
-          <div className="py-16 text-center">
-            <ListTree className="w-10 h-10 mx-auto mb-3 text-slate-200 dark:text-slate-700" />
-            <p className="text-sm text-slate-400">No rows yet. Type an EMPNO above (or click Add Row) to start encoding.</p>
+        <div className="px-5 pt-4 pb-3 border-b-4 border-double border-slate-300 dark:border-slate-600">
+          <div className="flex items-start justify-between gap-3 text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            <span className="font-bold text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-600 px-2 py-0.5 rounded">Annex R-I</span>
+            <span className="font-bold text-center">DBM-DepEd JC 01, s.2025 — Form No. 2-A</span>
+            <span className="font-medium">Page 1 of 1</span>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="text-center my-3">
+            <h2 className="text-xl font-black tracking-wide text-slate-900 dark:text-white">PLANTILLA ALLOCATION LIST</h2>
+            <p className="mt-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+              Reclassification of Teaching Positions
+              {level ? <span className="text-slate-500 dark:text-slate-400"> — {PAL_LEVELS[level].label}</span> : null}
+            </p>
+            <p className="mt-1 text-[10px] italic text-slate-400 dark:text-slate-500 max-w-3xl mx-auto leading-relaxed">
+              Pursuant to Executive Order No. 174, s. 2022 (Rebasing of Salaries of Civilian Government Employees) and
+              DBM-DepEd Joint Circular No. 01, s. 2025 (Renumbering / Realignment of Teaching Positions under the
+              Approved Rationalization Plans).
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2">
+            <label className="block">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Agency <span className="text-slate-300 normal-case">(1)</span></span>
+              <input value={meta.agency} onChange={(e) => updateMeta({ agency: e.target.value.toUpperCase() })}
+                className={inputCls} placeholder="DEPARTMENT OF EDUCATION" />
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Region</span>
+              <input value={meta.region_name} onChange={(e) => updateMeta({ region_name: e.target.value.toUpperCase() })}
+                className={inputCls} placeholder={divisionLabel.region || '—'} />
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Division</span>
+              <input value={meta.division_name} onChange={(e) => updateMeta({ division_name: e.target.value.toUpperCase() })}
+                className={inputCls} placeholder={divisionLabel.division || '—'} />
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Education <span className="text-slate-300 normal-case">(level)</span></span>
+              <input value={meta.education} onChange={(e) => updateMeta({ education: e.target.value.toUpperCase() })}
+                className={inputCls} placeholder={level ? PAL_LEVELS[level].label : 'All Levels'} />
+            </label>
+          </div>
+        </div>
+
+        {/* ── The full 20-column PAL form table ── */}
+        <div className="overflow-x-auto">
+          {loading ? (
+            <div className="py-20 text-center">
+              <Loader2 className="w-8 h-8 mx-auto mb-3 text-slate-300 animate-spin" />
+              <p className="text-sm text-slate-400">Loading saved {level ? PAL_LEVELS[level].label : 'All-level'} allocation sheet…</p>
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="py-16 text-center">
+              <ListTree className="w-10 h-10 mx-auto mb-3 text-slate-200 dark:text-slate-700" />
+              <p className="text-sm text-slate-500">No rows on this sheet yet. Type an EMPNO above (or click Add Row) to start encoding.</p>
+              <p className="text-[11px] text-slate-400 mt-1">Changes are saved automatically to PocketBase (<code className="font-mono">pal_lists</code>) beside the offline copy in this browser.</p>
+            </div>
+          ) : (
+            <table className="min-w-[2960px] w-full text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th className="text-left px-3 py-2.5 font-medium w-32">EMPNO</th>
-                  <th className="text-left px-3 py-2.5 font-medium min-w-[16rem]">Item No. (per latest PSIPOP) <span className="text-slate-400 normal-case">(1)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Org. Code <span className="text-slate-400 normal-case">(2)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Name of Incumbent <span className="text-slate-400 normal-case">(5)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium">Position Title <span className="text-slate-400 normal-case">(6)</span></th>
-                  <th className="text-left px-3 py-2.5 font-medium min-w-[10rem]">DepEd Approved Position <span className="text-slate-400 normal-case">(7)</span></th>
-                  <th className="text-center px-3 py-2.5 font-medium">SG/Step <span className="text-slate-400 normal-case">(9)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium">Monthly Rate <span className="text-slate-400 normal-case">(10)</span></th>
-                  <th className="text-center px-3 py-2.5 font-medium">Approved SG <span className="text-slate-400 normal-case">(11)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium">Approved Rate <span className="text-slate-400 normal-case">(12)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium"></th>
+                <tr className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] uppercase tracking-wider border-b border-slate-300 dark:border-slate-600">
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 150 }}>Item No. (1)</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 110 }}>Org. Code per PSIPOP (2)</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 150 }}>Item Transferred To — <span className="font-medium normal-case">(3) Org. Code · (4) Name of School / SDO</span></th>
+                  <th colSpan={2} className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 320 }}>Position Title</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 120 }}>Date of Approval (8)</th>
+                  <th colSpan={4} className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 400 }}>Salary Grade &amp; Monthly Rate</th>
+                  <th colSpan={4} className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 400 }}>Monthly Differential</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 120 }}>Current Year Req. (17)</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 110 }}>MYB / YEB Diff. (18)</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 120 }}>Total Funding Req. (19)</th>
+                  <th className="px-2 py-1.5 font-bold border-r border-slate-200 dark:border-slate-700 text-left" style={{ minWidth: 180 }}>Remarks (20)</th>
+                  <th className="px-2 py-1.5 font-bold" style={{ minWidth: 40 }}></th>
+                </tr>
+                <tr className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 text-[10px] uppercase tracking-wider border-b border-slate-200 dark:border-slate-700">
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(1) Item No. per latest PSIPOP</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(2) Org. Code</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(3) Org. Code</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(4) Name of School / SDO</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(5) Name of Incumbent</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(6) Position — Present</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(7) DepEd Approved Position</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(8) Date of Approval</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(9) SG/Step — Present</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(10) Monthly Rate — Present</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(11) Approved SG</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(12) Approved Monthly</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(13) Sal. Diff.</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(14) PHIC</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(15) RLIP</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(16) Total Monthly</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(17) Current Yr. Req.</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(18) MYB / YEB</th>
+                  <th className="px-2 py-1.5 text-right font-semibold border-r border-slate-200 dark:border-slate-700">(19) Total Funding</th>
+                  <th className="px-2 py-1.5 text-left font-semibold border-r border-slate-200 dark:border-slate-700">(20) Remarks</th>
+                  <th className="px-2 py-1.5"></th>
                 </tr>
               </thead>
               <tbody>
                 {pagedItems.map((r) => {
+                  const c = computePalRow(r, meta.months);
                   const lookupHint = r.employeeFound && !r.psipopMatched;
                   return (
-                    <tr key={r.uid} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors">
-                      <td className="px-3 py-2">
-                        <span className="font-mono font-semibold text-slate-800 dark:text-slate-100">{r.empno || '—'}</span>
-                        {r.employeeFound && <button className="ml-1.5 align-middle" onClick={() => removeRow(r.uid)}><X className="w-3.5 h-3.5 text-slate-300 hover:text-rose-500" /></button>}
-                      </td>
-                      <td className="px-3 py-2">
+                    <tr key={r.uid} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors" style={{ minWidth: 2960 }}>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 align-top">
+                        <span className="font-mono font-semibold text-slate-800 dark:text-slate-100 text-[11px]">{r.empno || '—'}</span>
+                        {r.employeeFound ? null : <span className="block text-[10px] text-rose-500 font-medium mt-0.5"><UserX className="w-3 h-3 inline mr-0.5" />not found</span>}
                         {r.itemNumber ? (
-                          <button onClick={() => setPickerFor(r)} className="text-left font-mono text-[11px] leading-tight text-blue-700 dark:text-blue-300 hover:underline">
-                            {r.itemNumber}{r.itemYear ? <span className="block text-[10px] text-slate-400">FY {r.itemYear}</span> : null}
+                          <button onClick={() => setPickerFor(r)} className="text-left font-mono text-[11px] leading-tight text-blue-700 dark:text-blue-300 hover:underline mt-1 block">
+                            {r.itemNumber}{r.itemYear ? <span className="block text-[9px] text-slate-400">FY {r.itemYear}</span> : null}
                           </button>
                         ) : (
                           <button onClick={() => r.employeeFound ? setPickerFor(r) : undefined} disabled={!r.employeeFound}
-                            className={`inline-flex items-center gap-1 text-[11px] rounded-md px-2 py-1 border transition-colors ${lookupHint ? 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100' : 'text-slate-400 border-slate-200 hover:bg-slate-50 disabled:opacity-40'}`}>
-                            <Search className="w-3 h-3" /> Assign item
+                            className={`mt-1 inline-flex items-center gap-1 text-[10px] rounded-md px-1.5 py-0.5 border transition-colors ${lookupHint ? 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100' : 'text-slate-400 border-slate-200 hover:bg-slate-50 disabled:opacity-40'}`}>
+                            <Search className="w-2.5 h-2.5" /> Assign item
                           </button>
                         )}
                       </td>
-                      <td className="px-3 py-2">
-                        {r.incumbent ? <span className="font-medium text-slate-800 dark:text-slate-100 text-[13px]">{r.incumbent}</span>
-                          : r.employeeFound ? <span className="text-slate-400 text-xs">—</span>
-                          : <span className="inline-flex items-center gap-1 text-rose-600 text-xs"><UserX className="w-3.5 h-3.5" /> not found</span>}
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input value={r.orgCode ?? ''} placeholder="—" onChange={(e) => patchRow(r.uid, { orgCode: e.target.value.replace(/[^\d.]/g, '').slice(0, 12) })}
+                          className={inputCls} />
                       </td>
-                      <td className="px-3 py-2 text-[13px] text-slate-700 dark:text-slate-200">{r.positionTitle || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}</td>
-                      <td className="px-3 py-2 relative">
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input value={r.transferOrgCode ?? ''} placeholder="(3)" onChange={(e) => patchRow(r.uid, { transferOrgCode: e.target.value.replace(/[^\d.]/g, '').slice(0, 12) })}
+                          className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input value={r.transferSchool ?? ''} placeholder="(4) Name of School/SDO" onChange={(e) => patchRow(r.uid, { transferSchool: e.target.value.slice(0, 80) })}
+                          className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-[12px] text-slate-700 dark:text-slate-200">
+                        {r.incumbent || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-[12px] text-slate-700 dark:text-slate-200">
+                        {r.positionTitle || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 relative">
                         <div className="relative">
-                          <input type="text" value={approvedPosDropdown === r.uid ? approvedPosSearch : (r.approvedPosition || '')} placeholder="—"
+                          <input type="text" value={approvedPosDropdown === r.uid ? approvedPosSearch : (r.approvedPosition || '')} placeholder="(7) DepEd Approved Position"
                             onFocus={() => { setApprovedPosDropdown(r.uid); setApprovedPosSearch(r.approvedPosition || ''); }}
                             onChange={(e) => {
                               setApprovedPosSearch(e.target.value);
-                              // Keep dropdown open while typing
                               if (approvedPosDropdown !== r.uid) setApprovedPosDropdown(r.uid);
                             }}
-                            onBlur={() => setTimeout(() => setApprovedPosDropdown(null), 250)}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 text-[12px] focus:outline-none focus:ring-1 focus:ring-emerald-500/30 focus:border-emerald-400 placeholder:text-slate-300" />
+                            onBlur={() => { if (approvedPosDropdown === r.uid) patchRow(r.uid, { approvedPosition: approvedPosSearch.trim() || undefined }); setTimeout(() => setApprovedPosDropdown(null), 250); }}
+                            className={inputCls} />
                           {approvedPosDropdown === r.uid && (
                             <div className="absolute z-50 top-full left-0 w-72 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg mt-0.5">
                               {allPositions.filter((p) => {
@@ -878,12 +1055,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                                   onClick={() => {
                                     const sg = p.salary_grade || 0;
                                     const step1Salary = p.step1 || 0;
-                                    setRows((rs) => rs.map((x) => x.uid === r.uid ? {
-                                      ...x,
+                                    patchRow(r.uid, {
                                       approvedPosition: p.position_title,
                                       approvedGrade: sg > 0 ? `${sg} S1` : '',
                                       approvedMonthly: step1Salary,
-                                    } : x));
+                                    });
                                     setApprovedPosSearch('');
                                     setApprovedPosDropdown(null);
                                   }}
@@ -904,35 +1080,193 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 font-mono text-[12px] text-slate-600 dark:text-slate-300">{r.orgCode || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                      <td className="px-3 py-2 text-center text-[13px]">{r.grade > 0 ? fmtGradeStep(r.grade, r.step) : '—'}</td>
-                      <td className="px-3 py-2 text-right text-[13px] tabular-nums">{r.monthly > 0 ? currency(r.monthly) : '—'}</td>
-                      <td className="px-3 py-2 text-center text-[13px] text-emerald-700 dark:text-emerald-300 font-medium">{r.approvedGrade || '—'}</td>
-                      <td className="px-3 py-2 text-right text-[13px] tabular-nums text-emerald-700 dark:text-emerald-300">{r.approvedMonthly ? currency(r.approvedMonthly) : '—'}</td>
-                      <td className="px-3 py-2 text-right">
-                        <button onClick={() => removeRow(r.uid)} className="inline-flex items-center gap-1 text-[11px] text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md px-2 py-1 transition-colors" title="Remove">
-                          <Trash2 className="w-3.5 h-3.5" /> Remove
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input type="date" value={r.dateApproval ?? ''} onChange={(e) => patchRow(r.uid, { dateApproval: e.target.value || undefined })}
+                          className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-[12px] text-slate-600 dark:text-slate-300">
+                        {r.grade > 0 ? <span className="font-mono">{fmtGradeStep(r.grade, r.step)}</span> : '—'}
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-slate-700 dark:text-slate-200">
+                        {r.monthly > 0 ? currency(r.monthly) : '—'}
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input value={r.approvedGrade ?? ''} placeholder="(11) e.g. 12 S1" onChange={(e) => patchRow(r.uid, { approvedGrade: e.target.value.slice(0, 8) })}
+                          className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input type="number" min={0} value={r.approvedMonthly || ''} placeholder="0" onChange={(e) => patchRow(r.uid, { approvedMonthly: Math.max(0, Number(e.target.value)) || 0 })}
+                          className={`${inputCls} text-right`} />
+                      </td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-blue-700 dark:text-blue-300 font-medium">{fmtTot(c.salDifferential)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-slate-600 dark:text-slate-300">{fmtTot(c.phic)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-slate-600 dark:text-slate-300">{fmtTot(c.rlip)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-slate-700 dark:text-slate-200 font-medium">{fmtTot(c.totalMonthly)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-slate-700 dark:text-slate-200 font-medium">{fmtTot(c.currentYearReq)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-emerald-700 dark:text-emerald-300 font-medium">{fmtTot(c.yebDifferential)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800 text-right text-[12px] tabular-nums text-emerald-700 dark:text-emerald-300 font-bold">{fmtTot(c.totalFunding)}</td>
+                      <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800">
+                        <input value={r.remarks ?? ''} placeholder="(20) Remarks" onChange={(e) => patchRow(r.uid, { remarks: e.target.value.slice(0, 120) || undefined })}
+                          className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1.5 text-center align-top">
+                        <button onClick={() => removeRow(r.uid)} title="Remove row" className="inline-flex items-center justify-center w-6 h-6 rounded-md text-slate-300 hover:text-rose-500 hover:bg-rose-50 transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
                     </tr>
                   );
                 })}
+
+                {/* Page sub-total (per 6-row printed page) */}
+                {rows.length > 0 && (
+                  <tr className="border-t-2 border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/50 text-[11px] tabular-nums">
+                    <td colSpan={9} className="px-2 py-1.5 text-right font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800">
+                      Sub-total — this page {totalPages > 1 ? `(${page} of ${totalPages})` : ''}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.J)}</td>
+                    <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800"></td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.L)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-blue-700 dark:text-blue-300 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.M)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-slate-600 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.N)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-slate-600 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.O)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-slate-700 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.P)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-slate-700 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.Q)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium text-emerald-700 dark:text-emerald-300 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.R)}</td>
+                    <td className="px-2 py-1.5 text-right font-bold text-emerald-700 dark:text-emerald-300 border-r border-slate-100 dark:border-slate-800">{fmtTot(pageTotal.S)}</td>
+                    <td className="px-2 py-1.5 border-r border-slate-100 dark:border-slate-800"></td>
+                    <td className="px-2 py-1.5"></td>
+                  </tr>
+                )}
+
+                {/* Grand total across ALL rows */}
+                {rows.length > PAGE_SIZE && (
+                  <tr className="border-t-2 border-double border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800 text-[11px] tabular-nums">
+                    <td colSpan={9} className="px-2 py-1.5 text-right font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-700">
+                      Grand Total — all rows ({rows.length})
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-bold text-slate-800 dark:text-slate-100 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.J)}</td>
+                    <td className="px-2 py-1.5 border-r border-slate-200 dark:border-slate-700"></td>
+                    <td className="px-2 py-1.5 text-right font-bold text-slate-800 dark:text-slate-100 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.L)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-blue-700 dark:text-blue-300 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.M)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-700 dark:text-slate-300 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.N)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-700 dark:text-slate-300 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.O)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-800 dark:text-slate-200 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.P)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-slate-800 dark:text-slate-200 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.Q)}</td>
+                    <td className="px-2 py-1.5 text-right font-semibold text-emerald-700 dark:text-emerald-400 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.R)}</td>
+                    <td className="px-2 py-1.5 text-right font-black text-emerald-800 dark:text-emerald-300 border-r border-slate-200 dark:border-slate-700">{fmtTot(grandTotal.S)}</td>
+                    <td className="px-2 py-1.5 border-r border-slate-200 dark:border-slate-700"></td>
+                    <td className="px-2 py-1.5"></td>
+                  </tr>
+                )}
               </tbody>
             </table>
-            {rows.some((r) => r.note) && (
-              <div className="px-3 pb-3 pt-1 space-y-1">
-                {rows.filter((r) => r.note).map((r) => (
-                  <p key={r.uid} className="text-[11px] text-slate-400">
-                    <span className="font-mono font-semibold text-slate-500">{r.empno}</span> — {r.note}
-                  </p>
-                ))}
-              </div>
-            )}
+          )}
+        </div>
+
+        {/* Printed-form closing lines */}
+        <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
+          <span className="italic">— Nothing follows —</span>
+          <span className="font-mono">{codeKey === 'all' ? 'All Divisions' : `${meta.division_name || 'Division'} · Level: ${level ?? 'All'}`} · saved under <code className="font-mono">pal_lists</code></span>
+        </div>
+        <div className="px-5 pb-4 grid md:grid-cols-3 gap-6 text-[11px] text-slate-500 dark:text-slate-400">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">Prepared by:</p>
+            <p className="h-4 border-b border-dotted border-slate-300 dark:border-slate-600">&nbsp;</p>
+            <p className="text-[10px] mt-0.5">{profile ? `${profile.first_name ?? ''} ${profile.last_name ?? ''}`.trim() : 'Signature over Printed Name'}</p>
           </div>
-        )}
+          <div>
+            <p className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">Recommending Approval:</p>
+            <p className="h-4 border-b border-dotted border-slate-300 dark:border-slate-600">&nbsp;</p>
+            <p className="text-[10px] mt-0.5">Division School Governance &amp; Operations</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">Approved by:</p>
+            <p className="h-4 border-b border-dotted border-slate-300 dark:border-slate-600">&nbsp;</p>
+            <p className="text-[10px] mt-0.5">Schools Division Superintendent</p>
+          </div>
+        </div>
+      </div>
+
+      {rows.some((r) => r.note) && (
+        <div className="px-3 pb-3 pt-1 space-y-1">
+          {rows.filter((r) => r.note).map((r) => (
+            <p key={r.uid} className="text-[11px] text-slate-400">
+              <span className="font-mono font-semibold text-slate-500">{r.empno}</span> — {r.note}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* ── Status strips ── */}
+      {psipopLoading ? (
+        <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading latest PSIPOP items…
+        </div>
+      ) : !psipop || psipop.items.length === 0 ? (
+        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div>
+            No filled PSIPOP positions are loaded in this PocketBase (<code className="font-mono">plantilla_positions</code> is empty). Employee name, SG/step &amp; monthly rate will still auto-fill from Employee Records; <strong>Item No. (1)</strong> appears once you import the latest PSIPOP (Plantilla Intelligence Center) and re-open this page.
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          Latest PSIPOP basis: {psipop.year ? `FY ${psipop.year} · ` : ''}{psipop.items.length.toLocaleString()} filled items — Item No. (1) auto-matches by incumbent name.
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        <Landmark className="w-4 h-4 shrink-0" />
+        <span>Every edit autosaves to PocketBase (<code className="font-mono">pal_lists</code>) keyed by <code className="font-mono">regcode + divcode + level</code>, with an offline mirror in this browser (<code className="font-mono">{palLocalKey(meta.regcode, meta.divcode, meta.level)}</code>) — all data is persisted server-side, not just locally.</span>
+      </div>
+
+      {typeof window !== 'undefined' && localStorage.getItem('psi_pop_needs_reimport') === '1' && (
+        <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span><strong>Org. Code (2)</strong> uses the school code from the PSIPOP header (e.g., "1801.0011"). Re-import your PSIPOP PDF to populate it automatically.</span>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        <Info className="w-4 h-4 shrink-0" />
+        Position Title (6) resolves via Position Management masterfile (Position code → title), falling back to the matched PSIPOP item. Approved Position (7), Date (8), Approved SG/Rate (11)-(12), Remarks (20) and transfer columns (3)-(4) are edited directly in the grid.
+      </div>
+
+      {message && (
+        <div className={`flex items-center gap-2 text-xs rounded-lg px-3 py-2 border ${message.tone === 'ok' ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : message.tone === 'err' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+          {message.tone === 'ok' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+          <span>{message.text}</span>
+          <button className="ml-auto text-slate-400 hover:text-slate-600" onClick={() => setMessage(null)}><X className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
+
+      {/* ── Quick EMPNO encode bar ── */}
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3 flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input ref={quickRef} value={quickEmpno} onChange={(e) => setQuickEmpno(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleQuickEncode(); } }}
+            placeholder="Type EMPNO, press Enter to encode…"
+            className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+        </div>
+        <button onClick={() => { void handleQuickEncode(); }} disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Encode
+        </button>
+        <div className="flex items-center gap-x-4 gap-y-1 px-1 text-[11px] text-slate-500 dark:text-slate-400 flex-wrap">
+          <span><strong className="text-slate-700 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
+          <span><strong className="text-slate-700 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
+          <span className="text-emerald-600"><strong>{stats.withItem}</strong> with PSIPOP item</span>
+          {stats.missingPsipop > 0 && <span className="text-amber-600"><strong>{stats.missingPsipop}</strong> missing item no.</span>}
+          {stats.notFound > 0 && <span className="text-rose-600"><strong>{stats.notFound}</strong> EMPNO not found</span>}
+        </div>
       </div>
 
       <Pagination pagination={{ page, setPage, totalPages, total: rows.length, pageSize: PAGE_SIZE }} label="employees" />
+
+      <p className="text-[10px] text-slate-300 dark:text-slate-600">
+        Sheet auto-saves to PocketBase and mirrors to this browser ({palLocalKey(meta.regcode, meta.divcode, meta.level)}). The grid shows 6 employees per page to match the printed PAL layout and totals every page — Export produces the DBM-DepEd Annex R-II PAL form with formulas live in Excel.
+      </p>
 
       {pickerFor && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm">
@@ -980,18 +1314,18 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       )}
 
       {showNewEmp && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden my-4">
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                  <UserPlus className="w-4 h-4 text-emerald-600" /> Create New Employee
+                  <FileText className="w-4 h-4 text-emerald-600" /> Create New Employee
                 </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">Adds a row to this Plantilla Allocation List worksheet — it stays local and is not saved to Employee Records. Type an EMPNO and the name auto-fills from Employee Records.</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Adds a row to this Plantilla Allocation List worksheet — saved with the PAL sheet (not Employee Records). Type an EMPNO and the name auto-fills.</p>
               </div>
               <button onClick={() => setShowNewEmp(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="w-4 h-4" /></button>
             </div>
-            <div className="px-4 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
+            <div className="px-4 py-4 space-y-3">
               {newEmpErr && (
                 <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {newEmpErr}
@@ -1132,17 +1466,17 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">SG</span>
-                  <input type="number" min={0} value={newEmp.grade || ''} onChange={(e) => setNewEmp({ ...newEmp, grade: Math.max(0, parseInt(e.target.value) || 0) })}
+                  <input type="number" min={0} value={newEmp.grade || ''} onChange={(e) => setNewEmp({ ...newEmp, grade: Math.max(0, parseInt(e.target.value, 10) || 0) })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
                 <label className="block">
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">Step</span>
-                  <input type="number" min={1} max={8} value={newEmp.step || ''} onChange={(e) => setNewEmp({ ...newEmp, step: Math.max(1, Math.min(8, parseInt(e.target.value) || 1)) })}
+                  <input type="number" min={1} max={8} value={newEmp.step || ''} onChange={(e) => setNewEmp({ ...newEmp, step: Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 1)) })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
                 <label className="block">
-                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Monthly Rate</span>
-                  <input type="number" min={0} value={newEmp.monthly || ''} onChange={(e) => setNewEmp({ ...newEmp, monthly: Math.max(0, parseInt(e.target.value) || 0) })}
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Monthly Rate <span className="text-slate-400 normal-case">(10)</span></span>
+                  <input type="number" min={0} value={newEmp.monthly || ''} onChange={(e) => setNewEmp({ ...newEmp, monthly: Math.max(0, parseInt(e.target.value, 10) || 0) })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
                 <label className="block">
@@ -1156,7 +1490,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                 <label className="block">
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">Approved Step</span>
                   <input type="number" min={1} max={8} value={newEmp.approvedStep || ''} onChange={(e) => setNewEmp((prev) => {
-                    const as = Math.max(1, Math.min(8, parseInt(e.target.value) || 1));
+                    const as = Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 1));
                     const sg = parseInt(prev.approvedGrade, 10) || 0;
                     return { ...prev, approvedStep: String(as), approvedGrade: sg > 0 ? `${sg} S${as}` : prev.approvedGrade };
                   })}
@@ -1164,27 +1498,48 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                 </label>
                 <label className="block">
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">Approved Rate <span className="text-slate-400 normal-case">(12)</span></span>
-                  <input type="number" min={0} value={newEmp.approvedMonthly || ''} onChange={(e) => setNewEmp({ ...newEmp, approvedMonthly: Math.max(0, parseInt(e.target.value) || 0) })}
+                  <input type="number" min={0} value={newEmp.approvedMonthly || ''} onChange={(e) => setNewEmp({ ...newEmp, approvedMonthly: Math.max(0, parseInt(e.target.value, 10) || 0) })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
-                <label className="block col-span-3">
-                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Org. Code (2)</span>
-                  <input value={newEmp.orgCode} onChange={(e) => setNewEmp({ ...newEmp, orgCode: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="e.g. 1801"
+                <label className="block col-span-1">
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Org. Code <span className="text-slate-400 normal-case">(2)</span></span>
+                  <input value={newEmp.orgCode} onChange={(e) => setNewEmp({ ...newEmp, orgCode: e.target.value.replace(/[^\d.]/g, '').slice(0, 12) })} placeholder="e.g. 1801"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+                </label>
+                <label className="block col-span-2">
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Transfer to — School / SDO <span className="text-slate-400 normal-case">(4)</span></span>
+                  <input value={newEmp.transferSchool} onChange={(e) => setNewEmp({ ...newEmp, transferSchool: e.target.value.slice(0, 80) })}
+                    placeholder="Name of School / SDO (leave blank if not applicable)"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+                </label>
+                <label className="block col-span-1">
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Transfer Org. Code <span className="text-slate-400 normal-case">(3)</span></span>
+                  <input value={newEmp.transferOrgCode} onChange={(e) => setNewEmp({ ...newEmp, transferOrgCode: e.target.value.replace(/[^\d.]/g, '').slice(0, 12) })}
+                    placeholder="(3)"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+                </label>
+                <label className="block col-span-1">
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Date of Approval <span className="text-slate-400 normal-case">(8)</span></span>
+                  <input type="date" value={newEmp.dateApproval} onChange={(e) => setNewEmp({ ...newEmp, dateApproval: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+                </label>
+                <label className="block col-span-2">
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Remarks <span className="text-slate-400 normal-case">(20)</span></span>
+                  <input value={newEmp.remarks} onChange={(e) => setNewEmp({ ...newEmp, remarks: e.target.value.slice(0, 120) })}
+                    placeholder="Optional remarks"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
               </div>
             </div>
             <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-end gap-2">
               <button onClick={() => setShowNewEmp(false)} className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
               <button onClick={saveNewEmployee} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors">
-                <UserPlus className="w-3.5 h-3.5" /> Add to List
+                <Plus className="w-3.5 h-3.5" /> Add to List
               </button>
             </div>
           </div>
         </div>
       )}
-
-      <p className="text-[10px] text-slate-300 dark:text-slate-600">Rows are saved locally for this division and school level ({lsKey}) until you clear them. The list shows 6 employees per page to match the printed PAL layout; Export produces the DBM-DepEd Annex R-1 PAL form — fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) and columns M-S compute automatically.</p>
     </div>
   );
 }

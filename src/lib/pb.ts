@@ -27,6 +27,72 @@ const PB_URL =
 export const pb = new PocketBase(PB_URL);
 pb.autoCancellation(false);
 
+// ── Request body compatibility ─────────────────────────────────────────────
+// The deployed PocketBase (v0.22.x, same as the local binary) does not decode
+// `application/json` bodies on the auth and record write endpoints — a JSON
+// request body is rejected with a 400 ("...loading the submitted data...")
+// while the very same fields arrive fine as form data. The bundled SDK (0.21.x)
+// still serializes every object body as JSON, so single-step login returns a 400
+// before the credentials are even checked. Normalize those payloads here:
+//   - auth actions (auth-with-password, ...)  -> x-www-form-urlencoded
+//   - record create/update (POST/PATCH /records) -> multipart/form-data
+// Custom `/api/*` RPC routes keep their JSON bodies.
+const COLLECTIONS_API_RE = /^\/api\/collections\/([^/]+)\//;
+const AUTH_FORM_ACTIONS = new Set([
+  'auth-with-password',
+  'auth-refresh',
+  'request-otp',
+  'auth-with-otp',
+  'request-verification',
+  'request-password-reset',
+]);
+
+function toUrlEncoded(obj: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined || value === null) continue;
+    params.append(key, value instanceof Date ? value.toISOString() : String(value));
+  }
+  return params.toString();
+}
+
+function toMultipart(obj: Record<string, unknown>): FormData {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined || value === null) continue;
+    if (value instanceof Date) {
+      form.append(key, value.toISOString());
+    } else if (value instanceof Blob || value instanceof File) {
+      form.append(key, value);
+    } else if (Array.isArray(value) || typeof value === 'object') {
+      form.append(key, JSON.stringify(value));
+    } else {
+      form.append(key, String(value));
+    }
+  }
+  return form;
+}
+
+pb.beforeSend = (url, options) => {
+  const method = (options.method ?? 'GET').toUpperCase();
+  const body = options.body;
+  if (body && typeof body === 'object' && !(body instanceof FormData)) {
+    if (COLLECTIONS_API_RE.test(String(url))) {
+      const action = String(url).split('/').pop() ?? '';
+      if (AUTH_FORM_ACTIONS.has(action)) {
+        options.headers = { ...(options.headers ?? {}), 'Content-Type': 'application/x-www-form-urlencoded' };
+        options.body = toUrlEncoded(body as Record<string, unknown>);
+      } else if ((method === 'POST' || method === 'PATCH') && typeof FormData !== 'undefined') {
+        const headers = { ...(options.headers ?? {}) };
+        delete headers['Content-Type'];
+        options.headers = headers;
+        options.body = toMultipart(body as Record<string, unknown>);
+      }
+    }
+  }
+  return { url, options };
+};
+
 // Legacy aliases so existing code that references these still compiles.
 export const SUPABASE_URL = PB_URL;
 export const SUPABASE_ANON_KEY = '';
