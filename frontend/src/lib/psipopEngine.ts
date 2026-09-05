@@ -67,6 +67,10 @@ export interface PSIPOPDocumentHeader {
   unfilledPositions: number;
   authorizedAmount: number;
   actualAmount: number;
+  /** School/facility code from the header row (e.g., '1801' from '1801.0010 BUBUYAN INTEGRATED SCHOOL') */
+  schoolCode?: string;
+  /** School name from the header row */
+  schoolName?: string;
 }
 
 // ── PSIPOP Layout Constants ───────────────────────────────────────────────
@@ -487,6 +491,45 @@ function parseSalaryValue(raw: string): number {
   return isNaN(num) ? 0 : num;
 }
 
+// ── School code extraction ────────────────────────────────────────────────
+
+const SCHOOL_NAME_TAILS =
+  /\b(?:SCHOOL|CENTER|CENTRAL|OFFICE|HOSPITAL|CLINIC|ANNEX|CAMPUS|INSTITUTE|INSTITUTION|ACADEMY)\b/i;
+
+/**
+ * Extract the school/facility code and name from a PSIPOP header row like
+ * "1801.0010 BUBUYAN INTEGRATED SCHOOL". Tolerates the sheet-number suffix
+ * being separated by a period or whitespace (common in OCR output) and headers
+ * that are wrapped across lines. Returns an empty code when nothing matches.
+ */
+function extractSchoolCodeFromText(text: string): { code: string; name: string } {
+  const lines = String(text ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Prefer a clean line that STARTS with the code (optionally after a label).
+  for (const line of lines) {
+    const m = line.match(
+      /^(?:SCHOOL(?:\s*[/\\]\s*FACILITY)?\s*[:\-–—]\s*)?(\d{4})(?:[.\s](\d{4}))?\s+([A-Z][A-Z0-9\s.,'()\-/&+#]*)/i
+    );
+    if (!m) continue;
+    const name = m[3].trim().replace(/\s+\d{4}\s*$/, '').trim();
+    if (name.length < 5) continue;
+    if (!SCHOOL_NAME_TAILS.test(name) && !/\b(?:INTEGRATED|ELEMENTARY|PRIMARY|NATIONAL|MARITIME|TECHNOLOGY)\b/i.test(name)) continue;
+    return { code: m[2] ? `${m[1]}.${m[2]}` : m[1], name };
+  }
+
+  // Fall back to a loose full-text scan for OCR output that merges or wraps
+  // the header, so a re-import still populates the school code.
+  const loose = String(text ?? '').match(
+    /\b(\d{4})(?:[.\s](\d{4}))?\s+([A-Z][A-Z\s.,'()\-/&+#]{5,}(?:SCHOOL|CENTER|CENTRAL|OFFICE|HOSPITAL|CLINIC|ANNEX|CAMPUS|INSTITUTE))/i
+  );
+  if (loose) return { code: loose[2] ? `${loose[1]}.${loose[2]}` : loose[1], name: loose[3].trim().replace(/\s+/g, ' ') };
+
+  return { code: '', name: '' };
+}
+
 // ── Document header extraction ────────────────────────────────────────────
 
 /**
@@ -580,6 +623,47 @@ function extractDocumentHeader(allItems: TextItem[]): PSIPOPDocumentHeader {
     if (nums.length >= 2) actualAmount = parseSalaryValue(nums[1].str);
   }
 
+  // School code — appears as a header row like '1801.0010 BUBUYAN INTEGRATED SCHOOL'
+  // (e.g. near y=110-120, left-aligned). Try the standard band first, then scan
+  // every row of the first page so PSIPOP variants that place the school header
+  // elsewhere still populate the school code.
+  let schoolCode = '';
+  let schoolName = '';
+  const schoolHeaderItems = allItems
+    .filter((it) => it.y >= 105 && it.y <= 125 && it.x < 200)
+    .sort((a, b) => a.x - b.x);
+  const schoolHeaderText = schoolHeaderItems.map((it) => it.str).join(' ').trim();
+  const bandMatch = extractSchoolCodeFromText(schoolHeaderText);
+  if (bandMatch.code) {
+    schoolCode = bandMatch.code;
+    schoolName = bandMatch.name;
+  }
+
+  // Fallback 2: scan every row of the first page for school code patterns.
+  // Some PSIPOP variants place the school code at the bottom of the page
+  // next to the item numbers (Y ≈ 15-30), e.g. "1801.0011" without a school name.
+  if (!schoolCode) {
+    for (const row of groupItemsIntoRows(allItems, 6)) {
+      const rowText = row.items
+        .filter((it) => it.x < 600)
+        .sort((a, b) => a.x - b.x)
+        .map((it) => it.str)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!rowText) continue;
+      // Try full school header first (code + name)
+      const found = extractSchoolCodeFromText(rowText);
+      if (found.code) { schoolCode = found.code; schoolName = found.name; break; }
+      // Also try standalone school code pattern (e.g. "1801.0011" at item-number row)
+      const codeOnly = rowText.match(/\b(\d{4})(?:[.](\d{4}))\b/);
+      if (codeOnly) {
+        schoolCode = codeOnly[2] ? `${codeOnly[1]}.${codeOnly[2]}` : codeOnly[1];
+        break;
+      }
+    }
+  }
+
   return {
     fiscalYear,
     department,
@@ -590,6 +674,8 @@ function extractDocumentHeader(allItems: TextItem[]): PSIPOPDocumentHeader {
     unfilledPositions,
     authorizedAmount,
     actualAmount,
+    schoolCode,
+    schoolName,
   };
 }
 
@@ -747,8 +833,8 @@ function extractPositionsByRowLayout(
           annual_salary: structured.authorizedSalary,
           authorized_salary: structured.authorizedSalary,
           actual_salary: isVacant ? 0 : structured.actualSalary,
-          school_id: '',
-          school_name: documentHeader?.divisionOffice || '',
+          school_id: documentHeader?.schoolCode || '',
+          school_name: documentHeader?.schoolName || documentHeader?.divisionOffice || '',
           school_type: undefined,
           office_assignment: documentHeader?.divisionOffice || '',
           employee_id: isVacant ? '' : `EMP-${batchId}-${positions.length + 1}`,
@@ -868,8 +954,8 @@ function extractPositionsByRowLayout(
         annual_salary: authorizedSalary,
         authorized_salary: authorizedSalary,
         actual_salary: actualSalary,
-        school_id: '',
-        school_name: documentHeader?.divisionOffice || '',
+        school_id: documentHeader?.schoolCode || '',
+        school_name: documentHeader?.schoolName || documentHeader?.divisionOffice || '',
         school_type: undefined,
         office_assignment: documentHeader?.divisionOffice || '',
         employee_id: isVacant ? '' : `EMP-${batchId}-${positions.length + 1}`,
@@ -1197,8 +1283,8 @@ async function extractPositionsByColumnLayout(
         annual_salary: authorizedSalary,
         authorized_salary: authorizedSalary,
         actual_salary: actualSalary,
-        school_id: '',
-        school_name: documentHeader?.divisionOffice || '',
+        school_id: documentHeader?.schoolCode || '',
+        school_name: documentHeader?.schoolName || documentHeader?.divisionOffice || '',
         school_type: undefined,
         office_assignment: documentHeader?.divisionOffice || '',
         employee_id: isVacant ? '' : `EMP-${batchId}-${extractedPositions.length + 1}`,
@@ -1656,6 +1742,12 @@ export function parsePSIPOPText(
   const ITEM_REGEX = /\b(OSEC-DECSB-[A-Z0-9]+-\d{4,7}(?:-\d{2,4})?)\b/i;
   const lines = normalizedRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
+  // Extract school code and name from text (e.g., "1801.0010 BUBUYAN INTEGRATED SCHOOL").
+  // Tolerant of OCR spacing/line wraps so a re-import populates the school code.
+  const schoolHeader = extractSchoolCodeFromText(normalizedRaw);
+  const textSchoolCode = schoolHeader.code;
+  const textSchoolName = schoolHeader.name;
+
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
     const itemMatch = line.match(ITEM_REGEX);
@@ -1695,8 +1787,8 @@ export function parsePSIPOPText(
         annual_salary: structured.authorizedSalary,
         authorized_salary: structured.authorizedSalary,
         actual_salary: isVacant ? 0 : structured.actualSalary,
-        school_id: '',
-        school_name: '',
+        school_id: textSchoolCode || '',
+        school_name: textSchoolName || '',
         school_type: undefined,
         office_assignment: '',
         employee_id: isVacant ? '' : `EMP-${batchId}-${extractedPositions.length + 1}`,
@@ -1798,8 +1890,8 @@ export function parsePSIPOPText(
       annual_salary: authorizedSalary,
       authorized_salary: authorizedSalary,
       actual_salary: isVacant ? 0 : actualSalary,
-      school_id: '',
-      school_name: '',
+      school_id: textSchoolCode || '',
+      school_name: textSchoolName || '',
       school_type: undefined,
       office_assignment: '',
       employee_id: isVacant ? '' : `EMP-${batchId}-${extractedPositions.length + 1}`,

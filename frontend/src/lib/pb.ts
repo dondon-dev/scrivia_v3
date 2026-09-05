@@ -10,12 +10,42 @@
  */
 import PocketBase, { RecordService, type RecordModel } from 'pocketbase';
 
-// ── PocketBase instance ────────────────────────────────────────────────────
+// ── PocketBase URL resolution ───────────────────────────────────────────────
+// The API base URL comes exclusively from the build-time env var VITE_PB_URL:
+//   .env.local      → the local dev PocketBase   (see .env.local)
+//   .env.production → the deployed PocketBase    (see .env.production)
+// There is deliberately NO code fallback pointing at a localhost URL, so a
+// production bundle can never dial the visitor's own machine (that is what
+// caused the CSP / upgrade-insecure-requests failures on the deployed
+// scriviapayroll.com site). With no env var set, '/' means same-origin
+// (PocketBase serving the SPA + API from one origin, as in the Docker deploy).
 const PB_URL =
-  (import.meta as any).env?.VITE_POCKETBASE_URL ?? 'http://localhost:8090';
+  ((import.meta.env.VITE_PB_URL as string | undefined) ?? '')
+    .trim()
+    .replace(/\/+$/, '') || '/';
 
 export const pb = new PocketBase(PB_URL);
 pb.autoCancellation(false);
+
+// ── Timestamp aliasing ───────────────────────────────────────────────────────
+// PocketBase stamps every record with system `created`/`updated` fields, but
+// most collections in this app have NO custom `created_at`/`updated_at` fields —
+// the Supabase-port code queries them by name anyway, which makes PocketBase
+// return 400 ("failed to resolve field"). Alias the *_at names to the system
+// fields on the way in, and back-fill them on the way out so callers that read
+// `rec.created_at` keep working unchanged.
+const TIMESTAMP_ALIAS: Record<string, string> = {
+  created_at: 'created',
+  updated_at: 'updated',
+};
+const tsCol = (col: string) => TIMESTAMP_ALIAS[col] ?? col;
+const tsBackfill = (rec: any): any => {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return rec;
+  let out = rec;
+  if (rec.created && rec.created_at == null) out = { ...out, created_at: rec.created };
+  if (rec.updated && rec.updated_at == null) out = { ...out, updated_at: rec.updated };
+  return out;
+};
 
 // Legacy aliases so existing code that references these still compiles.
 export const SUPABASE_URL = PB_URL;
@@ -213,6 +243,7 @@ class SupabaseQueryBuilder {
   }
 
   eq(column: string, value: any) {
+    column = tsCol(column);
     if (value === null || value === undefined) {
       this._filter.push(`${column} = null`);
     } else if (typeof value === 'string') {
@@ -224,6 +255,7 @@ class SupabaseQueryBuilder {
   }
 
   neq(column: string, value: any) {
+    column = tsCol(column);
     if (value === null || value === undefined) {
       this._filter.push(`${column} != null`);
     } else if (typeof value === 'string') {
@@ -235,36 +267,37 @@ class SupabaseQueryBuilder {
   }
 
   gt(column: string, value: any) {
-    this._filter.push(`${column} > ${value}`);
+    this._filter.push(`${tsCol(column)} > ${value}`);
     return this;
   }
 
   gte(column: string, value: any) {
-    this._filter.push(`${column} >= ${value}`);
+    this._filter.push(`${tsCol(column)} >= ${value}`);
     return this;
   }
 
   lt(column: string, value: any) {
-    this._filter.push(`${column} < ${value}`);
+    this._filter.push(`${tsCol(column)} < ${value}`);
     return this;
   }
 
   lte(column: string, value: any) {
-    this._filter.push(`${column} <= ${value}`);
+    this._filter.push(`${tsCol(column)} <= ${value}`);
     return this;
   }
 
   like(column: string, value: string) {
-    this._filter.push(`${column} ~ '${value.replace(/'/g, "''")}'`);
+    this._filter.push(`${tsCol(column)} ~ '${value.replace(/'/g, "''")}'`);
     return this;
   }
 
   ilike(column: string, value: string) {
-    this._filter.push(`lower(${column}) ~ lower('${value.replace(/'/g, "''")}')`);
+    this._filter.push(`lower(${tsCol(column)}) ~ lower('${value.replace(/'/g, "''")}')`);
     return this;
   }
 
   in(column: string, values: any[]) {
+    column = tsCol(column);
     if (values.length === 0) return this;
     // PocketBase does not support SQL `IN (...)` or array `~ [...]` filters —
     // only OR-expansion works (verified against the live instance, which 400s
@@ -278,12 +311,12 @@ class SupabaseQueryBuilder {
   }
 
   isNull(column: string) {
-    this._filter.push(`${column} = null`);
+    this._filter.push(`${tsCol(column)} = null`);
     return this;
   }
 
   isNotNull(column: string) {
-    this._filter.push(`${column} != null`);
+    this._filter.push(`${tsCol(column)} != null`);
     return this;
   }
 
@@ -294,6 +327,7 @@ class SupabaseQueryBuilder {
 
   order(column: string, opts?: { ascending?: boolean }) {
     const dir = opts?.ascending === false ? '-' : '';
+    column = tsCol(column);
     this._sortField = this._sortField ? `${this._sortField}, ${dir}${column}` : `${dir}${column}`;
     return this;
   }
@@ -505,7 +539,10 @@ class SupabaseQueryBuilder {
       if (this._sortField) opts.sort = this._sortField;
       // Pass field selection to PocketBase (comma-separated field names)
       if (this._selectFields && this._selectFields !== '*') {
-        opts.fields = this._selectFields;
+        opts.fields = this._selectFields.split(',')
+          .map((f) => tsCol(f.trim()))
+          .filter(Boolean)
+          .join(',');
       }
 
       const collection = pb.collection(this._collection);
@@ -518,7 +555,7 @@ class SupabaseQueryBuilder {
       if (this._single || this._maybeSingle) {
         try {
           const item = await collection.getFirstListItem(filter, opts);
-          return { data: item ?? (this._maybeSingle ? null : undefined), error: null };
+          return { data: item ? tsBackfill(item) : (this._maybeSingle ? null : undefined), error: null };
         } catch (err: any) {
           if (this._maybeSingle) return { data: null, error: null };
           return { data: null, error: err };
@@ -535,7 +572,7 @@ class SupabaseQueryBuilder {
           const perPage = Math.min(PER_PAGE_MAX, this._limitN - collected.length);
           const result = await collection.getList(pageNum, perPage, opts);
           const items = result.items ?? [];
-          collected.push(...items);
+          collected.push(...items.map(tsBackfill));
           if (items.length < perPage || items.length === 0) break;
           pageNum += 1;
         }
@@ -559,7 +596,7 @@ class SupabaseQueryBuilder {
           // First page may begin mid-window when start is not page-aligned.
           const sliceFrom = pageNum === Math.floor(start / PER_PAGE_MAX) + 1 ? start % PER_PAGE_MAX : 0;
           const usable = sliceFrom > 0 ? items.slice(sliceFrom) : items;
-          collected.push(...usable);
+          collected.push(...usable.map(tsBackfill));
           if (items.length < PER_PAGE_MAX || usable.length === 0) break;
           pageNum += 1;
         }
@@ -568,7 +605,7 @@ class SupabaseQueryBuilder {
 
       // Otherwise return ALL matching records (no per-page cap).
       const all = await collection.getFullList({ ...opts, requestKey: null });
-      return { data: all, error: null };
+      return { data: all.map(tsBackfill), error: null };
     } catch (err) {
       return { data: null, error: err };
     }

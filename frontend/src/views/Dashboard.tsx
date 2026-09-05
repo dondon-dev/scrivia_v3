@@ -7,7 +7,7 @@ import {
   Users, Calculator, TrendingUp, ArrowRight, Wallet, Building2, Landmark,
   BarChart3, School, ShieldCheck, ShieldAlert, Upload, Clock, CheckCircle2,
   AlertTriangle, DollarSign, Receipt, ChevronRight, Database, Download,
-  ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap,
+  ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap, ListTree,
   Check, Circle, Building, MapPin, Sparkles, Brain, Hash, RefreshCw, type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/pb';
@@ -25,7 +25,7 @@ import { useOrg, codeScope } from '@/lib/org';
 import { KpiCard, QuickAction, SectionHeader, ProgressBar, HeroHeader } from '@/components/Enterprise';
 import EssDashboard from '@/views/EssDashboard';
 
-type View = 'dashboard' | 'employees' | 'dedmaster' | 'dedengine' | 'payroll' | 'reports' | 'salary' | 'taxcalc' | 'stacode' | 'importbackup' | 'users' | 'audit' | 'initial_payroll' | 'ai_center' | 'positionmgmt' | 'salary';
+type View = 'dashboard' | 'employees' | 'dedmaster' | 'dedengine' | 'payroll' | 'reports' | 'salary' | 'taxcalc' | 'stacode' | 'importbackup' | 'users' | 'audit' | 'initial_payroll' | 'ai_center' | 'positionmgmt' | 'plantilla_allocation';
 
 interface DashboardProps {
   onNavigate: (v: View) => void;
@@ -169,7 +169,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
           addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode', { count: 'exact', head: true })),
           supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
           addScope(supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions')),
-          addScope(supabase.from('payroll_deductions').select('id,dedcode,dedname,dedamt,agency,type,employee_id')),
+          addScope(supabase.from('payroll_deductions').select('id,dedcode,dedamt,agency,type,employee_id')),
           supabase.from('payroll_groups').select('*'),
           addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,divcode,basic,basic_salary').order('created_at', { ascending: false }).limit(5)),
           supabase.from('deduction_codes').select('*'),
@@ -377,6 +377,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
     { label: 'Manage Masterfile', desc: 'Add or edit employees', icon: Users, color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', view: 'employees', show: can('employees') },
     { label: 'Generate Reports', desc: 'Payroll & remittance', icon: FileSpreadsheet, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', view: 'reports', show: can('reports') },
     { label: 'Users & Roles', desc: 'Manage user accounts', icon: UserCog, color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', view: 'users', show: can('user_management') },
+    { label: 'Plantilla Allocation List', desc: 'Encode & export PAL form', icon: ListTree, color: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300', view: 'plantilla_allocation', show: can('salary') },
   ];
   const quickActions = allActions.filter((a) => a.show);
 
