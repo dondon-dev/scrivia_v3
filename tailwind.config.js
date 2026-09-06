@@ -1,7 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: 'class',
-  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  // The web app lives in frontend/ (this config is resolved by the repo-root
+  // build that Hostinger runs, whose cwd is the repository root). Scan the
+  // frontend sources so Tailwind emits all utility classes.
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}', './frontend/index.html', './frontend/src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       fontFamily: {
