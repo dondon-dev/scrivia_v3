@@ -10,7 +10,7 @@ import {
   ScrollText, FileSpreadsheet, UserCog, HardDriveDownload, Award, Table2, Zap, ListTree,
   Check, Circle, Building, MapPin, Sparkles, Brain, Hash, RefreshCw, type LucideIcon,
 } from 'lucide-react';
-import { supabase } from '@/lib/pb';
+import { supabase, chunkedIn } from '@/lib/pb';
 import { currency } from '@/lib/reports';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
@@ -162,23 +162,46 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
           return q;
         };
 
-        // Query all dashboard data in parallel, scoped if a division is selected
+        // Employees are the source of truth for the division scope: employees
+        // carry regcode/divcode, but payroll_entries' copies are not stamped
+        // and payroll_deductions has no such columns at all — so payroll tables
+        // are scoped by the scoped employees' ids instead. All employee rows are
+        // needed for active/group counts anyway, so their list length is the
+        // exact record total (the adapter now honours `{ count, head }`, which
+        // is why head:true is no longer used here).
         const [
-          empRes, payPeriodsRes, payEntriesRes, dedRes, groupsRes, recentRes, dedCodesRes,
+          empRes, payPeriodsRes, groupsRes, recentRes, dedCodesRes,
         ] = await Promise.all([
-          addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode', { count: 'exact', head: true })),
+          addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode')),
           supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
-          addScope(supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions')),
-          addScope(supabase.from('payroll_deductions').select('id,dedcode,dedamt,agency,type,employee_id')),
           supabase.from('payroll_groups').select('*'),
           addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,divcode,basic,basic_salary').order('created_at', { ascending: false }).limit(5)),
           supabase.from('deduction_codes').select('*'),
         ]);
         if (!active) return;
 
-        const totalRecords = empRes.count ?? 0;
-        const allEmps = empRes.data ?? [];
+        const allEmps = (empRes.data ?? []) as Array<{
+          id: string;
+          status: string | null;
+          payroll_status: string | null;
+          regcode: string | null;
+          divcode: string | null;
+          stacode: string | null;
+        }>;
+        const totalRecords = allEmps.length;
         const activeEmployees = allEmps.filter((e) => e.status === 'Active' || !e.status).length;
+        const scopedEmpIds = regcode && divcodes ? allEmps.map((e) => e.id) : null;
+        const entriesQuery = () => supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions');
+        const dedQuery = () => supabase.from('payroll_deductions').select('id,dedcode,dedamt,agency,type,employee_id');
+        const scopedRows = async (mk: () => ReturnType<typeof supabase.from>) => {
+          const rows = await chunkedIn('employee_id', scopedEmpIds!, (chunk) => mk().in('employee_id', chunk));
+          return { data: rows, error: null };
+        };
+        const [payEntriesRes, dedRes] = await Promise.all([
+          scopedEmpIds ? scopedRows(entriesQuery) : entriesQuery(),
+          scopedEmpIds ? scopedRows(dedQuery) : dedQuery(),
+        ]);
+        if (!active) return;
 
         const periods = (payPeriodsRes.data ?? []) as PayPeriod[];
         const currentPeriod = periods[0] ?? null;

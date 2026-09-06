@@ -241,14 +241,17 @@ class SupabaseQueryBuilder {
   private _deleteMode = false;
   private _countOnly = false;
   private _countExact = false;
+  private _headOnly = false;
   private _upsertMode = false;
 
   constructor(collection: string) {
     this._collection = collection;
   }
 
-  select(fields?: string) {
+  select(fields?: string, opts?: { count?: 'exact' | 'planned' | 'estimated'; head?: boolean }) {
     this._selectFields = fields ?? '*';
+    if (opts?.count) this._countExact = opts.count === 'exact';
+    if (opts?.head) this._headOnly = true;
     return this;
   }
 
@@ -559,51 +562,54 @@ class SupabaseQueryBuilder {
 
       const collection = pb.collection(this._collection);
 
-      // Fetch ALL matching records via getFullList().
-      // PocketBase's getList() is capped by the server's max per-page size
-      // (default 500), so a plain select() would silently truncate. getFullList()
-      // automatically walks every page behind the scenes — exactly what the Smart
-      // Import needs to read every DBF-mirrored record.
+      // Supabase-style select(fields, { count: 'exact', head: true }): the
+      // caller wants only the matching total — fetch one page's metadata and
+      // return no row bodies. (`head` unset/false with `count` still returns
+      // rows below, with the exact total attached to the result.)
+      if (this._headOnly) {
+        const t = await collection.getList(1, 1, { ...opts, perPage: 1, requestKey: null });
+        return { data: [], error: null, count: t.totalItems ?? 0 };
+      }
+
+      let result: { data: any; error: any; count?: number };
+
       if (this._single || this._maybeSingle) {
         try {
           const item = await collection.getFirstListItem(filter, opts);
-          return { data: item ? tsBackfill(item) : (this._maybeSingle ? null : undefined), error: null };
+          result = { data: item ? tsBackfill(item) : (this._maybeSingle ? null : undefined), error: null };
         } catch (err: any) {
-          if (this._maybeSingle) return { data: null, error: null };
-          return { data: null, error: err };
+          if (this._maybeSingle) result = { data: null, error: null };
+          else return { data: null, error: err };
         }
-      }
-
-      // Explicit .limit() — honour it with getList() so we get at most N rows.
-      // PocketBase caps per-page at 500, so larger limits must walk pages.
-      if (this._limitN > 0) {
+      } else if (this._limitN > 0) {
+        // Explicit .limit() — honour it with getList() so we get at most N rows.
+        // PocketBase caps per-page at 500, so larger limits must walk pages.
         const PER_PAGE_MAX = 500;
         const collected: any[] = [];
         let pageNum = 1;
         while (collected.length < this._limitN) {
           const perPage = Math.min(PER_PAGE_MAX, this._limitN - collected.length);
-          const result = await collection.getList(pageNum, perPage, opts);
-          const items = result.items ?? [];
+          const page = await collection.getList(pageNum, perPage, opts);
+          const items = page.items ?? [];
           collected.push(...items.map(tsBackfill));
           if (items.length < perPage || items.length === 0) break;
           pageNum += 1;
         }
-        return { data: collected.slice(0, this._limitN), error: null };
-      }
-
-      // Explicit .range(from,to) — fetch the single requested window. PocketBase
-      // caps every page at 500 rows regardless of the requested perPage, so a
-      // window wider than 500 must be assembled by walking consecutive pages;
-      // the old one-request math silently returned only the first page.
-      if (this._rangeTo > this._rangeFrom) {
+        result = { data: collected.slice(0, this._limitN), error: null };
+      } else if (this._rangeTo > this._rangeFrom) {
+        // Explicit .range(from,to) — fetch the single requested window.
+        // PocketBase caps every page at 500 rows regardless of the requested
+        // perPage, so a window wider than 500 must be assembled by walking
+        // consecutive pages; the old one-request math silently returned only
+        // the first page.
         const PER_PAGE_MAX = 500;
         const start = this._rangeFrom;
         const wanted = this._rangeTo - start + 1;
         const collected: any[] = [];
         let pageNum = Math.floor(start / PER_PAGE_MAX) + 1;
         while (collected.length < wanted) {
-          const result = await collection.getList(pageNum, PER_PAGE_MAX, opts);
-          const items = result.items ?? [];
+          const page = await collection.getList(pageNum, PER_PAGE_MAX, opts);
+          const items = page.items ?? [];
           if (items.length === 0) break;
           // First page may begin mid-window when start is not page-aligned.
           const sliceFrom = pageNum === Math.floor(start / PER_PAGE_MAX) + 1 ? start % PER_PAGE_MAX : 0;
@@ -612,12 +618,24 @@ class SupabaseQueryBuilder {
           if (items.length < PER_PAGE_MAX || usable.length === 0) break;
           pageNum += 1;
         }
-        return { data: collected.slice(0, wanted), error: null };
+        result = { data: collected.slice(0, wanted), error: null };
+      } else {
+        // Fetch ALL matching records via getFullList().
+        // PocketBase's getList() is capped by the server's max per-page size
+        // (default 500), so a plain select() would silently truncate. getFullList()
+        // automatically walks every page behind the scenes — exactly what the Smart
+        // Import needs to read every DBF-mirrored record.
+        const all = await collection.getFullList({ ...opts, requestKey: null });
+        result = { data: all.map(tsBackfill), error: null };
       }
 
-      // Otherwise return ALL matching records (no per-page cap).
-      const all = await collection.getFullList({ ...opts, requestKey: null });
-      return { data: all.map(tsBackfill), error: null };
+      // Attach an exact total when the caller asked for count alongside rows
+      // (select(fields, { count: 'exact' }) — Supabase semantics).
+      if (this._countExact) {
+        const t = await collection.getList(1, 1, { ...opts, perPage: 1, requestKey: null });
+        result.count = t.totalItems ?? 0;
+      }
+      return result;
     } catch (err) {
       return { data: null, error: err };
     }
