@@ -363,8 +363,8 @@ async function syncIncluded(bytes: Uint8Array, category?: PayrollCategory | null
   // Set priority = 1 for INCLUDED deductions (highest priority, deducted FIRST)
   const includedEmpnos = [...new Set(rows.map((r) => r.empno).filter(Boolean))];
   if (includedEmpnos.length > 0) {
-    for (let i = 0; i < includedEmpnos.length; i += 100) {
-      const batch = includedEmpnos.slice(i, i + 100);
+    for (let i = 0; i < includedEmpnos.length; i += 60) {
+      const batch = includedEmpnos.slice(i, i + 60);
       await supabase.from('payroll_deductions').update({ priority: 1 }).in('empno', batch);
     }
   }
@@ -643,8 +643,8 @@ async function syncExcluded(bytes: Uint8Array, category?: PayrollCategory | null
   // Set priority = 2 for EXCLUDED deductions (least priority, deducted LAST)
   const excludedEmpnos = [...new Set(rows.map((r) => r.empno).filter(Boolean))];
   if (excludedEmpnos.length > 0) {
-    for (let i = 0; i < excludedEmpnos.length; i += 100) {
-      const batch = excludedEmpnos.slice(i, i + 100);
+    for (let i = 0; i < excludedEmpnos.length; i += 60) {
+      const batch = excludedEmpnos.slice(i, i + 60);
       await supabase.from('payroll_deductions').update({ priority: 2 }).in('empno', batch);
     }
   }
@@ -1313,9 +1313,9 @@ export async function deleteTableData(
         .filter((r) => inCategory(r.stacode, category))
         .map((r) => r.id);
       if (ids.length === 0) return { deleted: 0, error: null };
-      const { count, error: delError } = await supabase.from('employees').delete().in('id', ids);
-      if (delError) return { deleted: null, error: delError.message };
-      return { deleted: count ?? ids.length, error: null };
+      const { deleted, error: delError } = await deleteInChunks('employees', 'id', ids);
+      if (delError) return { deleted: null, error: delError };
+      return { deleted, error: null };
     }
 
     if (dbTable === 'payroll_deductions') {
@@ -1326,12 +1326,9 @@ export async function deleteTableData(
         .filter((r) => inCategory(r.stacode, category))
         .map((r) => r.id);
       if (empIds.length === 0) return { deleted: 0, error: null };
-      const { count, error: delError } = await supabase
-        .from('payroll_deductions')
-        .delete()
-        .in('employee_id', empIds);
-      if (delError) return { deleted: null, error: delError.message };
-      return { deleted: count ?? 0, error: null };
+      const { deleted, error: delError } = await deleteInChunks('payroll_deductions', 'employee_id', empIds);
+      if (delError) return { deleted: null, error: delError };
+      return { deleted, error: null };
     }
 
     // DBF mirror tables with a direct stacode column
@@ -1342,9 +1339,9 @@ export async function deleteTableData(
       .filter((r) => inCategory(r.stacode, category))
       .map((r) => r.id);
     if (ids.length === 0) return { deleted: 0, error: null };
-    const { count, error: delError } = await supabase.from(dbTable).delete().in('id', ids);
-    if (delError) return { deleted: null, error: delError.message };
-    return { deleted: count ?? ids.length, error: null };
+    const { deleted, error: delError } = await deleteInChunks(dbTable, 'id', ids);
+    if (delError) return { deleted: null, error: delError };
+    return { deleted, error: null };
   }
 
   // Count records first, then delete all (PocketBase delete doesn't return count)
@@ -1365,7 +1362,7 @@ export async function deleteTableData(
         .filter((r) => inCategory(r.stacode, category))
         .map((r) => r.id);
       if (ids.length > 0) {
-        await supabase.from('payent').delete().in('id', ids);
+        await deleteInChunks('payent', 'id', ids);
       }
     } else {
       await supabase.from('payent').delete().eq('source', tableName);
@@ -1373,6 +1370,26 @@ export async function deleteTableData(
   }
 
   return { deleted: totalCount, error: null };
+}
+
+/**
+ * Delete records by id/column in small chunks. PocketBase's filter parser
+ * rejects `.in()` OR-expansions with ~100+ terms ("Something went wrong while
+ * processing your request."), so any bulk delete must stay well under that.
+ */
+async function deleteInChunks(
+  table: string,
+  column: string,
+  ids: string[],
+): Promise<{ deleted: number; error: string | null }> {
+  let deleted = 0;
+  for (let i = 0; i < ids.length; i += 60) {
+    const chunk = ids.slice(i, i + 60);
+    const { count, error: delError } = await supabase.from(table).delete().in(column, chunk);
+    if (delError) return { deleted, error: delError.message };
+    deleted += count ?? chunk.length;
+  }
+  return { deleted, error: null };
 }
 
 export async function loadSyncSessions(category?: PayrollCategory | null): Promise<SyncSessionRecord[]> {

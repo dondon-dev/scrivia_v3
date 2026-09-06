@@ -5,7 +5,7 @@ import {
   Banknote, Wallet, TrendingDown, AlertCircle, CheckCircle2,
   Info, Power, Database, FileText,
 } from 'lucide-react';
-import { supabase } from '@/lib/pb';
+import { supabase, chunkedIn } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
 import { downloadFile, currency, generateCsv } from '@/lib/reports';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
@@ -100,14 +100,22 @@ export default function DeductionEngine() {
         const { data: e } = await empQuery;
         const scopedEmps = (e as Employee[]) ?? [];
         const empnos = [...new Set(scopedEmps.map((x) => x.empno ?? x.employee_number ?? '').filter(Boolean))];
-        let dedQuery = supabase.from('payroll_deductions').select('id,employee_id,empno,dedcode,dedamt,status,type,agency,dedid,policyno,effmm,effyy,termm,teryy,principal,interest,charges,proceeds').order('dedcode');
+        const DED_COLS = 'id,employee_id,empno,dedcode,dedamt,status,type,agency,dedid,policyno,effmm,effyy,termm,teryy,principal,interest,charges,proceeds';
+        let dedRows: PayrollDeduction[] = [];
         if (scope.regcode && empnos.length > 0) {
-          dedQuery = dedQuery.in('empno', empnos);
+          // PocketBase rejects `.in()` filters with ~100+ OR-expanded terms —
+          // query the division's deductions in safe sub-chunks and merge.
+          dedRows = (await chunkedIn('empno', empnos, (chunk) =>
+            supabase.from('payroll_deductions').select(DED_COLS).order('dedcode').in('empno', chunk),
+          )) as PayrollDeduction[];
         } else if (scope.regcode) {
-          dedQuery = dedQuery.eq('empno', '__none__');
+          const { data: x } = await supabase.from('payroll_deductions').select(DED_COLS).eq('empno', '__none__');
+          dedRows = (x ?? []) as PayrollDeduction[];
+        } else {
+          const { data: x } = await supabase.from('payroll_deductions').select(DED_COLS).order('dedcode');
+          dedRows = (x ?? []) as PayrollDeduction[];
         }
-        const { data: d } = await dedQuery;
-        setReportData({ deductions: (d as PayrollDeduction[]) ?? [], employees: scopedEmps });
+        setReportData({ deductions: dedRows, employees: scopedEmps });
       })();
     }
     if (!activeReport) setReportData(null);

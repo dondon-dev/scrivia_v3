@@ -353,8 +353,9 @@ export default function Payroll({ profile }: PayrollProps) {
     setPosting(true);
     try {
       const ids = scopedEntries.map((e) => e.id).filter(Boolean);
-      for (let i = 0; i < ids.length; i += 200) {
-        const chunk = ids.slice(i, i + 200);
+      // Chunks stay under ~100: PocketBase rejects longer `.in()` OR-expansions.
+      for (let i = 0; i < ids.length; i += 60) {
+        const chunk = ids.slice(i, i + 60);
         if (chunk.length === 0) continue;
         const { error } = await supabase.from('payroll_entries').update({ status: 'Posted' }).in('id', chunk);
         if (error) throw new Error(error.message);
@@ -385,8 +386,9 @@ export default function Payroll({ profile }: PayrollProps) {
     try {
       // Un-post only this division's posted entries within the shared period.
       const postedIds = scopedEntries.filter((e) => e.status === 'Posted').map((e) => e.id).filter(Boolean);
-      for (let i = 0; i < postedIds.length; i += 200) {
-        const chunk = postedIds.slice(i, i + 200);
+      // Chunks stay under ~100: PocketBase rejects longer `.in()` OR-expansions.
+      for (let i = 0; i < postedIds.length; i += 60) {
+        const chunk = postedIds.slice(i, i + 60);
         if (chunk.length === 0) continue;
         const { error } = await supabase.from('payroll_entries').update({ status: 'Computed' }).in('id', chunk);
         if (error) throw new Error(error.message);

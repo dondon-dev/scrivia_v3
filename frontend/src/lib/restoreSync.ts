@@ -652,13 +652,17 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
 
   // Payroll_deductions is a full DEDFILE masterfile snapshot — clear this
   // import's employees first so re-runs don't accumulate duplicates.
+  // Chunk sizes stay well under ~100 because the PocketBase filter parser
+  // rejects longer `.in()` OR-expansions ("Something went wrong while
+  // processing your request.").
+  const CLEAR_CHUNK = 60;
   let cleared = 0;
-  for (let i = 0; i < uniqueIds.length; i += 400) {
-    const chunk = uniqueIds.slice(i, i + 400);
+  for (let i = 0; i < uniqueIds.length; i += CLEAR_CHUNK) {
+    const chunk = uniqueIds.slice(i, i + CLEAR_CHUNK);
     const { data: existing, error } = await supabase.from('payroll_deductions').select('id').in('employee_id', chunk);
     if (error) { errors.push(`Masterfile clear error: ${error.message}`); continue; }
-    for (let j = 0; j < (existing ?? []).length; j += 200) {
-      const idChunk = (existing ?? []).slice(j, j + 200).map((x: any) => x.id);
+    for (let j = 0; j < (existing ?? []).length; j += CLEAR_CHUNK) {
+      const idChunk = (existing ?? []).slice(j, j + CLEAR_CHUNK).map((x: any) => x.id);
       const { error: delErr } = await supabase.from('payroll_deductions').delete().in('id', idChunk);
       if (delErr) { errors.push(`Masterfile delete error: ${delErr.message}`); continue; }
       cleared += idChunk.length;

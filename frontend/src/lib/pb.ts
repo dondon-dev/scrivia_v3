@@ -146,7 +146,11 @@ export async function chunkedIn<T = any>(
   column: string,
   values: (string | number)[],
   queryFn: (chunk: (string | number)[]) => any,
-  chunkSize = 200,
+  // PocketBase's filter parser 400s on OR-expansions much above ~100 terms
+  // ("Something went wrong while processing your request."), and `.in()`
+  // expands every value into one OR term. 60 keeps every sub-query well under
+  // that ceiling while still batching lookups efficiently.
+  chunkSize = 60,
 ): Promise<T[]> {
   if (values.length === 0) return [];
   const results: T[] = [];
@@ -302,6 +306,8 @@ class SupabaseQueryBuilder {
     // PocketBase does not support SQL `IN (...)` or array `~ [...]` filters —
     // only OR-expansion works (verified against the live instance, which 400s
     // on both). Expand `col IN (a, b, ...)` into `col='a' || col='b' || ...`.
+    // Callers must keep `values` under ~100 (see chunkedIn) — the PocketBase
+    // filter parser rejects longer OR-expansions with a generic 400.
     const ors = values.map((v) => {
       const esc = typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : String(v);
       return `${column} = ${esc}`;
