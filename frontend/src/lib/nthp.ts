@@ -3,25 +3,28 @@ import type { PayrollDeduction, DeductionCode } from '@/types/payroll';
 export const NTHP_THRESHOLD = 5000.00;
 
 /**
- * NTHP Priority Order per DepEd Order No. 05, s. 2018.
- * Lower number = higher priority (deducted first).
+ * APDS Order of Priority — Policy Library deped-001
+ * (DepEd APDS Order of Priority per FY 2024 GAA, Section 56; cf. DepEd Order
+ * No. 05, s. 2018). Lower number = higher priority (deducted first).
  *
- * Mandatory deductions (always deducted first, Step 2):
- * 1. BIR (Withholding Tax)
- * 2. PhilHealth
- * 3. GSIS Premium
- * 4. GSIS Loans (policy loan, emergency loan — mandatory)
- * 5. Pag-IBIG Premium (HDMF)
- * 6. Pag-IBIG Loans (MPL, calamity loan — mandatory)
+ * PRIORITY 1 — Mandatory government deductions (deducted before any loans):
+ *   1. BIR (Withholding Tax)
+ *   2. PhilHealth
+ *   3. GSIS Premium
+ *   4. Pag-IBIG (HDMF) Premium
+ *   5. Salary overpayments to the government (library codes 0216 Proportional
+ *      Vacation Pay, 0068 Current Absences, 0136 Overpayment PERA)
  *
- * APDS deductions (Step 5), processed by priority:
- * 7.  Cooperatives
- * 8.  Mutual Benefit Associations
- * 9.  Provident Funds
- * 10. Government Financial Institutions
- * 11. Insurance Companies
- * 12. Rural/Thrift Banks
- * 13. Other Accredited Lending Institutions
+ * PRIORITY 2 — Loans & financial obligations (first-in-first-served by date
+ * incurred):
+ *   6. GSIS Loans
+ *   7. Pag-IBIG (HDMF) Loans
+ *   8. Cooperatives / NSSLAs / Mutual Benefit Associations
+ *   9. Provident Funds
+ *   10. Government Financial Institutions
+ *   11. Insurance Companies
+ *   12. Rural/Thrift Banks
+ *   13. Other Accredited Lending Institutions
  */
 function isLoan(t: string): boolean {
   return t === 'L' || t === 'LOAN';
@@ -39,30 +42,68 @@ function isPhilhealth(a: string): boolean {
   return a === 'PHIC' || a === 'PHILHEALTH';
 }
 
+// Salary overpayment / absence codes the GAA names under Priority 1(e).
+const OVERPAYMENT_CODES = ['0216', '0068', '0136'];
+
+/**
+ * True for salary overpayments / absences: agency-coded DEPED 'P' rows
+ * (OVERPAYMENT-*, CURRENT ABSENCES) or the specific codes 0216/0068/0136.
+ */
+function isSalaryOverpayment(agency: string, type: string, dedcode: string): boolean {
+  if (OVERPAYMENT_CODES.includes(dedcode)) return true;
+  return agency === 'DEPED' && type === 'P';
+}
+
 export function getDeductionPriority(agency: string, type: string, dedcode?: string): number {
   const a = (agency ?? '').toUpperCase();
   const t = (type ?? '').toUpperCase();
   const dc = (dedcode ?? '').toUpperCase();
 
-  // Mandatory — deducted first (Step 2)
+  // Priority 1 — Mandatory government deductions
   if (a === 'BIR') return 1;
   if (isPhilhealth(a)) return 2;
   if (a === 'GSIS' && !isLoan(t)) return 3;
-  if (a === 'GSIS' && isLoan(t)) return 4;
-  if (isHdmf(a) && !isLoan(t)) return 5;
-  if (isHdmf(a) && isLoan(t)) return 6;
+  if (isHdmf(a) && !isLoan(t)) return 4;
+  // (e) salary overpayments & absences
+  if (isSalaryOverpayment(a, t, dc)) return 5;
 
-  // APDS priority order (Step 5)
-  if (isCooperative(t)) return 7;           // Cooperatives
+  // Priority 2 — Loans & financial obligations
+  // (a) GSIS loans, then Pag-IBIG loans
+  if (a === 'GSIS' && isLoan(t)) return 6;
+  if (isHdmf(a) && isLoan(t)) return 7;
+  // (b) cooperatives / NSSLAs / MBAs
+  if (isCooperative(t)) return 8;
   if (dc.includes('MBA')) return 8;
+  // (c) provident funds (incl. DECS/DepEd provident loan code 0007)
   if (dc.includes('PROVIDENT') || dc.includes('PF') || isProvident(t)) return 9;
   if (a === 'DEPED' && isLoan(t)) return 9;
-  if (t === 'INSURANCE' || (isProvident(t) && a === 'OTHER')) return 11;  // Insurance companies
-  if (isLoan(t) && a === 'OTHER') return 13;  // Other lending institutions
-  if (isProvident(t)) return 11;
+  // (e) insurance companies
+  if (t === 'INSURANCE') return 11;
+  // Other accredited lending institutions / unclassified APDS rows
   if (isLoan(t)) return 13;
   return 13;
 }
+
+/**
+ * Display labels for the 1–13 APDS priority order (Policy Library deped-001:
+ * FY 2024 GAA Sec. 56; DepEd Order No. 05, s. 2018).
+ * Lower number = higher priority = deducted first.
+ */
+export const DEDUCTION_PRIORITY_LABELS: Record<number, string> = {
+  1: 'BIR',
+  2: 'PhilHealth',
+  3: 'GSIS Premium',
+  4: 'Pag-IBIG Premium',
+  5: 'Salary Overpayment',
+  6: 'GSIS Loan',
+  7: 'Pag-IBIG Loan',
+  8: 'Cooperative/MBA',
+  9: 'Provident Fund',
+  10: 'Govt Financial Inst.',
+  11: 'Insurance',
+  12: 'Rural/Thrift Bank',
+  13: 'Other Lending Inst.',
+};
 
 /**
  * Combine the INCLUDED/EXCLUDED payroll-band priority (from the deduction

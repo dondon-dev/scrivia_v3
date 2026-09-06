@@ -75,16 +75,21 @@ ok('net = gross - mandatory - loans', () => {
 });
 
 console.log('getDeductionPriority (DepEd order)');
-ok('BIR=1, PhilHealth=2, GSIS premium=3, GSIS loan=4, HDMF premium=5, HDMF loan=6', () => {
+ok('DepEd/FY2024-GAA order: BIR=1, PHIC=2, GSIS prem=3, HDMF prem=4, overpayment=5, GSIS loan=6, HDMF loan=7', () => {
   assert.equal(getDeductionPriority('BIR', 'TAX', 'WHT'), 1);
   assert.equal(getDeductionPriority('PHIC', 'PREMIUM', 'PHIC'), 2);
   assert.equal(getDeductionPriority('GSIS', 'PREMIUM', 'GSIS'), 3);
-  assert.equal(getDeductionPriority('GSIS', 'LOAN', 'GPL'), 4);
-  assert.equal(getDeductionPriority('HDMF', 'PREMIUM', 'PAGIBIG'), 5);
-  assert.equal(getDeductionPriority('HDMF', 'LOAN', 'MPL'), 6);
+  assert.equal(getDeductionPriority('HDMF', 'PREMIUM', 'PAGIBIG'), 4);
+  // Priority 1(e) salary overpayments — named codes and DEPED 'P' rows
+  assert.equal(getDeductionPriority('DEPED', 'P', '0216'), 5);
+  assert.equal(getDeductionPriority('DEPED', 'P', '0068'), 5);
+  assert.equal(getDeductionPriority('DEPED', 'P', '0136'), 5);
+  assert.equal(getDeductionPriority('', '', '0136'), 5);
+  assert.equal(getDeductionPriority('GSIS', 'LOAN', 'GPL'), 6);
+  assert.equal(getDeductionPriority('HDMF', 'LOAN', 'MPL'), 7);
 });
-ok('cooperative=7, MBA=8, provident=9, insurance=11, other loan=13', () => {
-  assert.equal(getDeductionPriority('COOP', 'COOPERATIVE', 'COOP1'), 7);
+ok('cooperative/MBA=8, provident=9, insurance=11, other loan=13', () => {
+  assert.equal(getDeductionPriority('COOP', 'COOPERATIVE', 'COOP1'), 8);
   assert.equal(getDeductionPriority('ANY', 'L', 'MBA-COOP'), 8);
   assert.equal(getDeductionPriority('ANY', 'PROVIDENT', 'PF'), 9);
   assert.equal(getDeductionPriority('SUN', 'INSURANCE', 'INS'), 11);

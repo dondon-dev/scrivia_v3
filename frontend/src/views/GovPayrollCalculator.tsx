@@ -104,8 +104,8 @@ export default function GovPayrollCalculator() {
   }
 
   const priorityLabels: Record<number, string> = {
-    1: 'BIR', 2: 'PhilHealth', 3: 'GSIS Premium', 4: 'GSIS Loan',
-    5: 'Pag-IBIG', 6: 'Pag-IBIG Loan', 7: 'Cooperative', 8: 'MBA',
+    1: 'BIR', 2: 'PhilHealth', 3: 'GSIS Premium', 4: 'Pag-IBIG Premium',
+    5: 'Salary Overpayment', 6: 'GSIS Loan', 7: 'Pag-IBIG Loan', 8: 'Cooperative/MBA',
     9: 'Provident Fund', 10: 'Govt Financial Inst.', 11: 'Insurance',
     12: 'Rural/Thrift Bank', 13: 'Other Lending Inst.',
   };

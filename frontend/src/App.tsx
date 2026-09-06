@@ -32,6 +32,7 @@ const Reports = lazyRetry(() => import('@/views/Reports'));
 const SalarySchedule = lazyRetry(() => import('@/views/SalarySchedule'));
 const TaxCalculator = lazyRetry(() => import('@/views/TaxCalculator'));
 const DeductionMasterfile = lazyRetry(() => import('@/views/DeductionMasterfile'));
+const Deductions = lazyRetry(() => import('@/views/Deductions'));
 const DedfileDbf = lazyRetry(() => import('@/views/DedfileDbf'));
 const DeductionEngine = lazyRetry(() => import('@/views/DeductionEngine'));
 const UserManagement = lazyRetry(() => import('@/views/UserManagement'));
@@ -349,6 +350,7 @@ export default function App() {
       case 'employees': return <Employees highlightEmpId={pendingEmpId} onConsumedHighlight={() => setPendingEmpId(null)} profile={profile} />;
       case 'salary': return <SalarySchedule />;
       case 'dedmaster': return <DeductionMasterfile />;
+      case 'deductions': return <Deductions profile={profile} />;
       case 'dedfile': return <DedfileDbf />;
       case 'dedengine': return <DeductionEngine />;
       case 'payroll': return <Payroll profile={profile} />;

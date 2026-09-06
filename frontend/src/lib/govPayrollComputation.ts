@@ -116,21 +116,21 @@ export const DEDUCTION_CODES: Record<string, { name: string; category: string; m
   '381': { name: 'Health (Type 1)',        category: 'other',     mandated: false },
 };
 
-// ── NTHP Priority Order (DepEd Order No. 05, s. 2018) ──────────────────────
+// ── NTHP Priority Order (Policy Library deped-001 — FY 2024 GAA Sec. 56) ───
 // Lower number = higher priority (deducted first)
 //
 // Mandatory (always deducted first):
 //   1. BIR (Withholding Tax)
 //   2. PhilHealth
 //   3. GSIS Premium
-//   4. GSIS Loans (policy loan, emergency loan — mandatory)
-//   5. Pag-IBIG Premium (HDMF)
-//   6. Pag-IBIG Loans (MPL, calamity loan — mandatory)
+//   4. Pag-IBIG (HDMF) Premium
+//   5. Salary overpayments / absences (DEPED P; GAA codes 0216/0068/0136)
 //
-// APDS (processed by priority):
-//   7.  Cooperatives
-//   8.  Mutual Benefit Associations
-//   9.  Provident Funds
+// Loans & obligations (FIFS by date incurred):
+//   6. GSIS Loans
+//   7. Pag-IBIG (HDMF) Loans
+//   8. Cooperatives / NSSLAs / Mutual Benefit Associations
+//   9. Provident Funds
 //   10. Government Financial Institutions
 //   11. Insurance Companies
 //   12. Rural/Thrift Banks
@@ -170,21 +170,23 @@ export interface UndeductedObligation {
 export function getDeductionPriority(agency: string, type: string): number {
   const a = (agency ?? '').toUpperCase();
   const t = (type ?? '').toUpperCase();
+  const isLoanType = t === 'L' || t === 'LOAN';
+  const isHdmf = a === 'HDMF' || a === 'PAGIBIG' || a === 'PAG-IBIG';
 
-  // Mandatory (Step 2)
+  // Mandatory (Priority 1)
   if (a === 'BIR') return 1;
   if (a === 'PHIC' || a === 'PHILHEALTH') return 2;
-  if (a === 'GSIS' && !(t === 'L' || t === 'LOAN')) return 3;
-  if (a === 'GSIS' && (t === 'L' || t === 'LOAN')) return 4;
-  if ((a === 'HDMF' || a === 'PAGIBIG' || a === 'PAG-IBIG') && !(t === 'L' || t === 'LOAN')) return 5;
-  if ((a === 'HDMF' || a === 'PAGIBIG' || a === 'PAG-IBIG') && (t === 'L' || t === 'LOAN')) return 6;
-
-  // APDS priority (Step 5)
-  if (t === 'C' || t === 'COOPERATIVE') return 7;
-  if (t === 'MBA') return 8;
+  if (a === 'GSIS' && !isLoanType) return 3;
+  if (isHdmf && !isLoanType) return 4;
+  // Salary overpayments / absences (Priority 1(e))
+  if (a === 'DEPED' && t === 'P') return 5;
+  // Loans & obligations (Priority 2)
+  if (a === 'GSIS' && isLoanType) return 6;
+  if (isHdmf && isLoanType) return 7;
+  if (t === 'C' || t === 'COOPERATIVE' || t === 'MBA') return 8;
   if (t === 'P' || t === 'PROVIDENT' || t === 'SAVINGS') return 9;
   if (t === 'INSURANCE') return 11;
-  if (t === 'L' || t === 'LOAN') return 13;
+  if (isLoanType) return 13;
   return 13;
 }
 

@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Upload, Search, Trash2, Plus, X, FileText, CheckCircle2, AlertTriangle, Download, Info } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/pb';
+import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { parseDeductionFile, matchRowsToEmployees, type ParseResult } from '@/lib/textParser';
 import { generateDeductionDbf, downloadFile, currency } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
 import { inCategory, type PayrollCategory } from '@/lib/categories';
 import { getEmployeeFilter } from '@/lib/authz';
 import { useOrg, matchesOrgScope } from '@/lib/org';
-import type { Employee, Deduction, PayPeriod, DeductionUploadRow, DeductionCode } from '@/types/payroll';
+import type { Employee, Deduction, PayPeriod, DeductionUploadRow, DeductionCode, UndeductedObligation } from '@/types/payroll';
+import { getDeductionPriority, getEffectiveDeductionPriority, DEDUCTION_PRIORITY_LABELS } from '@/lib/nthp';
 import type { UserProfile } from '@/types/auth';
 import { usePagination, Pagination } from '@/components/Pagination';
 
@@ -25,6 +26,11 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
   const [refetchKey, setRefetchKey] = useState(0);
   const [dedCodes, setDedCodes] = useState<DeductionCode[]>([]);
   const dedCodeMap = new Map(dedCodes.map((c) => [c.dedcode, c]));
+  // Undeducted obligations for the selected pay period (were invisible in this
+  // view) + INCLUDED/priority tags (`payroll_deductions.priority === 1`) that
+  // keep an undeducted row at its normal priority position instead of last.
+  const [undeductedObs, setUndeductedObs] = useState<UndeductedObligation[]>([]);
+  const [priorityTags, setPriorityTags] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     (async () => {
@@ -42,7 +48,7 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
       // Honor the selected Region/Division scope — REGCODE + DIVCODE are the
       // unique reference for one division's payroll.
       setEmployees((emp as unknown as Employee[]).filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes })));
-      const scopedPer = (per ?? []).filter((p) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
+      const scopedPer = (per ?? [] as any[]).filter((p: any) => matchesOrgScope(p, { scopedDivisionIds, scopedCodes }));
       setPeriods(scopedPer);
       setDedCodes(codes as DeductionCode[]);
       if (scopedPer.length > 0) setPeriodId(scopedPer[0].id);
@@ -105,6 +111,49 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
 
   useEffect(() => { loadDeductions(); }, [refetchKey]);
 
+  // Undeducted obligations for the selected pay period — previously invisible
+  // in this view. Scoped client-side to the division's employees (same as
+  // Payroll/Reports).
+  useEffect(() => {
+    if (!periodId) { setUndeductedObs([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const unded = await fetchAll(() =>
+          supabase.from('undeducted_obligations').select('*').eq('pay_period_id', periodId),
+        );
+        if (!cancelled) setUndeductedObs((unded as UndeductedObligation[]) ?? []);
+      } catch { if (!cancelled) setUndeductedObs([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [periodId, refetchKey]);
+
+  // INCLUDED/priority tags from the deduction masterfile
+  // (`payroll_deductions.priority === 1`). A priority-tagged undeducted row
+  // keeps its normal APDS priority position; all other undeducted rows sink
+  // to least priority. Missing column/table → empty set (safe default).
+  useEffect(() => {
+    if (employees.length === 0) { setPriorityTags(new Set()); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const ids = employees.map((e) => e.id).filter(Boolean);
+        const rows = await chunkedIn('employee_id', ids, (chunk) =>
+          supabase.from('payroll_deductions').select('employee_id,empno,dedcode,priority').in('employee_id', chunk),
+        ) as { employee_id?: string; dedcode?: string; priority?: number | string | null }[];
+        if (cancelled) return;
+        const tags = new Set<string>();
+        for (const r of rows ?? []) {
+          if (Number(r.priority) !== 1) continue;
+          const code = String(r.dedcode ?? '').toUpperCase();
+          if (r.employee_id && code) tags.add(`${r.employee_id}|${code}`);
+        }
+        setPriorityTags(tags);
+      } catch { if (!cancelled) setPriorityTags(new Set()); }
+    })();
+    return () => { cancelled = true; };
+  }, [employees, refetchKey]);
+
   const empMap = new Map(employees.map((e) => [e.id, e]));
   const filtered = deductions.filter((d) => {
     if (category) {
@@ -118,16 +167,96 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
       .some((v) => v?.toLowerCase().includes(q));
   });
 
-  const grouped = filtered.reduce((acc, d) => {
-    (acc[d.deduction_code] ??= []).push(d);
-    return acc;
-  }, {} as Record<string, Deduction[]>);
+  // ── Priority-ordered display groups ────────────────────────────────────
+  // Per Policy Library deped-001 (APDS Order of Priority, FY 2024 GAA Sec. 56):
+  // mandatory first (BIR → PhilHealth → GSIS → Pag-IBIG), then loans FIFS.
+  // Undeducted rows sort least-priority (1000+ band) EXCEPT priority-tagged
+  // rows (INCLUDED band, tag === 1), which keep their APDS position.
+  interface DisplayGroup {
+    key: string;
+    code: string;
+    kind: 'deducted' | 'undeducted';
+    /** effective sort priority */
+    priority: number;
+    /** 1–13 APDS base for the badge */
+    base: number;
+    priorityTagged: boolean;
+    items: Deduction[];
+    undItems: UndeductedObligation[];
+    total: number;
+  }
+
+  const resolveAgencyType = (code: string, rowAgency?: string, rowType?: string) => {
+    const c = dedCodeMap.get(code);
+    return { agency: rowAgency || c?.agency || '', type: rowType || c?.type || '' };
+  };
+
+  const deductedGroups: DisplayGroup[] = Object.entries(
+    filtered.reduce((acc, d) => {
+      (acc[d.deduction_code] ??= []).push(d);
+      return acc;
+    }, {} as Record<string, Deduction[]>),
+  ).map(([code, items]) => {
+    let base = 13;
+    for (const d of items) {
+      const { agency, type } = resolveAgencyType(d.deduction_code, d.agency, d.type);
+      base = Math.min(base, getDeductionPriority(agency, type, d.deduction_code));
+    }
+    return {
+      key: `deducted:${code}`, code, kind: 'deducted' as const,
+      priority: base, base, priorityTagged: false,
+      items, undItems: [],
+      total: items.reduce((s, d) => s + (d.amount || 0), 0),
+    };
+  });
+
+  const undFiltered = undeductedObs.filter((u) => {
+    const e = empMap.get(u.employee_id);
+    if (!e) return false;
+    if (category && !inCategory(e.stacode, category)) return false;
+    const q = search.toLowerCase();
+    if (!q) return true;
+    return [u.deduction_code, u.deduction_description, e.employee_number, e.last_name, e.first_name]
+      .some((v) => v?.toLowerCase().includes(q));
+  });
+
+  const undeductedGroups: DisplayGroup[] = Object.entries(
+    undFiltered.reduce((acc, u) => {
+      (acc[u.deduction_code] ??= []).push(u);
+      return acc;
+    }, {} as Record<string, UndeductedObligation[]>),
+  ).map(([code, items]) => {
+    const { agency, type } = resolveAgencyType(code);
+    const base = getDeductionPriority(agency, type, code);
+    const tagged = items.some((u) => priorityTags.has(`${u.employee_id}|${code.toUpperCase()}`));
+    return {
+      key: `undeducted:${code}`, code, kind: 'undeducted' as const,
+      // Untagged undeducted rows sink to the least-priority band (2); a row
+      // whose masterfile row is INCLUDED/priority-tagged (1) keeps its normal
+      // APDS priority position instead (0 → base).
+      priority: getEffectiveDeductionPriority(agency, type, code, tagged ? 0 : 2),
+      base, priorityTagged: tagged,
+      items: [],
+      undItems: [...items].sort((a, b) => (b.undeducted_amount || 0) - (a.undeducted_amount || 0)),
+      total: items.reduce((s, u) => s + (Number(u.undeducted_amount) || 0), 0),
+    };
+  });
+
+  const sortedGroups = [...deductedGroups, ...undeductedGroups]
+    .sort((a, b) => a.priority - b.priority || a.code.localeCompare(b.code));
 
   const totalAmount = filtered.reduce((s, d) => s + d.amount, 0);
+  const undTotalAmount = undFiltered.reduce((s, u) => s + (Number(u.undeducted_amount) || 0), 0);
 
   async function removeDeduction(d: Deduction) {
     if (!confirm('Delete this deduction?')) return;
     await supabase.from('deductions').delete().eq('id', d.id);
+    setRefetchKey((k) => k + 1);
+  }
+
+  async function removeUndeducted(u: UndeductedObligation) {
+    if (!confirm('Delete this undeducted obligation?')) return;
+    await supabase.from('undeducted_obligations').delete().eq('id', u.id);
     setRefetchKey((k) => k + 1);
   }
 
@@ -178,22 +307,33 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
       </div>
 
       {/* Summary */}
-      {!loading && filtered.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+      {!loading && (filtered.length > 0 || undFiltered.length > 0) && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           <SummaryCard label="Total Deductions" value={String(filtered.length)} />
           <SummaryCard label="Total Amount" value={currency(totalAmount)} />
-          <SummaryCard label="Deduction Codes" value={String(Object.keys(grouped).length)} />
+          <SummaryCard label="Deduction Codes" value={String(deductedGroups.length)} />
           <SummaryCard label="Employees" value={String(new Set(filtered.map((d) => d.employee_id)).size)} />
           <SummaryCard label="Active" value={String(filtered.filter((d) => d.status === 'Active').length)} />
           <SummaryCard label="Loan Balances" value={currency(filtered.reduce((s, d) => s + (d.principal || 0), 0))} />
+          <SummaryCard label="Undeducted" value={currency(undTotalAmount)} />
         </div>
+      )}
+
+      {/* Priority order reference (Policy Library deped-001: APDS Order of
+          Priority, FY 2024 GAA Sec. 56) — mandatory first, then loans FIFS;
+          undeducted last unless priority-tagged. */}
+      {!loading && sortedGroups.length > 0 && (
+        <p className="text-[11px] text-slate-400" title="Policy Library → DepEd APDS Order of Priority (FY 2024 GAA, Section 56)">
+          Sorted by deduction priority: BIR → PhilHealth → GSIS → Pag-IBIG → loans (first-in-first-served).
+          Undeducted obligations rank last unless tagged as priority.
+        </p>
       )}
 
       {/* Deduction groups */}
       <div className="space-y-4">
         {loading ? (
           <div className="py-20 text-center text-slate-400 text-sm">Loading deductions…</div>
-        ) : filtered.length === 0 ? (
+        ) : sortedGroups.length === 0 ? (
           <div className="bg-white rounded-xl border border-slate-200 py-16 text-center">
             <FileText className="w-10 h-10 mx-auto mb-3 text-slate-200" />
             <p className="text-sm text-slate-500">
@@ -201,16 +341,30 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
             </p>
           </div>
         ) : (
-          Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([code, items]) => (
+          sortedGroups.map((g) => g.kind === 'deducted' ? (
             <DeductionGroup
-              key={code}
-              code={code}
-              codeName={dedCodeMap.get(code)?.dedname ?? null}
-              items={items}
+              key={g.key}
+              code={g.code}
+              codeName={dedCodeMap.get(g.code)?.dedname ?? null}
+              priority={g.base}
+              items={g.items}
               empMap={empMap}
               resetKey={search}
               onExport={exportDbf}
               onRemove={removeDeduction}
+            />
+          ) : (
+            <UndeductedGroup
+              key={g.key}
+              code={g.code}
+              codeName={dedCodeMap.get(g.code)?.dedname ?? null}
+              base={g.base}
+              priorityTagged={g.priorityTagged}
+              periodName={periods.find((p) => p.id === periodId)?.period_name ?? ''}
+              items={g.undItems}
+              empMap={empMap}
+              resetKey={search}
+              onRemove={removeUndeducted}
             />
           ))
         )}
@@ -241,9 +395,10 @@ export default function Deductions({ category, profile }: { category?: PayrollCa
   );
 }
 
-function DeductionGroup({ code, codeName, items, empMap, resetKey, onExport, onRemove }: {
+function DeductionGroup({ code, codeName, priority, items, empMap, resetKey, onExport, onRemove }: {
   code: string;
   codeName: string | null;
+  priority: number;
   items: Deduction[];
   empMap: Map<string, Employee>;
   resetKey: unknown;
@@ -254,9 +409,15 @@ function DeductionGroup({ code, codeName, items, empMap, resetKey, onExport, onR
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <span className="px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-700 text-xs font-mono font-semibold">{code}</span>
           {codeName && <span className="text-sm text-slate-600">{codeName}</span>}
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700"
+            title={`APDS priority ${priority} — Policy Library deped-001 (FY 2024 GAA Sec. 56)`}
+          >
+            #{priority} {DEDUCTION_PRIORITY_LABELS[priority] ?? 'Other'}
+          </span>
           <span className="text-sm text-slate-600">{items.length} entries</span>
           <span className="text-sm font-medium text-slate-700">{currency(items.reduce((s, d) => s + d.amount, 0))}</span>
         </div>
@@ -325,6 +486,84 @@ function DeductionGroup({ code, codeName, items, empMap, resetKey, onExport, onR
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <button onClick={() => onRemove(d)} className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <Pagination page={pag.page} totalPages={pag.totalPages} total={pag.total} onPageChange={pag.setPage} />
+    </div>
+  );
+}
+
+function UndeductedGroup({ code, codeName, base, priorityTagged, periodName, items, empMap, resetKey, onRemove }: {
+  code: string;
+  codeName: string | null;
+  base: number;
+  priorityTagged: boolean;
+  periodName: string;
+  items: UndeductedObligation[];
+  empMap: Map<string, Employee>;
+  resetKey: unknown;
+  onRemove: (u: UndeductedObligation) => void;
+}) {
+  const pag = usePagination(items, 10, resetKey);
+  return (
+    <div className="bg-amber-50/40 rounded-xl border border-amber-200 overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-amber-100 bg-amber-50">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="px-2.5 py-1 rounded-md bg-amber-100 text-amber-800 text-xs font-mono font-semibold">{code}</span>
+          {codeName && <span className="text-sm text-slate-600">{codeName}</span>}
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700"
+            title={`APDS priority ${base} — Policy Library deped-001 (FY 2024 GAA Sec. 56)`}
+          >
+            #{base} {DEDUCTION_PRIORITY_LABELS[base] ?? 'Other'}
+          </span>
+          {priorityTagged ? (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700" title="Tagged as priority in the deduction masterfile — keeps its APDS position">
+              PRIORITY
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800" title="Least priority — deducted last, re-deducted first in later periods">
+              UNDEDUCTED · LEAST PRIORITY
+            </span>
+          )}
+          <span className="text-sm text-slate-600">{items.length} entr{items.length === 1 ? 'y' : 'ies'}</span>
+          <span className="text-sm font-medium text-amber-700">{currency(items.reduce((s, u) => s + (Number(u.undeducted_amount) || 0), 0))}</span>
+          {periodName && <span className="text-xs text-slate-400">{periodName}</span>}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-slate-500 text-xs uppercase tracking-wider border-b border-amber-100">
+              <th className="text-left px-4 py-2 font-medium">Emp. No.</th>
+              <th className="text-left px-4 py-2 font-medium">Name</th>
+              <th className="text-left px-4 py-2 font-medium">Description</th>
+              <th className="text-right px-4 py-2 font-medium">Scheduled</th>
+              <th className="text-right px-4 py-2 font-medium">Undeducted</th>
+              <th className="text-left px-4 py-2 font-medium">Reason</th>
+              <th className="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-amber-100/70">
+            {pag.pagedItems.map((u) => {
+              const e = empMap.get(u.employee_id);
+              return (
+                <tr key={u.id} className="hover:bg-amber-50/60">
+                  <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{e?.employee_number ?? '—'}</td>
+                  <td className="px-4 py-2.5 text-slate-800">{e ? `${e.last_name}, ${e.first_name}` : 'Unknown'}</td>
+                  <td className="px-4 py-2.5 text-slate-600">{u.deduction_description || u.deduction_code}</td>
+                  <td className="px-4 py-2.5 text-right text-xs text-slate-500">{currency(Number(u.scheduled_amount) || 0)}</td>
+                  <td className="px-4 py-2.5 text-right font-medium text-amber-700">{currency(Number(u.undeducted_amount) || 0)}</td>
+                  <td className="px-4 py-2.5 text-xs text-slate-500">{u.reason || '—'}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button onClick={() => onRemove(u)} className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </td>

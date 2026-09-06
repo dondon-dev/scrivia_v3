@@ -16,7 +16,7 @@ import{
 } from 'lucide-react';
 
 export type ViewKey =
-  | 'dashboard' | 'employees' | 'payroll' | 'dedfile' | 'reports'
+  | 'dashboard' | 'employees' | 'payroll' | 'dedfile' | 'deductions' | 'reports'
   | 'salary' | 'dedmaster' | 'dedengine' | 'taxcalc'
   | 'stacode' | 'users' | 'audit' | 'backup' | 'restore'
   | 'smartimport' | 'pliimport' | 'gsisimport' | 'creator' | 'importbackup'
@@ -159,7 +159,8 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'Loans',
     icon: HandCoins,
     items: [
-      { id: 'loan_deductions', label: 'Deductions', icon: Table2, permission: 'dedmaster', viewKey: 'dedfile' },
+      { id: 'loan_deductions', label: 'Deductions', icon: Table2, permission: 'dedmaster', viewKey: 'deductions' },
+      { id: 'loan_dedfile', label: 'DEDFILE Masterfile', icon: Database, permission: 'dedmaster', viewKey: 'dedfile' },
       { id: 'loan_verification', label: 'Loan Verification', icon: CheckCircle2, permission: 'dedengine', viewKey: 'dedmaster' },
       { id: 'loan_provident', label: 'Provident Loan', icon: PiggyBank, permission: 'dedmaster', viewKey: 'dedmaster' },
       { id: 'loan_other', label: 'Other Loans', icon: ClipboardList, permission: 'dedmaster', viewKey: 'dedmaster' },
