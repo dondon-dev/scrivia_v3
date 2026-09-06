@@ -1,0 +1,36 @@
+name: CI
+
+# Runs on every push — lightweight gate in front of the Hostinger auto-deploy:
+# the payroll-engine unit tests hard-fail the build, and the TypeScript
+# typecheck runs and prints its findings (currently informational because the
+# app source carries pre-existing errors the Vite build never surfaces).
+on: push
+
+jobs:
+  check:
+    name: typecheck + payroll-engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Informational for now — 33 pre-existing errors across the app source.
+      # Once that baseline is cleared, set continue-on-error to false so this
+      # becomes the blocking gate.
+      - name: Typecheck (informational)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm run typecheck
+
+      - name: Payroll-engine tests (gate)
+        working-directory: frontend
+        run: npm run test:engine

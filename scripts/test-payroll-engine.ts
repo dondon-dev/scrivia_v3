@@ -2,11 +2,11 @@
  * Targeted unit tests for the payroll computation engine that the
  * payroll run depends on (src/lib/payroll.ts + src/lib/nthp.ts).
  *
- * Run:  bun scripts/test-payroll-engine.ts
+ * Run:  node scripts/run-engine-tests.mjs  (or `npm run test:engine` in frontend/)
  * Exits non-zero on any failed assertion.
  */
 import assert from 'node:assert/strict';
-import { computePayrollDeductions } from '../src/lib/payroll';
+import { computePayrollDeductions } from '../frontend/src/lib/payroll';
 import {
   NTHP_THRESHOLD,
   applyNthpCompliance,
@@ -14,7 +14,7 @@ import {
   processEmployeeDeductions,
   type PayrollDeduction,
   type DeductionCode,
-} from '../src/lib/nthp';
+} from '../frontend/src/lib/nthp';
 
 let passed = 0;
 function ok(name: string, fn: () => void) {
@@ -59,13 +59,13 @@ ok('Pag-IBIG premium = 200 (flat)', () => {
   const r = computePayrollDeductions(25000);
   assert.equal(r.dedpag, 200);
 });
-ok('gross = basic + pera + long [+ hazard/differential/other]; ACA/RATA/ontop tracked separately, not in monthly gross (current behavior)', () => {
+ok('gross = basic + pera + aca + rata + long [+ hazard/differential/other/otherEarnings]; ontop excluded (long ?? ontop falls back to long=0)', () => {
+  // basic 25000 + pera 2000 + aca 500 + rata 300 + long 50 = 27850
   const r = computePayrollDeductions(25000, 2000, 500, 300, 100, 50);
-  assert.equal(r.gross, 27050); // 25000 + 2000 + 50
-  // ontop is not folded into gross (long ?? ontop fallback is unreachable
-  // because long is coerced to a number first) — locks in current behavior
+  assert.equal(r.gross, 27850);
+  // ontop is not folded into gross (long ?? ontop: long coerces to 0 first)
   assert.equal(computePayrollDeductions(25000, 0, 0, 0, 100).gross, 25000);
-  // hazard + differential + other compensation DO count
+  // hazard + differential + other compensation + other earnings DO count
   assert.equal(computePayrollDeductions(25000, 0, 0, 0, 0, 0, 0, 0, 500, 300, 200, 100).gross, 26100);
 });
 ok('net = gross - mandatory - loans', () => {
