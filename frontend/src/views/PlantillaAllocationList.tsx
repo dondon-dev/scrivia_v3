@@ -609,6 +609,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   // ── Excel export — JSZip raw XML patch (bypasses ExcelJS to avoid XML corruption) ──
 
   async function exportExcel() {
+    let anySaved = false;
     const exportable = rows.filter((r) => r.employeeFound || r.itemNumber || r.incumbent);
     if (exportable.length === 0) { setMessage({ tone: 'warn', text: 'Nothing to export yet — encode at least one EMPNO.' }); return; }
 
@@ -618,14 +619,13 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       const resp = await fetch('/PAL.xlsx');
       if (!resp.ok) throw new Error('Could not load PAL.xlsx template');
       const templateBuf = await resp.arrayBuffer();
-
-      // Per-page export — the PAL template fits 6 employees per page (rows
-      // 14-19). Each page is one workbook so the printed form stays clean.
       const PAGE = 6;
       const pages: PalRow[][] = [];
       for (let i = 0; i < exportable.length; i += PAGE) pages.push(exportable.slice(i, i + PAGE));
-      let anySaved = false;
 
+      // Load the template once, then branch per page from the same buffer so
+      // we never re-read the fetch Response stream (which would fail with
+      // "body stream already read" on page 2+).
       for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
         const data = pages[pageIdx];
         const zip = await JSZip.loadAsync(templateBuf);
@@ -779,16 +779,45 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       // Write back to zip — formulas need recalculation on open so M-S stay
       // correct after the user fills G/H/K/L in Excel.
       zip.file('xl/worksheets/sheet1.xml', sheet);
+      // ── Excel precision-as-displayed (round to nearest hundredths) ──
+      // Workbook-level <calcPr> forces Excel to recompute on open using the
+      // 'Precision as displayed' behaviour: every numeric value is rounded to
+      // the number of decimals shown in its cell format (here: 2 decimals).
       const wbRaw = await zip.file('xl/workbook.xml')!.async('string');
-      zip.file('xl/workbook.xml', wbRaw.replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>'));
+      zip.file('xl/workbook.xml', wbRaw
+        .replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>')
+        .replace(/<workbookPr[^>]*\/?>/, '<workbookPr calcPrFullCalcOnLoad="1"/>'));
+
+      // Styles: add a 2-decimal currency format (numFmt id=99) and a matching
+      // cellXfs entry (xf id=99) so Excel treats all our monetary cells as
+      // "precision as displayed" with 2 decimals. Excel's calculation engine
+      // then rounds every result to the nearest hundredth.
+      const stylesXml = await zip.file('xl/styles.xml')!.async('string');
+      let patchedStyles = stylesXml;
+      if (!/<numFmts/i.test(stylesXml)) {
+        patchedStyles = patchedStyles.replace(
+          /(<\/numFmts>)/i,
+          '<numFmt numFmtId="99" formatCode="#,##0.00;;;@"/>$1',
+        );
+      }
+      if (!/<xf[^>]*\bid="99"/.test(patchedStyles)) {
+        patchedStyles = patchedStyles.replace(
+          /(<\/cellXfs>)/i,
+          '<xf numFmtId="99" builtinId="0" applyNumberFormat="1"/>$1',
+        );
+      }
+      zip.file('xl/styles.xml', patchedStyles);
+
       const outBuf = await zip.generateAsync({ type: 'blob' });
       const pgTag = pages.length > 1 ? `_page${pageIdx + 1}of${pages.length}` : '';
       const fname = `PAL_${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}${pgTag}.xlsx`;
       saveAs(outBuf, fname);
       anySaved = true;
       setMessage({ tone: 'ok', text: `Exported page ${pageIdx + 1} of ${pages.length} (${data.length} employee${data.length === 1 ? '' : 's'}) to ${fname}. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
-      // Give the browser a beat to write the file before the next page.
-      await new Promise((r) => setTimeout(r, 250));
+      // Yield to the browser event loop so the file-write completes before
+      // saving the next page. Without this, rapid sequential saveAs calls can
+      // drop pages on slower machines.
+      if (pageIdx + 1 < pages.length) await new Promise((r) => setTimeout(r, 120));
       }
     } catch (err) {
       setMessage({ tone: 'err', text: `Export failed: ${err instanceof Error ? err.message : String(err)}` });

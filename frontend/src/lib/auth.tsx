@@ -193,6 +193,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // PocketBase auth
       const authData = await pb.collection('profiles').authWithPassword(identifier, password);
 
+      // A 200 with an empty body (no token, no record id) means the server's
+      // auth hook chain did not complete — e.g. stale pb_hooks loaded before
+      // an edit was saved. Surfacing that beats the misleading
+      // "Account record not found." that fetchProfile(undefined) would produce.
+      if (!authData?.token || !authData.record?.id) {
+        return { error: 'Sign-in service returned an incomplete response. Please try again in a moment.' };
+      }
+
       if (!authData.record) {
         return { error: 'Invalid credentials.' };
       }

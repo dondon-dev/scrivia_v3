@@ -4,23 +4,35 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
-  // Tauri expects a fixed port during development
+
+  // Tauri & Web dev server configuration
   server: {
+    host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    allowedHosts: [
+      'scriviapayroll.com',
+      'www.scriviapayroll.com',
+      'api.scriviapayroll.com',
+      'localhost',
+      '127.0.0.1',
+    ],
+    watch: {
+      ignored: ['**/src-tauri/target/**'],
+    },
   },
-  // Tauri uses a fixed port for the built app
+
   build: {
     outDir: 'dist',
     sourcemap: false,
-    // Produce a single index.html SPA (PocketBase serves it)
     emptyOutDir: true,
   },
-  // Environment variables prefix (matches existing VITE_ convention)
+
   envPrefix: 'VITE_',
 });
