@@ -49,3 +49,20 @@ pb_output.log*
 
 # Local secrets / auth tokens
 .pb_token
+
+# PocketBase database
+pb_data/
+*.db
+
+# Environment variables*.env
+.env.*
+
+# Cloudflare Tunnel
+.cloudflared/
+
+# Litestream
+litestream.yml
+
+# Dependencies and build output
+node_modules/
+dist/
