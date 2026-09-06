@@ -4,7 +4,7 @@ import {
   Plus, Search, Trash2, Download, X, AlertTriangle, CheckCircle2, Loader2,
   ListTree, RefreshCw, UserX, UserPlus,
 } from 'lucide-react';
-import { supabase } from '@/lib/pb';
+import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import { usePositions } from '@/lib/usePositions';
 import { loadPlantillaPositions, type PlantillaPosition } from '@/lib/plantilla';
@@ -27,6 +27,31 @@ export const PAL_LEVEL_ITEMS: { key: PalLevel; label: string; short: string }[] 
   { key: 'junior', label: 'Junior High School', short: 'JHS' },
   { key: 'senior', label: 'Senior High School', short: 'SHS' },
 ];
+
+// ── Reclassification category (PAL content) ──────────────────────────────
+// Each category has its own DBM-DepEd template + Annex R-1 sheet names.
+
+export type PalCategory = 'teaching' | 'master' | 'principal';
+
+export const PAL_CATEGORIES: { key: PalCategory; label: string; short: string; template: string; title: string; fileTag: string }[] = [
+  { key: 'teaching', label: 'Teaching Positions', short: 'TI-VII', template: '/PAL.xlsx', title: 'Reclassification of Teaching Positions', fileTag: '' },
+  { key: 'master', label: 'Master Teacher Positions', short: 'MT', template: '/PAL_MT.xlsx', title: 'Reclassification of Master Teacher Positions', fileTag: 'MT_' },
+  { key: 'principal', label: 'School Principal Positions', short: 'SH', template: '/PAL_SH.xlsx', title: 'Reclassification of School Principal Positions', fileTag: 'SH_' },
+];
+
+/** Annex R-1 sheet base name for a category + school level. */
+export function palSheetBase(category: PalCategory, level: PalLevel | null): string {
+  const lvl = level === 'junior' ? 'JHS' : level === 'senior' ? 'SHS' : 'ELEM';
+  const cat = PAL_CATEGORIES.find((c) => c.key === category) ?? PAL_CATEGORIES[0];
+  return `Annex R-1 PAL for ${cat.short} ${lvl}`;
+}
+
+/** Unique sheet name within one workbook (Excel caps names at 31 chars). */
+export function palSheetName(base: string, n: number): string {
+  if (n <= 1) return base;
+  const suffix = ` p${n}`;
+  return base.length + suffix.length <= 31 ? base + suffix : base.slice(0, 31 - suffix.length) + suffix;
+}
 
 function stacodeNumber(v: unknown): number | null {
   const n = parseInt(String(v ?? '').replace(/\D/g, ''), 10);
@@ -71,6 +96,26 @@ const fmtGradeStep = (g: number, s: number) => (g > 0 ? `${g}${s > 0 ? ` S${s}` 
 
 // The DBM-DepEd PAL template fits 6 employees per printed page.
 const PAGE_SIZE = 6;
+
+/**
+ * Parse a custom page spec like "1, 3, 5-7" (1-based) into sorted unique
+ * 0-based page indices clamped to [0, total-1]. Returns [] when nothing valid.
+ */
+function parsePageSpec(spec: string, total: number): number[] {
+  const out = new Set<number>();
+  for (const tok of String(spec ?? '').split(',')) {
+    const t = tok.trim();
+    if (!t) continue;
+    const m = t.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) continue;
+    let a = Math.max(1, Math.min(total, parseInt(m[1], 10)));
+    let b = m[2] ? Math.max(1, Math.min(total, parseInt(m[2], 10))) : a;
+    if (Number.isNaN(a) || Number.isNaN(b)) continue;
+    if (a > b) [a, b] = [b, a];
+    for (let n = a; n <= b; n++) out.add(n - 1);
+  }
+  return [...out].sort((x, y) => x - y);
+}
 
 // ── New Employee (worksheet-local) form ────────────────────────────────────
 
@@ -217,6 +262,16 @@ function incumbentName(e: Employee): string {
   return [l, [f, m].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 
+/** Canonical employee number: EMPNO masterfield first, legacy number second. */
+function employeeNo(e: Employee): string {
+  return String(e.empno || e.employee_number || '');
+}
+
+/** Pad a STACODE range edge to the 3-digit form used in DB filters. */
+function padStacode(n: number): string {
+  return String(n).padStart(3, '0');
+}
+
 // ── View ──────────────────────────────────────────────────────────────────
 
 export default function PlantillaAllocationList({ initialTab }: { initialTab?: PalLevel }) {
@@ -225,10 +280,22 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
 
   const [rows, setRows] = useState<PalRow[]>([]);
   const [quickEmpno, setQuickEmpno] = useState('');
+  // Name search — scoped employee index for the type-ahead, suggestion box
+  // visibility, and an index of employees already on this list (hidden from
+  // suggestions so the same person isn't added twice by accident).
+  const [empIndex, setEmpIndex] = useState<Employee[]>([]);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [resolving, setResolving] = useState(false);
+  // Find an already-encoded row by name / EMPNO / item no. (the grid pages at
+  // 6 rows per printed PAL page, so a filter is the only sane way to locate a
+  // specific encoded employee once the list grows).
+  const [rowFilter, setRowFilter] = useState('');
   const [exporting, setExporting] = useState(false);
   const [months, setMonths] = useState(12);
-  const [level, setLevel] = useState<PalLevel | null>(initialTab ?? null);
+  const [level, setLevel] = useState<PalLevel | null>(initialTab ?? 'elementary');
+  // Reclassification category — each category keeps its own encoded list
+  // (Teaching / Master Teacher / School Principal) and its own template.
+  const [palCategory, setPalCategory] = useState<PalCategory>('teaching');
   const [psipop, setPsipop] = useState<{ items: PlantillaPosition[]; year: number | null; byName: Map<string, PlantillaPosition[]> } | null>(null);
   const [psipopLoading, setPsipopLoading] = useState(true);
   const [message, setMessage] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
@@ -236,6 +303,41 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   const [pickerQuery, setPickerQuery] = useState('');
   const [approvedPosDropdown, setApprovedPosDropdown] = useState<string | null>(null);
   const [approvedPosSearch, setApprovedPosSearch] = useState('');
+  // Viewport-anchored position for the approved-position dropdown. The menu
+  // renders in a `fixed` overlay (outside the table's scroll container) so it
+  // is never clipped by the scroll box or the pagination footer.
+  const [apprAnchor, setApprAnchor] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+
+  function openApprovedPos(uid: string, fallback: string, el: HTMLInputElement | null) {
+    setApprovedPosDropdown(uid);
+    setApprovedPosSearch(fallback);
+    if (el) {
+      const rc = el.getBoundingClientRect();
+      const left = Math.max(8, Math.min(rc.left, window.innerWidth - 296));
+      const need = 204; // max-h-48 + margin
+      if (window.innerHeight - rc.bottom < need && rc.top > need) {
+        setApprAnchor({ left, bottom: window.innerHeight - rc.top + 2 });
+      } else {
+        setApprAnchor({ left, top: rc.bottom + 2 });
+      }
+    }
+  }
+
+  function closeApprovedPos() { setApprovedPosDropdown(null); setApprAnchor(null); }
+
+  // Dismiss the overlay when the page scrolls/resizes (but not when scrolling
+  // the menu's own option list).
+  useEffect(() => {
+    if (!approvedPosDropdown) return;
+    const onScroll = (e: Event) => {
+      if ((e.target as HTMLElement | null)?.closest?.('[data-appr-dropdown]')) return;
+      closeApprovedPos();
+    };
+    const onResize = () => closeApprovedPos();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => { window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', onResize); };
+  }, [approvedPosDropdown]);
   const [showNewEmp, setShowNewEmp] = useState(false);
   const [newEmp, setNewEmp] = useState<NewEmpForm>(emptyNewEmp());
   const [newEmpErr, setNewEmpErr] = useState('');
@@ -246,29 +348,135 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   const [apprPosOpen, setApprPosOpen] = useState(false);
   const [apprPosSearch, setApprPosSearch] = useState('');
   const quickRef = useRef<HTMLInputElement>(null);
+  // ── Export dialog: current page / all pages / custom pages ─────────────
+  const [showExportDlg, setShowExportDlg] = useState(false);
+  const [exportScope, setExportScope] = useState<'current' | 'all' | 'custom'>('all');
+  const [customSpec, setCustomSpec] = useState('');
+
+  // Row filter — subset of encoded rows matching the find box. Export always
+  // uses the full `rows` list; this only affects what the grid displays.
+  const filteredRows = useMemo(() => {
+    const q = rowFilter.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      [r.incumbent, r.empno, r.positionTitle, r.itemNumber, r.orgCode]
+        .some((v) => String(v ?? '').toLowerCase().includes(q)),
+    );
+  }, [rows, rowFilter]);
 
   // Pagination — 6 EMPNO per page (matches the printed PAL page size)
-  const { page, setPage, totalPages, pagedItems } = usePagination(rows, PAGE_SIZE);
+  const { page, setPage, totalPages, pagedItems } = usePagination(filteredRows, PAGE_SIZE);
 
   const scope = useMemo(() => ({ scopedDivisionIds, scopedCodes }), [scopedDivisionIds, scopedCodes]);
 
+  // ── Name search: employee index for the current level + org scope ──────
+  // Built once per (scope, level) and cached, so typing a name is instant and
+  // never repeats the fetch. Only STACODE-in-range employees are loaded, so a
+  // picked suggestion is always encodable on this tab.
+  const empScopeKey = useMemo(() => {
+    const c = scopedCodes?.[0];
+    const s = c ? `${c.regcode}|${c.divcode}` : 'all';
+    return `${level ?? 'none'}|${s}`;
+  }, [level, scopedCodes]);
+
+  const empIndexCacheRef = useRef(new Map<string, Employee[]>());
+  useEffect(() => {
+    if (!level) { setEmpIndex([]); return; }
+    const cached = empIndexCacheRef.current.get(empScopeKey);
+    if (cached) { setEmpIndex(cached); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const c = scopedCodes?.[0];
+        const [lo, hi] = PAL_LEVELS[level].range;
+        const range = `(stacode>='${padStacode(lo)}' && stacode<='${padStacode(hi)}')`;
+        const org = c ? `regcode='${c.regcode}' && divcode='${c.divcode}' && ` : '';
+        const index = await fetchAll<Employee>('employees', `${org}${range} && status='Active'`, 'last_name');
+        if (cancelled) return;
+        empIndexCacheRef.current.set(empScopeKey, index);
+        setEmpIndex(index);
+      } catch { if (!cancelled) setEmpIndex([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [empScopeKey, level, scopedCodes]);
+
+  // Suggestions for the search box: rank by EMPNO-exact, surname prefix, then
+  // any given-name / full-name token; hide employees already on this list.
+  const quickQuery = quickEmpno.trim();
+  const suggestions = useMemo(() => {
+    const q = quickQuery.toUpperCase();
+    if (!q) return [];
+    const onList = new Set(rows.map((r) => String(r.empno ?? '').toUpperCase()).filter(Boolean));
+    const qIsEmpno = /^\d+$/.test(q);
+    const score = (e: Employee): number => {
+      const no = employeeNo(e).toUpperCase();
+      const name = (incumbentName(e) || '').toUpperCase();
+      if (qIsEmpno) {
+        if (no === q) return 1_000_000;
+        if (no.startsWith(q)) return 20_000 - no.length;
+        return name.includes(q) ? 15_000 : 0;
+      }
+      const last = String(e.lname || e.last_name || '').toUpperCase();
+      const given = String(`${e.fname || e.first_name || ''} ${e.mi || e.middle_name || ''}`).trim().toUpperCase();
+      if (last.startsWith(q)) return 30_000 - last.length;
+      if (given.startsWith(q)) return 25_000 - given.length;
+      if (name.includes(q)) return 12_000 + last.length;
+      if (no.startsWith(q)) return 6_000;
+      return 0;
+    };
+    return empIndex
+      .filter((e) => !onList.has(employeeNo(e).toUpperCase()))
+      .map((e) => ({ e, s: score(e) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s || String(a.e.lname || a.e.last_name || '').localeCompare(String(b.e.lname || b.e.last_name || '')))
+      .slice(0, 8)
+      .map((x) => x.e);
+  }, [quickQuery, empIndex, rows]);
+
+  const catMeta = PAL_CATEGORIES.find((c) => c.key === palCategory) ?? PAL_CATEGORIES[0];
+
   const lsKey = useMemo(() => {
     const code = scopedCodes?.[0] ? `${scopedCodes[0].regcode}_${scopedCodes[0].divcode}` : 'all';
-    return `pal_rows_${code}_${level ?? 'all'}`;
-  }, [scopedCodes, level]);
+    return `pal_rows_${code}_${level ?? 'all'}_${palCategory}`;
+  }, [scopedCodes, level, palCategory]);
 
   useEffect(() => {
-    setLevel(initialTab ?? null);
+    setLevel(initialTab ?? 'elementary');
   }, [initialTab]);
 
   // ── PocketBase persistence (pal_lists collection) ──────────────────────
   // One record per regcode+divcode+level scope; the `rows` JSON column holds
-  // the whole working sheet so the list survives across devices/sessions.
+  // one encoded list per reclassification category
+  // ({ teaching: [], master: [], principal: [] }) so the lists survive
+  // across devices/sessions. Legacy records that stored a bare array are
+  // read as the teaching list.
+  type PalRowsByCat = Record<PalCategory, PalRow[]>;
+  const emptyRowsByCat = (): PalRowsByCat => ({ teaching: [], master: [], principal: [] });
+  function parseStoredRows(raw: unknown): PalRowsByCat {
+    const empty = emptyRowsByCat();
+    try {
+      const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Array.isArray(v)) return { ...empty, teaching: v as PalRow[] };
+      if (v && typeof v === 'object') {
+        const o = v as Record<string, unknown>;
+        return {
+          teaching: Array.isArray(o.teaching) ? o.teaching as PalRow[] : [],
+          master: Array.isArray(o.master) ? o.master as PalRow[] : [],
+          principal: Array.isArray(o.principal) ? o.principal as PalRow[] : [],
+        };
+      }
+    } catch { /* fall through to empty */ }
+    return empty;
+  }
+  // Cache of every category's rows for the loaded record, so saving one
+  // category never wipes the other two.
+  const rowsCacheRef = useRef<PalRowsByCat>(emptyRowsByCat());
   const [palRecordId, setPalRecordId] = useState<string | null>(null);
   const [palLoaded, setPalLoaded] = useState(false);
-  // The scope (regcode|divcode|level) that the currently displayed rows belong
-  // to. Guards the debounced save so a tab switch can never write one tab's
-  // rows into another tab's record (which previously mixed data across tabs).
+  // The scope (regcode|divcode|level|category) that the currently displayed
+  // rows belong to. Guards the debounced save so a tab switch can never write
+  // one tab's rows into another tab's record (which previously mixed data
+  // across tabs).
   const loadedScopeRef = useRef('');
 
   useEffect(() => {
@@ -277,10 +485,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     setPalRecordId(null);
     loadedScopeRef.current = '';
     const code = scopedCodes?.[0];
+    const cat = palCategory;
     (async () => {
       try {
-        if (!code || !level) { setRows([]); return; }
-        const scopeKey = `${code.regcode}|${code.divcode}|${level}`;
+        if (!code || !level) { rowsCacheRef.current = emptyRowsByCat(); setRows([]); return; }
+        const scopeKey = `${code.regcode}|${code.divcode}|${level}|${cat}`;
         // Most-recently-updated record wins, so a stale duplicate can never
         // shadow the real one.
         const items = await supabase.from('pal_lists').select('*')
@@ -291,20 +500,22 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         loadedScopeRef.current = scopeKey;
         if (rec) {
           setPalRecordId(rec.id);
-          const parsed = Array.isArray(rec.rows) ? rec.rows as PalRow[] : [];
-          setRows(parsed);
+          const parsed = parseStoredRows(rec.rows);
+          rowsCacheRef.current = parsed;
+          setRows(parsed[cat]);
           if (typeof rec.months === 'number' && rec.months >= 1 && rec.months <= 24) setMonths(rec.months);
         } else {
+          rowsCacheRef.current = emptyRowsByCat();
           setRows([]);
         }
       } catch {
-        if (!cancelled) setRows([]);
+        if (!cancelled) { rowsCacheRef.current = emptyRowsByCat(); setRows([]); }
       } finally {
         if (!cancelled) setPalLoaded(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [lsKey, level, scopedCodes]);
+  }, [lsKey, level, palCategory, scopedCodes]);
 
   // Save rows + months back to PocketBase (debounced).
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -316,10 +527,15 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       if (!code || !level) return;
       // Guard: only persist when the displayed rows belong to this tab's scope.
       // Prevents a stale closure (previous tab's rows + old record id + new
-      // level) from relabeling/corrupting the wrong pal_lists record.
-      if (loadedScopeRef.current !== `${code.regcode}|${code.divcode}|${level}`) return;
+      // level/category) from relabeling/corrupting the wrong pal_lists record.
+      if (loadedScopeRef.current !== `${code.regcode}|${code.divcode}|${level}|${palCategory}`) return;
+      // Merge the current category's rows into the cache; the other two
+      // categories ride along untouched.
+      const merged: Record<PalCategory, PalRow[]> = { ...rowsCacheRef.current, [palCategory]: rows };
+      rowsCacheRef.current = merged;
+      const totalRows = merged.teaching.length + merged.master.length + merged.principal.length;
       // Never create an empty record on first paint — wait for real content.
-      if (!palRecordId && rows.length === 0) return;
+      if (!palRecordId && totalRows === 0) return;
       const scope = { regcode: code.regcode, divcode: code.divcode, level };
       (async () => {
         try {
@@ -328,8 +544,8 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
             region_name: selectedRegion?.region_name ?? '',
             division_name: selectedDivision?.division_name ?? '',
             months,
-            rows: JSON.stringify(rows),
-            status: rows.length > 0 ? 'active' : 'empty',
+            rows: JSON.stringify(merged),
+            status: totalRows > 0 ? 'active' : 'empty',
           };
           if (palRecordId) {
             await supabase.from('pal_lists').update(payload).eq('id', palRecordId);
@@ -343,7 +559,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       })();
     }, 500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [rows, months, palLoaded, palRecordId, level, scopedCodes, selectedRegion, selectedDivision]);
+  }, [rows, months, palLoaded, palRecordId, level, palCategory, scopedCodes, selectedRegion, selectedDivision]);
 
   useEffect(() => {
     setPsipopLoading(true); cachedPsipop = null;
@@ -578,7 +794,46 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     return { total, filled: filled.length, withItem: withItem.length, missingPsipop: filled.length - withItem.length, notFound: total - filled.length };
   }, [rows]);
 
-  async function handleQuickEncode() { if (!quickEmpno.trim() || resolving) return; await resolveEmpno(quickEmpno); }
+  // Export paging preview (6 employees per sheet; mirrors exportExcel chunking)
+  const exportInfo = useMemo(() => {
+    const exportable = rows.filter((r) => r.employeeFound || r.itemNumber || r.incumbent);
+    const totalPages = Math.max(1, Math.ceil(exportable.length / PAGE_SIZE));
+    const cur = Math.max(1, Math.min(page + 1, totalPages));
+    const custom = parsePageSpec(customSpec, totalPages);
+    return { count: exportable.length, totalPages, cur, custom };
+  }, [rows, page, customSpec]);
+
+  // Quick-add from the search box: a numeric query behaves exactly as before
+  // (exact EMPNO lookup, adds an unmatched row with a note so nothing typed is
+  // silently dropped); any other text must match an employee suggestion — a
+  // typo'd name shows a message instead of polluting the list with a bogus row.
+  async function handleQuickEncode() {
+    const q = quickEmpno.trim();
+    if (!q || resolving) return;
+    const pick = suggestions.find((s) => employeeNo(s).toUpperCase() === q.toUpperCase()) ?? suggestions[0];
+    setQuickOpen(false);
+    if (/^\d+$/.test(q)) {
+      await resolveEmpno(q);
+    } else if (pick) {
+      await resolveEmpno(employeeNo(pick));
+    } else {
+      setMessage({ tone: 'err', text: `No ${level ? PAL_LEVELS[level].label : 'school-level'} employee matches "${q}". Check the spelling or try an EMPNO.` });
+    }
+  }
+
+  // Add the employee behind a suggestion (same encode path as typing its EMPNO).
+  async function addSuggestion(e: Employee) {
+    if (resolving) return;
+    setQuickEmpno('');
+    setQuickOpen(false);
+    quickRef.current?.focus();
+    await resolveEmpno(employeeNo(e));
+  }
+
+  function applyRowFilter(v: string) {
+    setRowFilter(v);
+    setPage(1);
+  }
 
   // ── PSIPOP manual picker ────────────────────────────────────────────────
 
@@ -609,27 +864,63 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   // ── Excel export — JSZip raw XML patch (bypasses ExcelJS to avoid XML corruption) ──
 
   async function exportExcel() {
-    let anySaved = false;
     const exportable = rows.filter((r) => r.employeeFound || r.itemNumber || r.incumbent);
     if (exportable.length === 0) { setMessage({ tone: 'warn', text: 'Nothing to export yet — encode at least one EMPNO.' }); return; }
+    const PAGE = 6;
+    const pages: PalRow[][] = [];
+    for (let i = 0; i < exportable.length; i += PAGE) pages.push(exportable.slice(i, i + PAGE));
 
-    setExporting(true); setMessage(null);
+    // Resolve which pages go into the workbook: current UI page / all / custom.
+    // `page` is 0-based over `rows`; clamp it into the exportable page range.
+    let sel: number[];
+    if (exportScope === 'current') sel = [Math.max(0, Math.min(page, pages.length - 1))];
+    else if (exportScope === 'custom') sel = parsePageSpec(customSpec, pages.length);
+    else sel = pages.map((_, i) => i);
+    if (sel.length === 0) { setMessage({ tone: 'warn', text: 'No valid pages selected — use e.g. "1, 3, 5-7".' }); return; }
+
+    // A10 Education label follows the STACODE range of the active level tab:
+    // 001–095 Elementary, 500–699 Secondary, 700–701 Senior High School.
+    // (No level tab selected → keep the template's text.)
+    const eduLabel = level === 'elementary' ? 'Education: Elementary'
+      : level === 'junior' ? 'Education: Secondary'
+      : level === 'senior' ? 'Education: Senior High School'
+      : null;
+
+    setExporting(true); setMessage(null); setShowExportDlg(false);
     try {
       const { default: JSZip } = await import('jszip');
-      const resp = await fetch('/PAL.xlsx');
-      if (!resp.ok) throw new Error('Could not load PAL.xlsx template');
+      const resp = await fetch(catMeta.template);
+      if (!resp.ok) throw new Error(`Could not load ${catMeta.template} template`);
       const templateBuf = await resp.arrayBuffer();
-      const PAGE = 6;
-      const pages: PalRow[][] = [];
-      for (let i = 0; i < exportable.length; i += PAGE) pages.push(exportable.slice(i, i + PAGE));
+      // Single workbook: load the template once, fill one sheet XML per
+      // selected page from the same buffer, then assemble all sheets into
+      // this zip (one sheet per page — no more one-workbook-per-page).
+      const zip = await JSZip.loadAsync(templateBuf);
+      const templateSheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
+      let sheetRelsTpl: string | undefined;
+      try { const f = zip.file('xl/worksheets/_rels/sheet1.xml.rels'); if (f) sheetRelsTpl = await f.async('string'); } catch { sheetRelsTpl = undefined; }
 
-      // Load the template once, then branch per page from the same buffer so
-      // we never re-read the fetch Response stream (which would fail with
-      // "body stream already read" on page 2+).
-      for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+      // Helper: escape XML special chars
+      const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+      // Helper: replace a cell in a row body by column letter.
+      // NOTE: replacers are functions — replacement strings containing `$`
+      // (e.g. `$A$1` print areas, `$` in employee names) would otherwise be
+      // reinterpreted as `$1`/`$&` backreferences and corrupt the XML.
+      const replaceCell = (body: string, col: string, rowNum: number, xml: string) => {
+        const re1 = new RegExp(`<c r="${col}${rowNum}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
+        const re2 = new RegExp(`<c r="${col}${rowNum}"[^>]*\/>`);
+        let out = body.replace(re1, () => xml);
+        out = out.replace(re2, () => xml);
+        return out;
+      };
+      const r2 = (x: number) => Math.round(x * 100) / 100;
+
+      const built: { pageIdx: number; xml: string; count: number }[] = [];
+
+      for (const pageIdx of sel) {
         const data = pages[pageIdx];
-        const zip = await JSZip.loadAsync(templateBuf);
-        let sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
+        let sheet = templateSheet;
 
         // Data rows 14-19 — only the first `data.length` rows carry employees;
         // the rest stay blank (cleared temp sample text) so the printed layout
@@ -637,22 +928,9 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         const FIRST_ROW = 14;
         const NUM_ROWS = PAGE;
 
-        // Helper: escape XML special chars
-        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-        // Helper: replace a cell in a row body by column letter
-        const replaceCell = (body: string, col: string, rowNum: number, xml: string) => {
-          const re1 = new RegExp(`<c r="${col}${rowNum}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
-          const re2 = new RegExp(`<c r="${col}${rowNum}"[^>]*\/>`);
-          let out = body.replace(re1, xml);
-          out = out.replace(re2, xml);
-          return out;
-        };
-
         // Column totals — written into "Sub-total for this page" (row 25) and
         // "Total this page/Grand Total" (row 27) after the data rows are filled.
         const totals: Record<string, number> = { J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 };
-        const r2 = (x: number) => Math.round(x * 100) / 100;
 
         // Process ALL 6 rows: first clear everything, then fill encoded employees
         for (let idx = 0; idx < NUM_ROWS; idx++) {
@@ -705,15 +983,15 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           //   O (15) = (13) × 0.12   RLIP                     M × 0.12
           //   P (16) = (13)+(14)+(15) Total Monthly Req.      M + N + O
           //   Q (17) = (16) × months Current Year Req.        P × months
-          //   R (18) = (13) × months  MYB + YEB Differential  M × months
+          //   R (18) = (13) × 2       MYB and/or YEB Differential  M × 2
           //   S (19) = (17)+(18)      Total Funding Req.      Q + R
           const mVal = r2(appRate - rate);
           const nVal = r2(mVal * 0.025);
           const oVal = r2(mVal * 0.12);
           const pVal = r2(mVal + nVal + oVal);
           const qVal = r2(pVal * months);
-          // R (18) MYB and/or YEB Differential = (13) Sal. Differential × assigned months
-          const rrVal = r2(mVal * months);
+          // R (18) MYB and/or YEB Differential = (13) Sal. Differential × 2
+          const rrVal = r2(mVal * 2);
           const sVal = r2(qVal + rrVal);
           totals.J = r2(totals.J + rate);
           totals.L = r2(totals.L + appRate);
@@ -733,8 +1011,8 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           rowBody = replaceCell(rowBody, 'P', r, `<c r="P${r}" s="58"><f>M${r}+N${r}+O${r}</f><v>${r2(pVal)}</v></c>`);
           // Q (17) = P × months (Current Year Requirements)
           rowBody = replaceCell(rowBody, 'Q', r, `<c r="Q${r}" s="57"><f>P${r}*${months}</f><v>${r2(qVal)}</v></c>`);
-          // R (18) = (13) × assigned months (MYB + YEB Differential)
-          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>M${r}*${months}</f><v>${r2(rrVal)}</v></c>`);
+          // R (18) = (13) × 2 (MYB and/or YEB Differential)
+          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>M${r}*2</f><v>${r2(rrVal)}</v></c>`);
           // S (19) = Q + R (Total Funding Requirements)
           rowBody = replaceCell(rowBody, 'S', r, `<c r="S${r}" s="57"><f>Q${r}+R${r}</f><v>${r2(sVal)}</v></c>`);
         } else {
@@ -751,13 +1029,13 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           }
         }
 
-        sheet = sheet.replace(rowMatch[0], rowMatch[1] + rowBody + rowMatch[3]);
+        sheet = sheet.replace(rowMatch[0], () => rowMatch[1] + rowBody + rowMatch[3]);
       }
 
       // ── Sub-total for this page (row 25) & Total this page/Grand Total (row 27) ──
-      // Each page is its own workbook, so the columns under rows 14-19 replace
-      // the template's sample figures. Row 26 (Total previous page) stays
-      // blank — nothing is carried forward between pages.
+      // Each sheet is one page, so the SUMs cover that sheet's own rows
+      // 14-19. Row 26 (Total previous page) stays blank — nothing is carried
+      // forward between sheets.
       const totalCols = ['J', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'] as const;
       for (const trow of [25, 27]) {
         const tRowRe = new RegExp(`(<row r="${trow}"[^>]*>)(.*?)(<\/row>)`, 's');
@@ -768,62 +1046,160 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           const cell = `<c r="${col}${trow}" s="97"><f>SUM(${col}14:${col}19)</f><v>${totals[col]}</v></c>`;
           const re1 = new RegExp(`<c r="${col}${trow}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
           const re2 = new RegExp(`<c r="${col}${trow}"[^>]*\/>`);
-          let out = tBody.replace(re1, cell);
-          out = out.replace(re2, cell);
-          if (out === tBody) out = tBody.replace(`<c r="M${trow}"`, cell + `<c r="M${trow}"`);
+          let out = tBody.replace(re1, () => cell);
+          out = out.replace(re2, () => cell);
+          if (out === tBody) out = tBody.replace(`<c r="M${trow}"`, () => cell + `<c r="M${trow}"`);
           tBody = out;
         }
-        sheet = sheet.replace(tRowMatch[0], tRowMatch[1] + tBody + tRowMatch[3]);
+        sheet = sheet.replace(tRowMatch[0], () => tRowMatch[1] + tBody + tRowMatch[3]);
+      }
+
+      // ── "Page X of Y" stamp (S1) — global page numbers across the whole list ──
+      {
+        const stamp = esc(`Page ${pageIdx + 1} of ${pages.length}`);
+        const row1Re = /(<row r="1"[^>]*>)(.*?)(<\/row>)/s;
+        const row1Match = sheet.match(row1Re);
+        if (row1Match) {
+          const row1Body = replaceCell(row1Match[2], 'S', 1, `<c r="S1" s="6" t="inlineStr"><is><t>${stamp}</t></is></c>`);
+          sheet = sheet.replace(row1Match[0], () => row1Match[1] + row1Body + row1Match[3]);
+        }
+      }
+
+      // ── A4 reclassification title for the active category (style s="16"
+      // kept from the template; shared-string ref replaced with inline text)
+      {
+        const row4Re = /(<row r="4"[^>]*>)(.*?)(<\/row>)/s;
+        const row4Match = sheet.match(row4Re);
+        if (row4Match) {
+          const row4Body = replaceCell(row4Match[2], 'A', 4, `<c r="A4" s="16" t="inlineStr"><is><t>${esc(catMeta.title)}</t></is></c>`);
+          sheet = sheet.replace(row4Match[0], () => row4Match[1] + row4Body + row4Match[3]);
+        }
+      }
+
+      // ── A10 Education label for the active STACODE range (style s="25"
+      // kept from the template; shared-string ref replaced with inline text)
+      if (eduLabel) {
+        const row10Re = /(<row r="10"[^>]*>)(.*?)(<\/row>)/s;
+        const row10Match = sheet.match(row10Re);
+        if (row10Match) {
+          const row10Body = replaceCell(row10Match[2], 'A', 10, `<c r="A10" s="25" t="inlineStr"><is><t>${esc(eduLabel)}</t></is></c>`);
+          sheet = sheet.replace(row10Match[0], () => row10Match[1] + row10Body + row10Match[3]);
+        }
+      }
+
+      built.push({ pageIdx, xml: sheet, count: data.length });
+      } // end per-page fill loop
+
+      // ── Assemble: one sheet per selected page in a single workbook ──
+      // Sheets carry the Annex R-1 name for the active category + level
+      // (e.g. "Annex R-1 PAL for MT ELEM"); extra pages get a " pN" suffix
+      // (Excel caps names at 31 chars). Without a level tab the template's
+      // own sheet name is kept and clones fall back to "Page N".
+      // The first selected page reuses sheet1 (keeps the print area and
+      // printer settings); the rest become sheet2, sheet3, …
+      const sheetBase = level ? palSheetBase(palCategory, level) : null;
+      zip.file('xl/worksheets/sheet1.xml', built[0].xml);
+      const cloneNames: string[] = [];
+      for (let k = 1; k < built.length; k++) {
+        const n = k + 1;
+        const nm = sheetBase ? palSheetName(sheetBase, n) : `Page ${built[k].pageIdx + 1}`;
+        cloneNames.push(nm);
+        zip.file(`xl/worksheets/sheet${n}.xml`, built[k].xml);
+        // Point the clone at the template's printer settings so pageSetup
+        // keeps working (same paper/scale/orientation as sheet1).
+        if (sheetRelsTpl) zip.file(`xl/worksheets/_rels/sheet${n}.xml.rels`, sheetRelsTpl);
+      }
+
+      // [Content_Types].xml — register each cloned sheet part.
+      {
+        const ctRaw = await zip.file('[Content_Types].xml')!.async('string');
+        let extra = '';
+        for (let k = 1; k < built.length; k++) {
+          const n = k + 1;
+          extra += `<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`;
+        }
+        zip.file('[Content_Types].xml', ctRaw.replace(
+          /(<Override PartName="\/xl\/worksheets\/sheet1\.xml"[^>]*>)/,
+          (_m, g1) => `${g1}${extra}`,
+        ));
+      }
+
+      // xl/_rels/workbook.xml.rels — one worksheet relationship per clone.
+      // xl/workbook.xml — <sheets> entries + per-sheet Print_Area.
+      const ridFor: number[] = [];
+      {
+        const relsRaw = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
+        const used = [...relsRaw.matchAll(/Id="rId(\d+)"/g)].map((m) => parseInt(m[1], 10));
+        let nextRId = used.length > 0 ? Math.max(...used) + 1 : 1;
+        let extraRels = '';
+        for (let k = 1; k < built.length; k++) {
+          const n = k + 1;
+          ridFor.push(nextRId);
+          extraRels += `<Relationship Id="rId${nextRId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/>`;
+          nextRId++;
+        }
+        zip.file('xl/_rels/workbook.xml.rels', relsRaw.replace(/(<\/Relationships\s*>)/, (_m, g1) => `${extraRels}${g1}`));
+      }
+      {
+        const wbSheetsRaw = await zip.file('xl/workbook.xml')!.async('string');
+        const usedIds = [...wbSheetsRaw.matchAll(/<sheet[^>]*sheetId="(\d+)"/g)].map((m) => parseInt(m[1], 10));
+        let nextSheetId = usedIds.length > 0 ? Math.max(...usedIds) + 1 : 2;
+        let extraSheets = '';
+        let extraNames = '';
+        for (let k = 1; k < built.length; k++) {
+          const n = k + 1;
+          const nm = cloneNames[k - 1];
+          extraSheets += `<sheet name="${nm}" sheetId="${nextSheetId}" r:id="rId${ridFor[k - 1]}"/>`;
+          // localSheetId is the 0-based sheet index → k for the k-th clone.
+          extraNames += `<definedName name="_xlnm.Print_Area" localSheetId="${k}">'${nm}'!$A$1:$V$38</definedName>`;
+          nextSheetId++;
+        }
+        let patchedWb2 = wbSheetsRaw.replace(/(<\/sheets\s*>)/, (_m, g1) => `${extraSheets}${g1}`);
+        // Rename sheet1 to the Annex R-1 name for this category + level, and
+        // point its Print_Area at the new name (clones already use theirs).
+        if (sheetBase) {
+          patchedWb2 = patchedWb2.replace(/(<sheet name=")[^"]*(" sheetId="1"[^>]*\/>)/, (_m, g1, g2) => `${g1}${sheetBase}${g2}`);
+          patchedWb2 = patchedWb2.replace(/(<definedName name="_xlnm\.Print_Area" localSheetId="0">')[^']*(')/, (_m, g1, g2) => `${g1}${sheetBase}${g2}`);
+        }
+        if (extraNames) {
+          if (/<\/definedNames\s*>/.test(patchedWb2)) {
+            patchedWb2 = patchedWb2.replace(/(<\/definedNames\s*>)/, (_m, g1) => `${extraNames}${g1}`);
+          } else {
+            patchedWb2 = patchedWb2.replace(/(<\/workbook\s*>)/, (_m, g1) => `<definedNames>${extraNames}</definedNames>${g1}`);
+          }
+        }
+        // ── "Set precision as displayed" (Excel Options > Advanced > When
+        // calculating this workbook) ──
+        // In OOXML this checkbox is <calcPr fullPrecision="0"/> (false = use
+        // displayed values instead of stored values). fullCalcOnLoad forces a
+        // full recalculation on open. Leave <workbookPr/> untouched.
+        if (/<calcPr[^>]*\/?>/.test(patchedWb2)) {
+          patchedWb2 = patchedWb2.replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1" fullPrecision="0"/>');
+        } else {
+          patchedWb2 = patchedWb2.replace(/(<\/workbook\s*>)/, '<calcPr calcId="191029" fullCalcOnLoad="1" fullPrecision="0"/>$1');
+        }
+        zip.file('xl/workbook.xml', patchedWb2);
       }
 
       // Write back to zip — formulas need recalculation on open so M-S stay
       // correct after the user fills G/H/K/L in Excel.
-      zip.file('xl/worksheets/sheet1.xml', sheet);
-      // ── Excel precision-as-displayed (round to nearest hundredths) ──
-      // Workbook-level <calcPr> forces Excel to recompute on open using the
-      // 'Precision as displayed' behaviour: every numeric value is rounded to
-      // the number of decimals shown in its cell format (here: 2 decimals).
-      const wbRaw = await zip.file('xl/workbook.xml')!.async('string');
-      zip.file('xl/workbook.xml', wbRaw
-        .replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>')
-        .replace(/<workbookPr[^>]*\/?>/, '<workbookPr calcPrFullCalcOnLoad="1"/>'));
-
-      // Styles: add a 2-decimal currency format (numFmt id=99) and a matching
-      // cellXfs entry (xf id=99) so Excel treats all our monetary cells as
-      // "precision as displayed" with 2 decimals. Excel's calculation engine
-      // then rounds every result to the nearest hundredth.
-      const stylesXml = await zip.file('xl/styles.xml')!.async('string');
-      let patchedStyles = stylesXml;
-      if (!/<numFmts/i.test(stylesXml)) {
-        patchedStyles = patchedStyles.replace(
-          /(<\/numFmts>)/i,
-          '<numFmt numFmtId="99" formatCode="#,##0.00;;;@"/>$1',
-        );
-      }
-      if (!/<xf[^>]*\bid="99"/.test(patchedStyles)) {
-        patchedStyles = patchedStyles.replace(
-          /(<\/cellXfs>)/i,
-          '<xf numFmtId="99" builtinId="0" applyNumberFormat="1"/>$1',
-        );
-      }
-      zip.file('xl/styles.xml', patchedStyles);
+      // NOTE: styles are intentionally left exactly as the template's. Do NOT
+      // append custom xf/numFmt entries here — an xf without a matching
+      // numFmt (or a cellXfs whose count doesn't match its children) makes
+      // Excel report "a problem with some content" and offer repair.
+      // Precision-as-displayed already comes from <calcPr fullPrecision="0"/>.
 
       const outBuf = await zip.generateAsync({ type: 'blob' });
-      const pgTag = pages.length > 1 ? `_page${pageIdx + 1}of${pages.length}` : '';
-      const fname = `PAL_${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}${pgTag}.xlsx`;
+      const scopeTag = sel.length === pages.length ? '' : sel.length === 1 ? `_p${sel[0] + 1}` : '_custom';
+      const fname = `PAL_${catMeta.fileTag}${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}${scopeTag}.xlsx`;
       saveAs(outBuf, fname);
-      anySaved = true;
-      setMessage({ tone: 'ok', text: `Exported page ${pageIdx + 1} of ${pages.length} (${data.length} employee${data.length === 1 ? '' : 's'}) to ${fname}. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
-      // Yield to the browser event loop so the file-write completes before
-      // saving the next page. Without this, rapid sequential saveAs calls can
-      // drop pages on slower machines.
-      if (pageIdx + 1 < pages.length) await new Promise((r) => setTimeout(r, 120));
-      }
+      const totalEmps = built.reduce((a, b) => a + b.count, 0);
+      const sheetList = built.map((b) => b.pageIdx + 1).join(', ');
+      setMessage({ tone: 'ok', text: `Exported ${built.length} page${built.length === 1 ? '' : 's'} (${catMeta.title}; page ${sheetList}; ${totalEmps} employee${totalEmps === 1 ? '' : 's'}) to ${fname} — one sheet per page. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
     } catch (err) {
       setMessage({ tone: 'err', text: `Export failed: ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       setExporting(false);
-      if (!anySaved) setMessage(null);
     }
   }
 
@@ -831,54 +1207,78 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
 
   return (
     <div className="h-full flex flex-col gap-4">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-black tracking-tight text-slate-800 dark:text-white flex items-center gap-2">
-            <ListTree className="w-5 h-5 text-emerald-600" />
-            Plantilla Allocation List
-            {level && (
-              <span className="ml-1 px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-teal-700 text-[10px] font-bold tracking-wide">
-                {PAL_LEVELS[level].short} · STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <ListTree className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 className="text-lg font-extrabold tracking-tight text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
+              Plantilla Allocation List
+              <span className="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold tracking-wide">
+                {catMeta.title}
               </span>
-            )}
-          </h1>
+              {level && (
+                <span className="px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-teal-700 text-[10px] font-bold tracking-wide">
+                  {PAL_LEVELS[level].short} · STACODE {String(PAL_LEVELS[level].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[level].range[1]).padStart(3, '0')}
+                </span>
+              )}
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              {divisionLabel.division}{divisionLabel.region ? ` · ${divisionLabel.region}` : ''} · 6 employees per printed page
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={clearRows} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={clearRows} disabled={rows.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
             <Trash2 className="w-3.5 h-3.5" /> Clear
           </button>
-          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
             Months:
             <input type="number" min={1} max={24} value={months} onChange={(e) => setMonths(Math.max(1, Math.min(24, parseInt(e.target.value) || 12)))}
-              className="w-14 px-2 py-1.5 rounded-md border border-slate-200 text-center text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
+              className="w-14 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-center text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
           </label>
-          <button onClick={exportExcel} disabled={rows.length === 0 || exporting} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          <button onClick={() => { setExportScope('all'); setShowExportDlg(true); }} disabled={rows.length === 0 || exporting} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Export Excel
           </button>
-          <button onClick={openNewEmp} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+          <button onClick={openNewEmp} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
             <UserPlus className="w-3.5 h-3.5 text-emerald-600" /> New Employee
           </button>
-          <button onClick={addBlankRow} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors">
+          <button onClick={addBlankRow} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 shadow-sm transition-colors">
             <Plus className="w-3.5 h-3.5" /> Add Row
           </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 mr-1">School Level</span>
-        <button type="button" onClick={() => setLevel(null)}
-          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${level === null ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
-          All Levels
-        </button>
-        {PAL_LEVEL_ITEMS.map((it) => {
-          const active = level === it.key;
-          return (
-            <button key={it.key} type="button" onClick={() => setLevel(it.key)}
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${active ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
-              {it.short} · STACODE {String(PAL_LEVELS[it.key].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[it.key].range[1]).padStart(3, '0')}
-            </button>
-          );
-        })}
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 px-4 py-3 flex flex-col md:flex-row md:items-center gap-x-8 gap-y-3 shadow-sm">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 w-28 shrink-0">Reclassification</span>
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
+            {PAL_CATEGORIES.map((c) => {
+              const active = palCategory === c.key;
+              return (
+                <button key={c.key} type="button" onClick={() => setPalCategory(c.key)}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-semibold transition-all ${active ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+                  {c.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 w-28 shrink-0">School Level</span>
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
+            {PAL_LEVEL_ITEMS.map((it) => {
+              const active = level === it.key;
+              return (
+                <button key={it.key} type="button" onClick={() => setLevel(it.key)}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-semibold transition-all whitespace-nowrap ${active ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+                  {it.short} · STACODE {String(PAL_LEVELS[it.key].range[0]).padStart(3, '0')}–{String(PAL_LEVELS[it.key].range[1]).padStart(3, '0')}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {psipopLoading ? (
@@ -912,47 +1312,106 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       <form className="flex flex-wrap items-center gap-x-4 gap-y-2" onSubmit={(e) => { e.preventDefault(); handleQuickEncode(); }}>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-          <input ref={quickRef} value={quickEmpno} onChange={(e) => setQuickEmpno(e.target.value)} placeholder="Type EMPNO, press Enter to add…"
-            className="w-full pl-10 pr-4 py-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
+          <input ref={quickRef} value={quickEmpno} onChange={(e) => { setQuickEmpno(e.target.value); setQuickOpen(true); }} onFocus={() => setQuickOpen(true)} onBlur={() => setTimeout(() => setQuickOpen(false), 150)}
+            placeholder="Search name or EMPNO — Enter to add…"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 placeholder:text-slate-400" />
+          {/* Name suggestions */}
+          {quickOpen && quickQuery && !resolving && suggestions.length > 0 && (
+            <div className="absolute z-30 mt-1.5 w-full max-h-64 overflow-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl py-1">
+              {suggestions.map((s) => (
+                <button
+                  type="button"
+                  key={s.id}
+                  onClick={() => addSuggestion(s)}
+                  onMouseDown={(ev) => ev.preventDefault()}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover:bg-emerald-50/70 dark:hover:bg-emerald-900/20 transition-colors"
+                >
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{incumbentName(s)}</span>
+                  <span className="font-mono text-[10px] text-slate-400 dark:text-slate-500 shrink-0">{employeeNo(s)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {quickOpen && quickQuery && !resolving && !/^\d+$/.test(quickQuery) && suggestions.length === 0 && (
+            <div className="absolute z-30 mt-1.5 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl px-3 py-2.5">
+              <p className="text-xs text-slate-400">No matching employee{quickQuery.length < 2 ? ' — keep typing…' : ` — try a different name or an EMPNO`}</p>
+            </div>
+          )}
         </div>
-        <button type="submit" disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center gap-1.5 px-6 py-3 rounded-lg bg-slate-800 text-white text-sm font-medium hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        <button type="submit" disabled={resolving || !quickEmpno.trim()} className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold hover:bg-slate-700 dark:hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors">
           {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Add
         </button>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400 pl-3 border-l border-slate-200 dark:border-slate-700">
-          <span><strong className="text-slate-700 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
-          <span><strong className="text-slate-700 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
-          <span className="text-emerald-600"><strong>{stats.withItem}</strong> with PSIPOP item</span>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400 pl-3 border-l border-slate-200 dark:border-slate-700 tabular-nums">
+          <span><strong className="text-slate-800 dark:text-white">{stats.total}</strong> row{stats.total === 1 ? '' : 's'}</span>
+          <span><strong className="text-slate-800 dark:text-white">{stats.filled}</strong> employee{stats.filled === 1 ? '' : 's'} matched</span>
+          <span className="text-emerald-600 dark:text-emerald-400"><strong>{stats.withItem}</strong> with PSIPOP item</span>
           {stats.missingPsipop > 0 && <span className="text-amber-600"><strong>{stats.missingPsipop}</strong> missing item no.</span>}
           {stats.notFound > 0 && <span className="text-rose-600"><strong>{stats.notFound}</strong> EMPNO not found</span>}
         </div>
       </form>
 
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex-1 min-h-0 flex flex-col">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex-1 min-h-0 flex flex-col shadow-sm">
         {rows.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center text-center">
+          <div className="flex-1 flex items-center justify-center text-center px-6">
             <div>
-              <ListTree className="w-10 h-10 mx-auto mb-3 text-slate-200 dark:text-slate-700" />
-              <p className="text-sm text-slate-400">No rows yet. Type an EMPNO above (or click Add Row) to start encoding.</p>
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                <ListTree className="w-6 h-6 text-slate-300 dark:text-slate-600" />
+              </div>
+              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No rows yet</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Search a name or type an EMPNO above (or click Add Row) to start encoding. Rows autosave to this division's list in PocketBase.</p>
+            </div>
+          </div>
+        ) : filteredRows.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-center px-6">
+            <div>
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                <Search className="w-6 h-6 text-slate-300 dark:text-slate-600" />
+              </div>
+              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No rows match &ldquo;{rowFilter}&rdquo;</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Clear the filter to see all {rows.length} encoded row{rows.length === 1 ? '' : 's'}.</p>
+              <button type="button" onClick={() => applyRowFilter('')} className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">
+                <X className="w-3.5 h-3.5" /> Clear filter
+              </button>
             </div>
           </div>
         ) : (
           <>
+          {/* Find box + save status */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              {rowFilter ? (
+                <>{filteredRows.length} of {rows.length} row{rows.length === 1 ? '' : 's'} match &ldquo;{rowFilter}&rdquo;</>
+              ) : (
+                <><strong className="text-slate-700 dark:text-slate-200">{rows.length}</strong> encoded row{rows.length === 1 ? '' : 's'} · autosaved to PocketBase ({palCategory} · {level ? PAL_LEVELS[level].label : ''})</>
+              )}
+            </p>
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input value={rowFilter} onChange={(e) => applyRowFilter(e.target.value)} placeholder="Find by name, EMPNO or item no…"
+                className="w-full pl-8 pr-7 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 focus:border-emerald-400 placeholder:text-slate-400" />
+              {rowFilter && (
+                <button type="button" onClick={() => applyRowFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
           <div className="relative flex-1 min-h-0">
             <div className="absolute inset-0 overflow-auto">
-            <table className="w-full h-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th className="text-left px-4 py-3 font-medium w-32">EMPNO</th>
-                  <th className="text-left px-4 py-3 font-medium min-w-[17rem]">Item No. (per latest PSIPOP) <span className="text-slate-400 normal-case">(1)</span></th>
-                  <th className="text-left px-4 py-3 font-medium">Org. Code <span className="text-slate-400 normal-case">(2)</span></th>
-                  <th className="text-left px-4 py-3 font-medium">Name of Incumbent <span className="text-slate-400 normal-case">(5)</span></th>
-                  <th className="text-left px-4 py-3 font-medium">Position Title <span className="text-slate-400 normal-case">(6)</span></th>
-                  <th className="text-left px-4 py-3 font-medium min-w-[12rem]">DepEd Approved Position <span className="text-slate-400 normal-case">(7)</span></th>
-                  <th className="text-center px-4 py-3 font-medium">SG/Step <span className="text-slate-400 normal-case">(9)</span></th>
-                  <th className="text-right px-4 py-3 font-medium">Monthly Rate <span className="text-slate-400 normal-case">(10)</span></th>
-                  <th className="text-center px-3 py-2.5 font-medium">Approved SG <span className="text-slate-400 normal-case">(11)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium">Approved Rate <span className="text-slate-400 normal-case">(12)</span></th>
-                  <th className="text-right px-3 py-2.5 font-medium"></th>
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-50/95 dark:bg-slate-800/95 backdrop-blur text-slate-500 dark:text-slate-400 text-[10px] font-semibold uppercase tracking-wider border-b border-slate-200 dark:border-slate-700">
+                  <th className="text-left px-4 py-2.5 w-32">EMPNO</th>
+                  <th className="text-left px-4 py-2.5 min-w-[17rem]">Item No. (per latest PSIPOP) <span className="text-slate-400 normal-case font-medium">(1)</span></th>
+                  <th className="text-left px-4 py-2.5">Org. Code <span className="text-slate-400 normal-case font-medium">(2)</span></th>
+                  <th className="text-left px-4 py-2.5">Name of Incumbent <span className="text-slate-400 normal-case font-medium">(5)</span></th>
+                  <th className="text-left px-4 py-2.5">Position Title <span className="text-slate-400 normal-case font-medium">(6)</span></th>
+                  <th className="text-left px-4 py-2.5 min-w-[12rem]">DepEd Approved Position <span className="text-slate-400 normal-case font-medium">(7)</span></th>
+                  <th className="text-center px-4 py-2.5">SG/Step <span className="text-slate-400 normal-case font-medium">(9)</span></th>
+                  <th className="text-right px-4 py-2.5">Monthly Rate <span className="text-slate-400 normal-case font-medium">(10)</span></th>
+                  <th className="text-center px-3 py-2.5">Approved SG <span className="text-slate-400 normal-case font-medium">(11)</span></th>
+                  <th className="text-right px-3 py-2.5">Approved Rate <span className="text-slate-400 normal-case font-medium">(12)</span></th>
+                  <th className="text-right px-3 py-2.5"></th>
                 </tr>
               </thead>
               <tbody>
@@ -983,53 +1442,18 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                           : <span className="inline-flex items-center gap-1 text-rose-600 text-xs"><UserX className="w-3.5 h-3.5" /> not found</span>}
                       </td>
                       <td className="px-4 py-3 text-[13px] text-slate-700 dark:text-slate-200">{r.positionTitle || <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}</td>
-                      <td className="px-4 py-3 relative">
-                        <div className="relative">
+                      <td className="px-4 py-3">
+                        <div>
                           <input type="text" value={approvedPosDropdown === r.uid ? approvedPosSearch : (r.approvedPosition || '')} placeholder="—"
-                            onFocus={() => { setApprovedPosDropdown(r.uid); setApprovedPosSearch(r.approvedPosition || ''); }}
+                            onFocus={(e) => openApprovedPos(r.uid, r.approvedPosition || '', e.currentTarget)}
                             onChange={(e) => {
-                              setApprovedPosSearch(e.target.value);
-                              // Keep dropdown open while typing
-                              if (approvedPosDropdown !== r.uid) setApprovedPosDropdown(r.uid);
+                              const v = e.target.value;
+                              if (approvedPosDropdown !== r.uid) openApprovedPos(r.uid, v, e.currentTarget);
+                              else setApprovedPosSearch(v);
                             }}
-                            onBlur={() => setTimeout(() => setApprovedPosDropdown(null), 250)}
+                            onBlur={() => setTimeout(() => closeApprovedPos(), 250)}
+                            onKeyDown={(e) => { if (e.key === 'Escape') { closeApprovedPos(); e.currentTarget.blur(); } }}
                             className="w-full px-2 py-1 rounded-md border border-slate-200 text-[12px] focus:outline-none focus:ring-1 focus:ring-emerald-500/30 focus:border-emerald-400 placeholder:text-slate-300" />
-                          {approvedPosDropdown === r.uid && (
-                            <div className="absolute z-50 top-full left-0 w-72 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg mt-0.5">
-                              {allPositions.filter((p) => {
-                                const q = approvedPosSearch.toUpperCase();
-                                if (!q) return true;
-                                return p.position_title.toUpperCase().includes(q) || p.position_code.toUpperCase().includes(q) || p.position_name.toUpperCase().includes(q);
-                              }).slice(0, 50).map((p) => (
-                                <button key={p.id} type="button"
-                                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                  onClick={() => {
-                                    const sg = p.salary_grade || 0;
-                                    const step1Salary = p.step1 || 0;
-                                    setRows((rs) => rs.map((x) => x.uid === r.uid ? {
-                                      ...x,
-                                      approvedPosition: p.position_title,
-                                      approvedGrade: sg > 0 ? `${sg} S1` : '',
-                                      approvedMonthly: step1Salary,
-                                    } : x));
-                                    setApprovedPosSearch('');
-                                    setApprovedPosDropdown(null);
-                                  }}
-                                  className="w-full text-left px-3 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors border-b border-slate-50 dark:border-slate-700 last:border-0">
-                                  <span className="text-[11px] font-mono text-blue-600 dark:text-blue-300">{p.position_code}</span>
-                                  <span className="text-[12px] text-slate-700 dark:text-slate-200 ml-2">{p.position_title}</span>
-                                  <span className="text-[10px] text-slate-400 ml-1">{p.personnel_category}</span>
-                                </button>
-                              ))}
-                              {allPositions.filter((p) => {
-                                const q = approvedPosSearch.toUpperCase();
-                                if (!q) return true;
-                                return p.position_title.toUpperCase().includes(q) || p.position_code.toUpperCase().includes(q);
-                              }).length === 0 && (
-                                <div className="px-3 py-2 text-[11px] text-slate-400">No positions match "{approvedPosSearch}"</div>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center text-[13px]">{r.grade > 0 ? fmtGradeStep(r.grade, r.step) : '—'}</td>
@@ -1060,10 +1484,48 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           <Pagination pagination={{ page, setPage, totalPages, total: rows.length, pageSize: PAGE_SIZE }} label="employees" />
           </>
         )}
-        <div className="border-t border-slate-100 dark:border-slate-800 px-4 py-2">
-          <p className="text-[10px] text-slate-400 dark:text-slate-500">Rows are saved to the {level ?? 'selected'} allocation list in PocketBase (pal_lists — one record per region + division + school level) until you clear them. The list shows 6 employees per page to match the printed PAL layout; Export produces the DBM-DepEd Annex R-1 PAL form — fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) and columns M-S compute automatically.</p>
-        </div>
       </div>
+
+      {/* Approved-position menu — fixed overlay so the table's scroll box and
+          pagination footer can never clip it. Anchored to the focused input. */}
+      {approvedPosDropdown && apprAnchor && (() => {
+        const row = rows.find((x) => x.uid === approvedPosDropdown);
+        if (!row) return null;
+        const matches = allPositions.filter((p) => {
+          const q = approvedPosSearch.toUpperCase();
+          if (!q) return true;
+          return p.position_title.toUpperCase().includes(q) || p.position_code.toUpperCase().includes(q) || p.position_name.toUpperCase().includes(q);
+        }).slice(0, 50);
+        return (
+          <div data-appr-dropdown
+            className="fixed z-[60] w-72 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl"
+            style={{ left: apprAnchor.left, ...(apprAnchor.top != null ? { top: apprAnchor.top } : { bottom: apprAnchor.bottom }) }}>
+            {matches.map((p) => (
+              <button key={p.id} type="button"
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                onClick={() => {
+                  const sg = p.salary_grade || 0;
+                  const step1Salary = p.step1 || 0;
+                  setRows((rs) => rs.map((x) => x.uid === row.uid ? {
+                    ...x,
+                    approvedPosition: p.position_title,
+                    approvedGrade: sg > 0 ? `${sg} S1` : '',
+                    approvedMonthly: step1Salary,
+                  } : x));
+                  closeApprovedPos();
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors border-b border-slate-50 dark:border-slate-700 last:border-0">
+                <span className="text-[11px] font-mono text-blue-600 dark:text-blue-300">{p.position_code}</span>
+                <span className="text-[12px] text-slate-700 dark:text-slate-200 ml-2">{p.position_title}</span>
+                <span className="text-[10px] text-slate-400 ml-1">{p.personnel_category}</span>
+              </button>
+            ))}
+            {matches.length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-slate-400">No positions match "{approvedPosSearch}"</div>
+            )}
+          </div>
+        );
+      })()}
 
       {pickerFor && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm">
@@ -1110,6 +1572,56 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
         </div>
       )}
 
+      {showExportDlg && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh] bg-slate-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                  <Download className="w-4 h-4 text-emerald-600" /> Export PAL to Excel
+                </h3>
+                <p className="text-[11px] text-slate-500">{catMeta.title} · {exportInfo.count} employee{exportInfo.count === 1 ? '' : 's'} · {exportInfo.totalPages} page{exportInfo.totalPages === 1 ? '' : 's'} · one sheet per page, single file</p>
+              </div>
+              <button onClick={() => setShowExportDlg(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="px-4 py-3 space-y-2">
+              <label className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${exportScope === 'current' ? 'border-emerald-400 bg-emerald-50/60 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}>
+                <input type="radio" name="pal-export-scope" checked={exportScope === 'current'} onChange={() => setExportScope('current')} className="accent-emerald-600" />
+                <span className="text-[13px] text-slate-700 dark:text-slate-200">Current page only <span className="text-slate-400">— page {exportInfo.cur} of {exportInfo.totalPages}</span></span>
+              </label>
+              <label className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${exportScope === 'all' ? 'border-emerald-400 bg-emerald-50/60 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}>
+                <input type="radio" name="pal-export-scope" checked={exportScope === 'all'} onChange={() => setExportScope('all')} className="accent-emerald-600" />
+                <span className="text-[13px] text-slate-700 dark:text-slate-200">All pages <span className="text-slate-400">— {exportInfo.totalPages} sheet{exportInfo.totalPages === 1 ? '' : 's'}</span></span>
+              </label>
+              <label className={`block px-3 py-2 rounded-lg border transition-colors ${exportScope === 'custom' ? 'border-emerald-400 bg-emerald-50/60 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                <span className="flex items-center gap-2.5 cursor-pointer" onClick={() => setExportScope('custom')}>
+                  <input type="radio" name="pal-export-scope" checked={exportScope === 'custom'} onChange={() => setExportScope('custom')} className="accent-emerald-600" />
+                  <span className="text-[13px] text-slate-700 dark:text-slate-200">Custom pages</span>
+                </span>
+                <input value={customSpec} onChange={(e) => { setCustomSpec(e.target.value); setExportScope('custom'); }} onFocus={() => setExportScope('custom')}
+                  placeholder="e.g. 1, 3, 5-7"
+                  className="mt-2 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 bg-white dark:bg-slate-800" />
+                <span className="mt-1 block text-[11px] text-slate-400">
+                  {customSpec.trim()
+                    ? exportInfo.custom.length > 0
+                      ? `Sheets for page${exportInfo.custom.length === 1 ? '' : 's'} ${exportInfo.custom.map((i) => i + 1).join(', ')}`
+                      : 'No valid pages — use numbers/ranges like "1, 3, 5-7".'
+                    : `1–${exportInfo.totalPages}, comma-separated; ranges allowed.`}
+                </span>
+              </label>
+            </div>
+            <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-end gap-2">
+              <button onClick={() => setShowExportDlg(false)} className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
+              <button onClick={exportExcel} disabled={exporting || (exportScope === 'custom' && exportInfo.custom.length === 0)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                Export {exportScope === 'current' ? 'current page' : exportScope === 'all' ? (exportInfo.totalPages === 1 ? '1 sheet' : `all ${exportInfo.totalPages} sheets`) : `${exportInfo.custom.length} sheet${exportInfo.custom.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showNewEmp && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[8vh] bg-slate-900/40 backdrop-blur-sm">
           <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -1118,7 +1630,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                 <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
                   <UserPlus className="w-4 h-4 text-emerald-600" /> Create New Employee
                 </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">Adds a row to this Plantilla Allocation List worksheet — it stays local and is not saved to Employee Records. Type an EMPNO and the name auto-fills from Employee Records.</p>
               </div>
               <button onClick={() => setShowNewEmp(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="w-4 h-4" /></button>
             </div>
@@ -1129,11 +1640,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                 </div>
               )}
               <div className="grid grid-cols-3 gap-2">
-                <label className="block col-span-3">
-                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Item No. <span className="text-slate-400 normal-case">(1)</span></span>
-                  <input value={newEmp.itemNumber} onChange={(e) => setNewEmp({ ...newEmp, itemNumber: e.target.value })} placeholder="e.g. 1801-0010-2024 (leave blank to assign later)"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
-                </label>
                 <label className="block col-span-3">
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">EMPNO *</span>
                   <div className="relative">
@@ -1297,11 +1803,6 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                   <span className="block text-[11px] font-medium text-slate-500 mb-1">Approved Rate <span className="text-slate-400 normal-case">(12)</span></span>
                   <input type="number" min={0} value={newEmp.approvedMonthly || ''} onChange={(e) => setNewEmp({ ...newEmp, approvedMonthly: Math.max(0, parseInt(e.target.value) || 0) })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
-                </label>
-                <label className="block col-span-3">
-                  <span className="block text-[11px] font-medium text-slate-500 mb-1">Org. Code (2)</span>
-                  <input value={newEmp.orgCode} onChange={(e) => setNewEmp({ ...newEmp, orgCode: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="e.g. 1801"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400" />
                 </label>
               </div>
             </div>
