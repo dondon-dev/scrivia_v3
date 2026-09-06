@@ -2,7 +2,7 @@
 // All database writes go through Supabase; the batch size keeps each round-trip
 // within PostgREST limits for 50k+ record uploads.
 
-import { supabase, fetchAll } from '@/lib/pb';
+import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import type { MatchedRecord } from '@/lib/pliParser';
 
 export interface ImportProgress {
@@ -51,19 +51,33 @@ export async function fetchExistingDeductions(
   if (empnos.length === 0) return map;
 
   // Fetch existing deductions that could match any of the uploaded records.
-  // Scope by empno + dedcode to keep the result set manageable.
+  // Scope by empno + dedcode to keep the result set manageable. Empnos are
+  // queried in safe chunks because PocketBase rejects `.in()` OR-expansions
+  // with ~100+ terms ("Something went wrong while processing your request.").
   const uniqueEmpnos = [...new Set(empnos.filter(Boolean))];
   const uniqueDedcodes = [...new Set(dedcodes.filter(Boolean))];
 
   let rows: { id: string; stacode: string; empno: string; dedcode: string; policyno: string; dedamt: number }[] = [];
   if (uniqueDedcodes.length > 0) {
-    rows = await fetchAll(() =>
-      supabase
-        .from('payroll_deductions')
-        .select('id, stacode, empno, dedcode, policyno, dedamt')
-        .in('empno', uniqueEmpnos)
-        .in('dedcode', uniqueDedcodes),
-    ) as { id: string; stacode: string; empno: string; dedcode: string; policyno: string; dedamt: number }[];
+    const cols = 'id, stacode, empno, dedcode, policyno, dedamt';
+    if (uniqueDedcodes.length <= 60) {
+      rows = (await chunkedIn('empno', uniqueEmpnos, (chunk) =>
+        supabase
+          .from('payroll_deductions')
+          .select(cols)
+          .in('empno', chunk)
+          .in('dedcode', uniqueDedcodes),
+      )) as { id: string; stacode: string; empno: string; dedcode: string; policyno: string; dedamt: number }[];
+    } else {
+      // Too many codes to fit in one filter — empno-scoping alone returns a
+      // superset, and the exact key matching below still resolves correctly.
+      rows = (await chunkedIn('empno', uniqueEmpnos, (chunk) =>
+        supabase
+          .from('payroll_deductions')
+          .select(cols)
+          .in('empno', chunk),
+      )) as { id: string; stacode: string; empno: string; dedcode: string; policyno: string; dedamt: number }[];
+    }
   }
 
   for (const row of rows) {
@@ -85,12 +99,13 @@ export async function fetchEmployeeMap(
   const uniqueStacodes = [...new Set(stacodes.filter(Boolean))];
   if (uniqueStacodes.length === 0) return map;
 
-  const rows = await fetchAll(() =>
+  // Chunk stacodes — PocketBase rejects `.in()` OR-expansions with ~100+ terms.
+  const rows = (await chunkedIn('stacode', uniqueStacodes, (chunk) =>
     supabase
       .from('employees')
       .select('id, stacode, empno')
-      .in('stacode', uniqueStacodes),
-  );
+      .in('stacode', chunk),
+  )) as { id: string; stacode: string; empno: string }[];
 
   for (const row of rows as { id: string; stacode: string; empno: string }[]) {
     const key = `${row.stacode}|${row.empno}`;

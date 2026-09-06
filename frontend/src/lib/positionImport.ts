@@ -376,9 +376,10 @@ export async function processPositionImport(
       () => supabase.from('position_management').select('id,position_code,status').eq('status', 'Active')
     );
     const toDeactivate = allExisting.filter(e => !importedCodes.has(e.position_code.toUpperCase()));
-    for (let i = 0; i < toDeactivate.length; i += BATCH_SIZE) {
-      const batch = toDeactivate.slice(i, i + BATCH_SIZE);
-      const ids = batch.map(b => b.id);
+    // Chunks stay under ~100: PocketBase rejects `.in()` OR-expansions with
+    // ~100+ terms ("Something went wrong while processing your request.").
+    for (let i = 0; i < toDeactivate.length; i += 60) {
+      const ids = toDeactivate.slice(i, i + 60).map(b => b.id);
       const { error } = await supabase.from('position_management').update({ status: 'Inactive', last_updated_at: nowIso }).in('id', ids);
       if (error) errors.push(`Deactivate batch: ${error.message}`);
     }
