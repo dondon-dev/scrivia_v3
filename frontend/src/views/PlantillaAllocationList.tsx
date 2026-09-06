@@ -266,18 +266,29 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   // the whole working sheet so the list survives across devices/sessions.
   const [palRecordId, setPalRecordId] = useState<string | null>(null);
   const [palLoaded, setPalLoaded] = useState(false);
+  // The scope (regcode|divcode|level) that the currently displayed rows belong
+  // to. Guards the debounced save so a tab switch can never write one tab's
+  // rows into another tab's record (which previously mixed data across tabs).
+  const loadedScopeRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
     setPalLoaded(false);
     setPalRecordId(null);
+    loadedScopeRef.current = '';
     const code = scopedCodes?.[0];
     (async () => {
       try {
         if (!code || !level) { setRows([]); return; }
-        const items = await supabase.from('pal_lists').select('*').eq('regcode', code.regcode).eq('divcode', code.divcode).eq('level', level);
+        const scopeKey = `${code.regcode}|${code.divcode}|${level}`;
+        // Most-recently-updated record wins, so a stale duplicate can never
+        // shadow the real one.
+        const items = await supabase.from('pal_lists').select('*')
+          .eq('regcode', code.regcode).eq('divcode', code.divcode).eq('level', level)
+          .order('updated', { ascending: false });
         const rec = (items.data as any[] | null)?.[0] ?? null;
         if (cancelled) return;
+        loadedScopeRef.current = scopeKey;
         if (rec) {
           setPalRecordId(rec.id);
           const parsed = Array.isArray(rec.rows) ? rec.rows as PalRow[] : [];
@@ -303,6 +314,10 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     saveTimer.current = setTimeout(() => {
       const code = scopedCodes?.[0];
       if (!code || !level) return;
+      // Guard: only persist when the displayed rows belong to this tab's scope.
+      // Prevents a stale closure (previous tab's rows + old record id + new
+      // level) from relabeling/corrupting the wrong pal_lists record.
+      if (loadedScopeRef.current !== `${code.regcode}|${code.divcode}|${level}`) return;
       // Never create an empty record on first paint — wait for real content.
       if (!palRecordId && rows.length === 0) return;
       const scope = { regcode: code.regcode, divcode: code.divcode, level };
@@ -406,9 +421,11 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
     };
     const emp = await findEmployeeByEmpno(v, scope, level ? PAL_LEVELS[level].range : null);
     if (emp.outOfLevel) {
+      // Never add an out-of-range employee to this tab — each tab holds only
+      // its own STACODE range (ELEM 001–095, JHS 500–699, SHS 700–701).
       const lv = level ? PAL_LEVELS[level] : null;
-      base.note = `${emp.emp?.stacode ? `STACODE ${emp.emp.stacode}` : 'No STACODE on record'} — outside the ${lv?.label ?? ''} list (STACODE ${lv ? `${String(lv.range[0]).padStart(3, '0')}–${String(lv.range[1]).padStart(3, '0')}` : ''}). Switch to the matching sub-menu to encode this employee.`;
-      setRows((r) => [...r, base]); setResolving(false); setQuickEmpno(''); setPage(9999); quickRef.current?.focus(); return;
+      setMessage({ tone: 'err', text: `${emp.emp?.stacode ? `STACODE ${emp.emp.stacode}` : 'No STACODE on record'} — outside the ${lv?.short ?? ''} tab (STACODE ${lv ? `${String(lv.range[0]).padStart(3, '0')}–${String(lv.range[1]).padStart(3, '0')}` : ''}). Switch to the matching STACODE tab to encode this employee.` });
+      setResolving(false); setQuickEmpno(''); quickRef.current?.focus(); return;
     }
     if (!emp.emp) {
       base.note = `EMPNO ${v} was not found in the current division's Employee Records.`;
@@ -594,60 +611,72 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
   async function exportExcel() {
     const exportable = rows.filter((r) => r.employeeFound || r.itemNumber || r.incumbent);
     if (exportable.length === 0) { setMessage({ tone: 'warn', text: 'Nothing to export yet — encode at least one EMPNO.' }); return; }
-    if (exportable.length > 6) { setMessage({ tone: 'warn', text: 'Template fits 6 rows per page. Only the first 6 will be exported.' }); }
 
     setExporting(true); setMessage(null);
     try {
       const { default: JSZip } = await import('jszip');
       const resp = await fetch('/PAL.xlsx');
       if (!resp.ok) throw new Error('Could not load PAL.xlsx template');
-      const zip = await JSZip.loadAsync(await resp.arrayBuffer());
-      let sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
+      const templateBuf = await resp.arrayBuffer();
 
-      // Data rows 14-19 (template has 6 rows)
-      const FIRST_ROW = 14;
-      const NUM_ROWS = 6;
-      const data = exportable.slice(0, NUM_ROWS);
+      // Per-page export — the PAL template fits 6 employees per page (rows
+      // 14-19). Each page is one workbook so the printed form stays clean.
+      const PAGE = 6;
+      const pages: PalRow[][] = [];
+      for (let i = 0; i < exportable.length; i += PAGE) pages.push(exportable.slice(i, i + PAGE));
+      let anySaved = false;
 
-      // Helper: escape XML special chars
-      const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+        const data = pages[pageIdx];
+        const zip = await JSZip.loadAsync(templateBuf);
+        let sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
 
-      // Helper: replace a cell in a row body by column letter
-      const replaceCell = (body: string, col: string, rowNum: number, xml: string) => {
-        const re1 = new RegExp(`<c r="${col}${rowNum}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
-        const re2 = new RegExp(`<c r="${col}${rowNum}"[^>]*\/>`);
-        let out = body.replace(re1, xml);
-        out = out.replace(re2, xml);
-        return out;
-      };
+        // Data rows 14-19 — only the first `data.length` rows carry employees;
+        // the rest stay blank (cleared temp sample text) so the printed layout
+        // line-up is preserved.
+        const FIRST_ROW = 14;
+        const NUM_ROWS = PAGE;
 
-      // Column totals — written into "Sub-total for this page" (row 25) and
-      // "Total this page/Grand Total" (row 27) after the data rows are filled.
-      const totals: Record<string, number> = { J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 };
-      const r2 = (x: number) => Math.round(x * 100) / 100;
+        // Helper: escape XML special chars
+        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-      // Process ALL 6 rows: first clear everything, then fill encoded employees
-      for (let idx = 0; idx < NUM_ROWS; idx++) {
-        const r = FIRST_ROW + idx;
-        const emp = idx < data.length ? data[idx] : null;
-        const rowRe = new RegExp(`(<row r="${r}"[^>]*>)(.*?)(<\/row>)`, 's');
-        const rowMatch = sheet.match(rowRe);
-        if (!rowMatch) continue;
-        let rowBody = rowMatch[2];
+        // Helper: replace a cell in a row body by column letter
+        const replaceCell = (body: string, col: string, rowNum: number, xml: string) => {
+          const re1 = new RegExp(`<c r="${col}${rowNum}"[^>]*>[^<]*(?:<v>[^<]*<\/v>)?<\/c>`);
+          const re2 = new RegExp(`<c r="${col}${rowNum}"[^>]*\/>`);
+          let out = body.replace(re1, xml);
+          out = out.replace(re2, xml);
+          return out;
+        };
 
-        if (emp) {
-          // ── Fill encoded employee data ──
-          const itemNo = esc(emp.itemNumber || '');
-          const orgCode = esc(emp.orgCode || '');
-          const name = esc(emp.incumbent || '');
-          const posTitle = esc(emp.positionTitle || '');
-          const sgStep = esc(fmtGradeStep(emp.grade, emp.step));
-          const rate = emp.monthly || 0;
+        // Column totals — written into "Sub-total for this page" (row 25) and
+        // "Total this page/Grand Total" (row 27) after the data rows are filled.
+        const totals: Record<string, number> = { J: 0, L: 0, M: 0, N: 0, O: 0, P: 0, Q: 0, R: 0, S: 0 };
+        const r2 = (x: number) => Math.round(x * 100) / 100;
 
-          rowBody = replaceCell(rowBody, 'A', r, `<c r="A${r}" s="50" t="inlineStr"><is><t>${itemNo}</t></is></c>`);
-          rowBody = replaceCell(rowBody, 'B', r, orgCode
-            ? `<c r="B${r}" s="51" t="inlineStr"><is><t>${orgCode}</t></is></c>`
-            : `<c r="B${r}" s="51"/>`);
+        // Process ALL 6 rows: first clear everything, then fill encoded employees
+        for (let idx = 0; idx < NUM_ROWS; idx++) {
+          const r = FIRST_ROW + idx;
+          const emp = idx < data.length ? data[idx] : null;
+          const rowRe = new RegExp(`(<row r="${r}"[^>]*>)(.*?)(<\/row>)`, 's');
+          const rowMatch = sheet.match(rowRe);
+
+          if (!rowMatch) continue;
+          let rowBody = rowMatch[2];
+
+          if (emp) {
+            // Fill encoded employee data
+            const itemNo = esc(emp.itemNumber || '');
+            const orgCode = esc(emp.orgCode || '');
+            const name = esc(emp.incumbent || '');
+            const posTitle = esc(emp.positionTitle || '');
+            const sgStep = esc(fmtGradeStep(emp.grade, emp.step));
+            const rate = emp.monthly || 0;
+
+            rowBody = replaceCell(rowBody, 'A', r, `<c r="A${r}" s="50" t="inlineStr"><is><t>${itemNo}</t></is></c>`);
+            rowBody = replaceCell(rowBody, 'B', r, orgCode
+              ? `<c r="B${r}" s="51" t="inlineStr"><is><t>${orgCode}</t></is></c>`
+              : `<c r="B${r}" s="51"/>`);
           rowBody = replaceCell(rowBody, 'E', r, `<c r="E${r}" s="52" t="inlineStr"><is><t>${name}</t></is></c>`);
           rowBody = replaceCell(rowBody, 'F', r, `<c r="F${r}" s="53" t="inlineStr"><is><t>${posTitle}</t></is></c>`);
           rowBody = replaceCell(rowBody, 'I', r, `<c r="I${r}" s="56" t="inlineStr"><is><t>${sgStep}</t></is></c>`);
@@ -676,14 +705,15 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           //   O (15) = (13) × 0.12   RLIP                     M × 0.12
           //   P (16) = (13)+(14)+(15) Total Monthly Req.      M + N + O
           //   Q (17) = (16) × months Current Year Req.        P × months
-          //   R (18) = (13) × 12      MYB + YEB Differential  M × 12
+          //   R (18) = (13) × months  MYB + YEB Differential  M × months
           //   S (19) = (17)+(18)      Total Funding Req.      Q + R
           const mVal = r2(appRate - rate);
           const nVal = r2(mVal * 0.025);
           const oVal = r2(mVal * 0.12);
           const pVal = r2(mVal + nVal + oVal);
           const qVal = r2(pVal * months);
-          const rrVal = r2(mVal * 12);
+          // R (18) MYB and/or YEB Differential = (13) Sal. Differential × assigned months
+          const rrVal = r2(mVal * months);
           const sVal = r2(qVal + rrVal);
           totals.J = r2(totals.J + rate);
           totals.L = r2(totals.L + appRate);
@@ -703,8 +733,8 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           rowBody = replaceCell(rowBody, 'P', r, `<c r="P${r}" s="58"><f>M${r}+N${r}+O${r}</f><v>${r2(pVal)}</v></c>`);
           // Q (17) = P × months (Current Year Requirements)
           rowBody = replaceCell(rowBody, 'Q', r, `<c r="Q${r}" s="57"><f>P${r}*${months}</f><v>${r2(qVal)}</v></c>`);
-          // R (18) = (13) × 12 (MYB + YEB Differential = Sal. Differential × 12)
-          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>M${r}*12</f><v>${r2(rrVal)}</v></c>`);
+          // R (18) = (13) × assigned months (MYB + YEB Differential)
+          rowBody = replaceCell(rowBody, 'R', r, `<c r="R${r}" s="57"><f>M${r}*${months}</f><v>${r2(rrVal)}</v></c>`);
           // S (19) = Q + R (Total Funding Requirements)
           rowBody = replaceCell(rowBody, 'S', r, `<c r="S${r}" s="57"><f>Q${r}+R${r}</f><v>${r2(sVal)}</v></c>`);
         } else {
@@ -725,9 +755,9 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       }
 
       // ── Sub-total for this page (row 25) & Total this page/Grand Total (row 27) ──
-      // Write the sum of every numeric column into both rows. Row 26 (Total
-      // previous page) stays blank — this template fits one page, so nothing
-      // is carried forward; the template's sample figures are overwritten.
+      // Each page is its own workbook, so the columns under rows 14-19 replace
+      // the template's sample figures. Row 26 (Total previous page) stays
+      // blank — nothing is carried forward between pages.
       const totalCols = ['J', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'] as const;
       for (const trow of [25, 27]) {
         const tRowRe = new RegExp(`(<row r="${trow}"[^>]*>)(.*?)(<\/row>)`, 's');
@@ -752,13 +782,19 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
       const wbRaw = await zip.file('xl/workbook.xml')!.async('string');
       zip.file('xl/workbook.xml', wbRaw.replace(/<calcPr[^>]*\/?>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>'));
       const outBuf = await zip.generateAsync({ type: 'blob' });
-      const fname = `PAL_${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const pgTag = pages.length > 1 ? `_page${pageIdx + 1}of${pages.length}` : '';
+      const fname = `PAL_${(divisionLabel.division.replace(/[^A-Z0-9]+/gi, '_') || 'Division')}_${new Date().toISOString().slice(0, 10)}${pgTag}.xlsx`;
       saveAs(outBuf, fname);
-      setMessage({ tone: 'ok', text: `Exported ${Math.min(exportable.length, 6)} employee${exportable.length === 1 ? '' : 's'} to ${fname}. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
+      anySaved = true;
+      setMessage({ tone: 'ok', text: `Exported page ${pageIdx + 1} of ${pages.length} (${data.length} employee${data.length === 1 ? '' : 's'}) to ${fname}. Fill columns G (DepEd Approved Position), H (Date), K-L (Approved SG/Rate) — columns M-S compute automatically.` });
+      // Give the browser a beat to write the file before the next page.
+      await new Promise((r) => setTimeout(r, 250));
+      }
     } catch (err) {
       setMessage({ tone: 'err', text: `Export failed: ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       setExporting(false);
+      if (!anySaved) setMessage(null);
     }
   }
 
@@ -872,7 +908,8 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
           </div>
         ) : (
           <>
-          <div className="flex-1 min-h-0 overflow-auto">
+          <div className="relative flex-1 min-h-0">
+            <div className="absolute inset-0 overflow-auto">
             <table className="w-full h-full text-sm">
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[11px] uppercase tracking-wider">
@@ -989,6 +1026,7 @@ export default function PlantillaAllocationList({ initialTab }: { initialTab?: P
                 ))}
               </div>
             )}
+            </div>
           </div>
           <Pagination pagination={{ page, setPage, totalPages, total: rows.length, pageSize: PAGE_SIZE }} label="employees" />
           </>

@@ -66,12 +66,16 @@ func main() {
 		e.Router.POST("/api/payroll/generate-periods", requireRole(app, "super_admin", "payroll_admin"), handleGenerateMonthlyPeriods(app))
 		e.Router.GET("/api/payroll/deduction-engine", requireAuth(app), handleDeductionEngineStats(app))
 
-		// Employees
+		// Employees — hardcoded `employees` PocketBase table.
+		// Both GET (query params) and POST (JSON body from supabase.rpc) are
+		// served so Employee Records can never be lost to a method mismatch.
 		e.Router.GET("/api/employees/query", requireAuth(app), handleQueryEmployees(app))
+		e.Router.POST("/api/employees/query", requireAuth(app), handleQueryEmployees(app))
 		e.Router.POST("/api/employees/set-number", requireRole(app, "super_admin", "payroll_admin"), handleSetEmployeeNumber(app))
 
 		// DBF Import/Export
 		e.Router.GET("/api/dbf/table-counts", requireAuth(app), handleDbfTableCounts(app))
+		e.Router.POST("/api/dbf/table-counts", requireAuth(app), handleDbfTableCounts(app))
 		e.Router.POST("/api/dbf/query-dedfile", requireAuth(app), handleQueryDedfile(app))
 		e.Router.POST("/api/dbf/restore", requireRole(app, "super_admin", "payroll_admin"), handleDbfRestore(app))
 
@@ -1139,54 +1143,187 @@ func handleDeductionEngineStats(app *pocketbase.PocketBase) func(e *core.Request
 
 func handleQueryEmployees(app *pocketbase.PocketBase) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
-		page, _ := strconv.Atoi(e.Request.URL.Query().Get("page"))
-		perPage, _ := strconv.Atoi(e.Request.URL.Query().Get("perPage"))
-		search := e.Request.URL.Query().Get("search")
-		stacode := e.Request.URL.Query().Get("stacode")
+		// Accept both GET query params and the POST JSON body sent by
+		// supabase.rpc('query_employees', {...}). The frontend's
+		// useServerPagination sends p_search / p_stacode_min / p_stacode_max /
+		// p_regcode / p_divcodes / p_page / p_page_size / p_count_only.
+		var body struct {
+			PSearch      *string  `json:"p_search"`
+			PStacodeMin  *int     `json:"p_stacode_min"`
+			PStacodeMax  *int     `json:"p_stacode_max"`
+			PScopeColumn *string  `json:"p_scope_column"`
+			PScopeValue  *string  `json:"p_scope_value"`
+			PDivisionIds []string `json:"p_division_ids"`
+			PRegcode     *string  `json:"p_regcode"`
+			PDivcodes    []string `json:"p_divcodes"`
+			PPage        *int     `json:"p_page"`
+			PPageSize    *int     `json:"p_page_size"`
+			PCountOnly   *bool    `json:"p_count_only"`
+		}
+		_ = e.BindBody(&body)
 
-		if page <= 0 {
-			page = 1
+		q := e.Request.URL.Query()
+		search := ""
+		if body.PSearch != nil && *body.PSearch != "" {
+			search = *body.PSearch
+		} else {
+			search = q.Get("search")
+			if search == "" {
+				search = q.Get("p_search")
+			}
+		}
+		_ = search
+
+		// Page is 0-based from useServerPagination; legacy GET callers use 1-based.
+		page := 0
+		perPage := 10
+		if body.PPage != nil {
+			page = *body.PPage
+		} else if s := q.Get("page"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil {
+				page = v - 1
+				if page < 0 {
+					page = 0
+				}
+			}
+		}
+		if body.PPageSize != nil && *body.PPageSize > 0 {
+			perPage = *body.PPageSize
+		} else if s := q.Get("perPage"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				perPage = v
+			}
+		} else if s := q.Get("p_page_size"); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				perPage = v
+			}
 		}
 		if perPage <= 0 {
-			perPage = 50
+			perPage = 10
 		}
 
-		filter := "1 = 1"
-		params := map[string]any{}
-
-		if search != "" {
-			filter += " AND (fname LIKE {:s} OR lname LIKE {:s} OR empno LIKE {:s} OR stacode LIKE {:s})"
-			params["s"] = "%" + search + "%"
+		stacodeMin := -1
+		stacodeMax := -1
+		if body.PStacodeMin != nil {
+			stacodeMin = *body.PStacodeMin
 		}
-		if stacode != "" {
-			filter += " AND stacode = {:stacode}"
-			params["stacode"] = stacode
+		if body.PStacodeMax != nil {
+			stacodeMax = *body.PStacodeMax
+		}
+		legacyStacode := q.Get("stacode")
+
+		regcode := ""
+		if body.PRegcode != nil {
+			regcode = strings.TrimSpace(*body.PRegcode)
+		}
+		divcodes := body.PDivcodes
+		scopeCol := ""
+		scopeVal := ""
+		if body.PScopeColumn != nil {
+			scopeCol = *body.PScopeColumn
+		}
+		if body.PScopeValue != nil {
+			scopeVal = *body.PScopeValue
 		}
 
-		records, err := app.Dao().FindRecordsByFilter("employees", filter, params)
+		// Hardcoded `employees` table — the only source for Employee Records.
+		records, err := app.Dao().FindRecordsByFilter("employees", "1 = 1")
 		if err != nil {
-			return e.JSON(http.StatusOK, map[string]interface{}{"data": []interface{}{}, "total": 0})
+			return e.JSON(http.StatusOK, map[string]interface{}{"rows": []interface{}{}, "data": []interface{}{}, "total": 0})
 		}
 
-		total := len(records)
-		start := (page - 1) * perPage
-		end := start + perPage
+		lower := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+		searchL := lower(search)
+		filtered := make([]*core.Record, 0, len(records))
+		for _, r := range records {
+			empno := r.GetString("empno")
+			if empno == "" {
+				empno = r.GetString("employee_number")
+			}
+			stacode := r.GetString("stacode")
+			lname := r.GetString("lname")
+			if lname == "" {
+				lname = r.GetString("last_name")
+			}
+			fname := r.GetString("fname")
+			if fname == "" {
+				fname = r.GetString("first_name")
+			}
+			mi := r.GetString("mi")
+			if mi == "" {
+				mi = r.GetString("middle_name")
+			}
+
+			if legacyStacode != "" && stacode != legacyStacode {
+				continue
+			}
+			if stacodeMin >= 0 && stacodeMax >= 0 {
+				n := -1
+				digits := ""
+				for _, c := range stacode {
+					if c >= '0' && c <= '9' {
+						digits += string(c)
+					} else if digits != "" {
+						break
+					}
+				}
+				if digits != "" {
+					if v, err := strconv.Atoi(digits); err == nil {
+						n = v
+					}
+				}
+				if n < stacodeMin || n > stacodeMax {
+					continue
+				}
+			}
+			if scopeCol != "" && scopeVal != "" {
+				if scopeCol == "stacode" && stacode != scopeVal {
+					continue
+				}
+				if scopeCol == "empno" && empno != scopeVal && r.GetString("employee_number") != scopeVal {
+					continue
+				}
+			}
+			if regcode != "" && r.GetString("regcode") != regcode {
+				continue
+			}
+			if len(divcodes) > 0 && !containsStr(divcodes, r.GetString("divcode")) {
+				continue
+			}
+			if searchL != "" {
+				hay := lower(strings.Join([]string{empno, r.GetString("employee_number"), lname, fname, mi, r.GetString("empname"), stacode}, " "))
+				if !strings.Contains(hay, searchL) {
+					continue
+				}
+			}
+			filtered = append(filtered, r)
+		}
+
+		total := len(filtered)
+		if body.PCountOnly != nil && *body.PCountOnly {
+			return e.JSON(http.StatusOK, map[string]interface{}{"rows": []interface{}{}, "data": []interface{}{}, "total": total})
+		}
+		start := page * perPage
 		if start > total {
 			start = total
 		}
+		end := start + perPage
 		if end > total {
 			end = total
 		}
 
 		result := make([]map[string]interface{}, 0, end-start)
-		for _, r := range records[start:end] {
+		for _, r := range filtered[start:end] {
 			result = append(result, recordToMap(r))
 		}
 
+		// Return BOTH shapes: { rows, total } for useServerPagination and
+		// { data, ... } for legacy callers.
 		return e.JSON(http.StatusOK, map[string]interface{}{
-			"data":  result,
-			"total": total,
-			"page":  page,
+			"rows":    result,
+			"data":    result,
+			"total":   total,
+			"page":    page,
 			"perPage": perPage,
 		})
 	}
@@ -1225,15 +1362,43 @@ func handleDbfTableCounts(app *pocketbase.PocketBase) func(e *core.RequestEvent)
 			Elementary int    `json:"elementary"`
 			Highschool int    `json:"highschool"`
 		}
-		tables := []string{"dbf_stntable", "dbf_divtable", "dbf_included", "dbf_excluded", "dbf_payrolls", "dbf_pyent", "dbf_pyent1", "dbf_pyent2"}
+		// `employees` is the hardcoded MASTFILE target — always counted first
+		// so Smart Import status can never show a false zero.
+		// `payroll_deductions` is the DEDFILE target (TABLE_TO_DB maps DEDFILE there).
+		tables := []string{"employees", "payroll_deductions", "dbf_stntable", "dbf_divtable", "dbf_included", "dbf_excluded", "dbf_payrolls", "dbf_pyent", "dbf_pyent1", "dbf_pyent2"}
 		result := []TableCount{}
 
 		for _, t := range tables {
 			tc := TableCount{Table: t}
-			db.NewQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s", t)).Row(&tc.Total)
+			if err := db.NewQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s", t)).Row(&tc.Total); err != nil {
+				tc.Total = 0
+			}
 			if t != "dbf_divtable" {
-				db.NewQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE stacode ~ '^\\d+$' AND CAST(stacode AS INTEGER) BETWEEN 1 AND 499", t)).Row(&tc.Elementary)
-				db.NewQuery(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE stacode ~ '^\\d+$' AND CAST(stacode AS INTEGER) BETWEEN 500 AND 701", t)).Row(&tc.Highschool)
+				// SQLite has no `~` regex operator — count category splits in
+				// Go from the stacode column instead.
+				records, err := app.Dao().FindRecordsByFilter(t, "1 = 1")
+				if err == nil {
+					for _, r := range records {
+						digits := ""
+						for _, c := range r.GetString("stacode") {
+							if c >= '0' && c <= '9' {
+								digits += string(c)
+							} else if digits != "" {
+								break
+							}
+						}
+						if digits == "" {
+							continue
+						}
+						if v, err := strconv.Atoi(digits); err == nil {
+							if v >= 1 && v <= 499 {
+								tc.Elementary++
+							} else if v >= 500 && v <= 701 {
+								tc.Highschool++
+							}
+						}
+					}
+				}
 			}
 			result = append(result, tc)
 		}

@@ -3,6 +3,12 @@ import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { classifyByStacode } from '@/lib/stacodeClassify';
 import { recomputeEmployeeNetPay, bulkRecomputeNetPay } from '@/lib/recompute';
 import { inCategory, type PayrollCategory } from '@/lib/categories';
+import {
+  EMPLOYEES_COLLECTION,
+  buildMastfilePayload,
+  mergeWithoutDataLoss,
+  dbfStr,
+} from '@/lib/employeeMasterfile';
 import type { PayrollGroup } from '@/types/payroll';
 
 export interface SyncResult {
@@ -205,22 +211,28 @@ function decodeType(val: string): string {
 }
 
 export async function syncMastfile(bytes: Uint8Array, category?: PayrollCategory | null, scope?: SyncScope | null): Promise<SyncResult> {
+  // MASTFILE.DBF → hardcoded `employees` PocketBase collection (never any other
+  // table). Insert-new / update-existing by EMPNO; never delete. Updates merge
+  // without blanking stored values the file does not carry (no data loss).
   const errors: string[] = [];
   let skipped = 0;
 
-  const { records } = decodeDbf(bytes);
+  const { records, fields } = decodeDbf(bytes);
   if (records.length === 0) {
     return { tableName: 'MASTFILE', imported: 0, skipped: 0, errors: ['No records found in DBF file.'] };
   }
+  // Upper-cased field set of THIS file: columns the file does not carry are
+  // omitted from payloads so stored values survive (no blanking).
+  const present = new Set(fields.map((f) => f.name.trim().toUpperCase()));
 
   // Division lookup: stamp division_id on rows that carry REGCODE/DIVCODE so
-  // division_id-based RLS/scoping also matches. When the file's codes are
+  // division_id-based scoping also matches. When the file's codes are
   // missing or do not resolve, fall back to the STACODE's school → division.
   const divisionDirectory = await loadDivisionDirectory();
   const schoolDivision = await loadSchoolDivisionMap();
 
   const filtered = category
-    ? records.filter((rec) => inCategory(str(rec, 'STACODE'), category))
+    ? records.filter((rec) => inCategory(dbfStr(rec, 'STACODE'), category))
     : records;
 
   const groups = await fetchAll(() =>
@@ -228,161 +240,87 @@ export async function syncMastfile(bytes: Uint8Array, category?: PayrollCategory
   );
   const groupList = groups as PayrollGroup[];
 
-  const { data: existing } = await supabase.from('employees').select('id,empno,employee_number');
-  const existingMap = new Map<string, string>();
-  (existing ?? []).forEach((e: { id: string; empno: string | null; employee_number: string }) => {
-    const key = (e.empno || e.employee_number || '').trim();
-    if (key) existingMap.set(key, e.id);
-  });
+  // Load existing employees keyed by EMPNO (and legacy employee_number) along
+  // with the full row so updates can merge without data loss.
+  const existingRows = await fetchAll(() =>
+    supabase.from(EMPLOYEES_COLLECTION).select('*'),
+  );
+  const existingByEmpno = new Map<string, Record<string, unknown>>();
+  for (const row of existingRows as Record<string, unknown>[]) {
+    const key = String(row.empno ?? row.employee_number ?? '').trim();
+    if (key && !existingByEmpno.has(key)) existingByEmpno.set(key, row);
+  }
 
   const toInsert: Record<string, unknown>[] = [];
   const toUpdate: { id: string; data: Record<string, unknown> }[] = [];
+  const seenInFile = new Set<string>();
   const now = new Date().toISOString();
 
   for (const rec of filtered) {
-    const empno = str(rec, 'EMPNO');
-    const lname = str(rec, 'LNAME');
-    if (!empno || !lname) { skipped++; continue; }
+    const empno = dbfStr(rec, 'EMPNO');
+    if (!empno) { skipped++; continue; }
+    if (seenInFile.has(empno)) { skipped++; continue; }
+    seenInFile.add(empno);
 
-    const stacode = str(rec, 'STACODE');
+    const stacode = dbfStr(rec, 'STACODE');
     // REGCODE/DIVCODE come from the DBF columns when present; fall back to the
     // division the uploader is working in so the row is visible in that
     // division's Employee Records (never left blank/global). Codes that resolve
     // against the divisions directory are canonicalized (zero-padded variants
     // like '01'/'001' become the directory's '1'/'1') so the code-based scoping
     // the query RPCs use always matches the stored values.
-    const rowRegcode = str(rec, 'REGCODE');
-    const rowDivcode = str(rec, 'DIVCODE');
-    const { regcode, divcode, divisionId } = resolveEmployeeScope(
+    const rowRegcode = dbfStr(rec, 'REGCODE');
+    const rowDivcode = dbfStr(rec, 'DIVCODE');
+    const resolved = resolveEmployeeScope(
       divisionDirectory, schoolDivision, rowRegcode, rowDivcode, stacode, scope,
     );
-    const payload: Record<string, unknown> = {
-      empno,
-      fname: str(rec, 'FNAME'),
-      mi: str(rec, 'MI'),
-      lname,
-      appel: str(rec, 'APPEL'),
-      empname: str(rec, 'EMPNAME'),
-      regcode,
-      divcode,
-      division_id: divisionId,
-      stacode,
-      account: str(rec, 'ACCOUNT'),
-      poscode: str(rec, 'POSCODE'),
-      paymode: str(rec, 'PAYMODE') || 'ATM',
-      grade: parseInt(str(rec, 'GRADE')) || 0,
-      step: parseInt(str(rec, 'STEP')) || 0,
-      basic: num(rec, 'BASIC'),
-      trans: num(rec, 'TRANS'),
-      pera: num(rec, 'PERA'),
-      aca: num(rec, 'ACA'),
-      rata: num(rec, 'RATA'),
-      ontop: num(rec, 'ONTOP'),
-      long: num(rec, 'LONG'),
-      clothing: num(rec, 'CLOTHING'),
-      cashallow: num(rec, 'CASHALLOW'),
-      dedlnr: num(rec, 'DEDLNR'),
-      dedmed: num(rec, 'DEDMED'),
-      dedtax: num(rec, 'DEDTAX'),
-      dedpag: num(rec, 'DEDPAG'),
-      netpay: num(rec, 'NETPAY'),
-      govtlnr: num(rec, 'GOVTLNR'),
-      govtecc: num(rec, 'GOVTECC'),
-      govtmed: num(rec, 'GOVTMED'),
-      govtpag: num(rec, 'GOVTPAG'),
-      pagcode: str(rec, 'PAGCODE'),
-      taxcode: str(rec, 'TAXCODE') || 'ME1',
-      civilstat: str(rec, 'CIVILSTAT'),
-      attend: str(rec, 'ATTEND'),
-      status: STATUS_MAP[str(rec, 'STATUS').toUpperCase()] || 'Active',
-      sex: str(rec, 'SEX'),
-      tin: str(rec, 'TIN'),
-      gsis_pn: str(rec, 'GSIS_PN'),
-      gsis_id: str(rec, 'GSIS_ID'),
-      hdmf_id: str(rec, 'HDMF_ID'),
-      phic_id: str(rec, 'PHIC_ID'),
-      banker: str(rec, 'BANKER'),
-      pib: str(rec, 'PIB'),
-      birthdate: dateStr(rec, 'BIRTHDATE'),
-      update: dateStr(rec, 'UPDATE'),
-      paydate: dateStr(rec, 'PAYDATE'),
-      hiredate: dateStr(rec, 'HIREDATE'),
-      mid_bonus: num(rec, 'MID_BONUS'),
-      mid_cash: num(rec, 'MID_CASH'),
-      end_bonus: num(rec, 'END_BONUS'),
-      end_cash: num(rec, 'END_CASH'),
-      add_bonus: num(rec, 'ADD_BONUS'),
-      taxref: num(rec, 'TAXREF'),
-      special: num(rec, 'SPECIAL'),
-      over_wheld: num(rec, 'OVER_WHELD'),
-      exposcode: str(rec, 'EXPOSCODE'),
-      exgrade: parseInt(str(rec, 'EXGRADE')) || 0,
-      exstep: parseInt(str(rec, 'EXSTEP')) || 0,
-      exbasic: num(rec, 'EXBASIC'),
-      exlnr: num(rec, 'EXLNR'),
-      exmed: num(rec, 'EXMED'),
-      expag: num(rec, 'EXPAG'),
-      extax: num(rec, 'EXTAX'),
-      exglnr: num(rec, 'EXGLNR'),
-      exgmed: num(rec, 'EXGMED'),
-      exgpag: num(rec, 'EXGPAG'),
-      exgecc: num(rec, 'EXGECC'),
-      saldiff: num(rec, 'SALDIFF'),
-      lnrdiff: num(rec, 'LNRDIFF'),
-      meddiff: num(rec, 'MEDDIFF'),
-      pagdiff: num(rec, 'PAGDIFF'),
-      taxdiff: num(rec, 'TAXDIFF'),
-      glnrdiff: num(rec, 'GLNRDIFF'),
-      gmeddiff: num(rec, 'GMEDDIFF'),
-      gpagdiff: num(rec, 'GPAGDIFF'),
-      geccdiff: num(rec, 'GECCDIFF'),
-      updcode: str(rec, 'UPDCODE'),
-      editor: str(rec, 'EDITOR'),
-      depname1: str(rec, 'DEPNAME1'),
-      depname2: str(rec, 'DEPNAME2'),
-      depname3: str(rec, 'DEPNAME3'),
-      depname4: str(rec, 'DEPNAME4'),
-      depdate1: dateStr(rec, 'DEPDATE1'),
-      depdate2: dateStr(rec, 'DEPDATE2'),
-      depdate3: dateStr(rec, 'DEPDATE3'),
-      depdate4: dateStr(rec, 'DEPDATE4'),
-      distcode: str(rec, 'DISTCODE') || '',
-      payroll_group_id: classifyByStacode(stacode, groupList)?.id ?? null,
-      employee_number: empno,
-      first_name: str(rec, 'FNAME'),
-      last_name: lname,
-      middle_name: str(rec, 'MI'),
-      position: str(rec, 'POSCODE'),
-      bank_name: str(rec, 'BANKER'),
-      bank_account: str(rec, 'ACCOUNT'),
-      basic_salary: num(rec, 'BASIC'),
-      tax_status: str(rec, 'TAXCODE') || 'ME1',
-      philhealth_number: str(rec, 'PHIC_ID'),
-      pagibig_number: str(rec, 'HDMF_ID'),
-      hire_date: dateStr(rec, 'HIREDATE'),
-      updated_at: now,
-    };
+    const payrollGroupId = classifyByStacode(stacode, groupList)?.id ?? null;
+    const payload = buildMastfilePayload(rec, {
+      regcode: resolved.regcode,
+      divcode: resolved.divcode,
+      divisionId: resolved.divisionId,
+    }, payrollGroupId, now, present);
+    if (!payload) { skipped++; continue; }
 
-    const existingId = existingMap.get(empno);
-    if (existingId) {
-      toUpdate.push({ id: existingId, data: payload });
+    const existingRow = existingByEmpno.get(empno);
+    if (existingRow && typeof existingRow.id === 'string') {
+      // Merge: file values win when provided; stored values survive blanks.
+      toUpdate.push({ id: existingRow.id, data: mergeWithoutDataLoss(existingRow, payload) });
     } else {
       toInsert.push(payload);
     }
   }
 
   let imported = 0;
-  if (toInsert.length > 0) {
-    for (let i = 0; i < toInsert.length; i += 500) {
-      const batch = toInsert.slice(i, i + 500);
-      const { error } = await supabase.from('employees').upsert(batch, { onConflict: 'employee_number' });
-      if (error) { errors.push(`Upsert batch error: ${error.message}`); skipped += batch.length; }
-      else imported += batch.length;
+  // Insert new rows in batches. The adapter resolves per-item, so `data`
+  // holds exactly the rows PocketBase accepted — count those, never assume.
+  // Rows the batch did not accept are retried individually (they were proven
+  // absent pre-batch, so no duplicate risk); anything still failing is
+  // counted as skipped with the reason kept.
+  for (let i = 0; i < toInsert.length; i += 500) {
+    const batch = toInsert.slice(i, i + 500);
+    const res = await supabase.from(EMPLOYEES_COLLECTION).insert(batch);
+    const created = Array.isArray(res.data) ? res.data as Record<string, unknown>[] : [];
+    imported += created.length;
+    if (created.length < batch.length) {
+      const doneEmpnos = new Set(created.map((r) => String(r.empno ?? r.employee_number ?? '').trim()));
+      for (const row of batch) {
+        if (doneEmpnos.has(String(row.empno ?? '').trim())) continue;
+        const one = await supabase.from(EMPLOYEES_COLLECTION).insert(row);
+        if (one.error || !one.data) {
+          skipped++;
+          if (errors.length < 10) errors.push(`Insert ${String(row.empno ?? '?')}: ${one.error?.message ?? 'rejected'}`);
+        } else {
+          imported++;
+        }
+      }
     }
   }
-  for (let i = 0; i < toUpdate.length; i++) {
-    const { error } = await supabase.from('employees').update(toUpdate[i].data).eq('id', toUpdate[i].id);
-    if (error) { skipped++; }
+  // Update existing rows one by one (each targets its own id — never a bulk
+  // predicate that could touch other divisions' records).
+  for (const u of toUpdate) {
+    const { error } = await supabase.from(EMPLOYEES_COLLECTION).update(u.data).eq('id', u.id);
+    if (error) { skipped++; if (errors.length < 10) errors.push(`Update ${u.id}: ${error.message}`); }
     else imported++;
   }
 

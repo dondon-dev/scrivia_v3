@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+﻿import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Pagination } from '@/components/Pagination';
 import { useServerPagination } from '@/lib/useServerPagination';
+import { EMPLOYEES_COLLECTION, sanitizeEmployeePayload, buildMastfilePayload, mergeWithoutDataLoss, dbfStr } from '@/lib/employeeMasterfile';
 import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
@@ -67,16 +68,16 @@ interface EmployeeForm {
 
 /** Auto-compute employee deductions and government shares from basic salary */
 function computeEmployeeDeductions(basic: number) {
-  // GSIS Personal share = basic × 9%
+  // GSIS Personal share = basic Ã— 9%
   const dedlnr = Math.round(basic * 0.09 * 100) / 100;
-  // PhilHealth Employee share = basic × 2.5%, ceiling at ₱2,500 if basic >= ₱100,000
+  // PhilHealth Employee share = basic Ã— 2.5%, ceiling at â‚±2,500 if basic >= â‚±100,000
   const philTotal = basic >= 100000 ? 5000 : Math.round(basic * 0.05 * 100) / 100;
   const dedmed = Math.floor(philTotal / 2 * 100) / 100;
-  // Pag-IBIG = fixed ₱200
+  // Pag-IBIG = fixed â‚±200
   const dedpag = 200;
-  // GSIS Government share = basic × 12%
+  // GSIS Government share = basic Ã— 12%
   const govtlnr = Math.round(basic * 0.12 * 100) / 100;
-  // GSIS ECC = fixed ₱100
+  // GSIS ECC = fixed â‚±100
   const govtecc = 100;
   // PhilHealth Government share = total - employee share
   const govtmed = Math.round((philTotal - dedmed) * 100) / 100;
@@ -157,7 +158,7 @@ function formFromEmployee(e: Employee): EmployeeForm {
   };
 }
 
-// Sync masterfile fields → legacy fields on save
+// Sync masterfile fields â†’ legacy fields on save
 function syncLegacy(f: EmployeeForm): EmployeeForm {
   return {
     ...f,
@@ -243,6 +244,57 @@ function CollapsibleSection({ title, fields, form, setForm, defaultOpen }: {
   );
 }
 
+// Client-side fallback for Employee Records when the query_employees RPC is
+// unavailable. Mirrors the server-side filter: search, group STACODE range,
+// profile scope and REGCODE/DIVCODE org scope. Reads the hardcoded `employees`
+// PocketBase table so records are never lost to a backend mismatch.
+function empSearchText(e: Partial<Employee> & Record<string, unknown>): string {
+  return [
+    e.empno, e.employee_number, e.lname, e.last_name, e.fname, e.first_name,
+    e.mi, e.middle_name, e.poscode, e.department, e.stacode, e.empname,
+    e.account, e.banker, e.tin, e.gsis_id, e.gsis_pn, e.hdmf_id, e.phic_id,
+  ].map((v) => (v ?? '').toString().toLowerCase()).join(' ');
+}
+
+function empStacodeNum(v: unknown): number | null {
+  const m = String(v ?? '').trim().match(/\d+/);
+  return m ? parseInt(m[0], 10) : null;
+}
+
+function empClientFilter(
+  e: Partial<Employee> & Record<string, unknown>,
+  params: Record<string, unknown>,
+  scopedCodes: { regcode: string; divcode: string }[] | null,
+): boolean {
+  const s = ((params.p_search as string) ?? '').trim().toLowerCase();
+  if (s && !empSearchText(e).includes(s)) return false;
+
+  const min = params.p_stacode_min as number | null | undefined;
+  const max = params.p_stacode_max as number | null | undefined;
+  if (min != null && max != null) {
+    const n = empStacodeNum(e.stacode);
+    if (n == null || n < min || n > max) return false;
+  }
+
+  const col = params.p_scope_column as string | null | undefined;
+  const val = params.p_scope_value as string | null | undefined;
+  if (col && val) {
+    if (col === 'stacode') { if ((e.stacode ?? '') !== val) return false; }
+    else if (col === 'empno') {
+      if ((e.empno ?? '') !== val && (e.employee_number ?? '') !== val) return false;
+    }
+  }
+
+  if (!matchesOrgScope(
+    { regcode: e.regcode as string | null, divcode: e.divcode as string | null },
+    { scopedDivisionIds: null, scopedCodes },
+  )) {
+    return false;
+  }
+
+  return true;
+}
+
 export default function Employees({ highlightEmpId, onConsumedHighlight, profile }: { highlightEmpId?: string | null; onConsumedHighlight?: () => void; profile?: UserProfile | null }) {
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
@@ -291,12 +343,34 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     p_stacode_max: gf.stacodeMax,
     p_scope_column: scopeFilter?.column ?? null,
     p_scope_value: scopeFilter?.value ?? null,
-    // Division scoping — the RPC clamps non-super_admins to their own division
+    // Division scoping â€” the RPC clamps non-super_admins to their own division
     // server-side regardless of this value.
     p_division_ids: scopedDivisionIds,
     p_regcode: scopeRegcode,
     p_divcodes: scopeDivcodes,
-  }, { pageSize: 10 });
+  }, {
+    pageSize: 10,
+    // Hardcoded fallback: read the `employees` PocketBase table directly when
+    // the query_employees RPC is unavailable so Employee Records are never
+    // lost to a backend mismatch.
+    fallback: {
+      collection: EMPLOYEES_COLLECTION,
+      clientFilter: (row, params) => empClientFilter(
+        row as Partial<Employee> & Record<string, unknown>,
+        {
+          p_search: params.p_search as string | null,
+          p_stacode_min: params.p_stacode_min as number | null,
+          p_stacode_max: params.p_stacode_max as number | null,
+          p_scope_column: params.p_scope_column as string | null,
+          p_scope_value: params.p_scope_value as string | null,
+        },
+        scopedCodes,
+      ),
+      sort: (a, b) => String((a as Employee).empno ?? (a as Employee).employee_number ?? '').localeCompare(
+        String((b as Employee).empno ?? (b as Employee).employee_number ?? ''),
+      ),
+    },
+  });
   const employees = serverPag.rows;
   const loading = serverPag.loading;
 
@@ -431,7 +505,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     }
     setSaving(true);
     const num = (v: number) => Number(v) || 0;
-    const payload = {
+    const rawPayload = {
       ...synced,
       basic_salary: num(synced.basic_salary), hourly_rate: num(synced.hourly_rate),
       basic: num(synced.basic), trans: num(synced.trans), pera: num(synced.pera),
@@ -462,23 +536,25 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
       updated_at: new Date().toISOString(),
     };
     if (editing) {
-      const { error: err } = await supabase.from('employees').update(payload).eq('id', editing.id);
+      // Hardcoded `employees` table; sanitize so one bad field never 400s the save.
+      const { error: err } = await supabase.from(EMPLOYEES_COLLECTION).update(sanitizeEmployeePayload(rawPayload as Record<string, unknown>)).eq('id', editing.id);
       if (err) { setError(err.message); setSaving(false); return; }
     } else {
       // New employee: stamp the uploader's division context (canonical
       // REGCODE/DIVCODE + division_id) so the record is visible in their
       // Employee Records scope even when the form leaves the codes blank.
+      const payload = { ...rawPayload } as Record<string, unknown>;
       const syncScope = scopedCodes && scopedCodes.length === 1 ? scopedCodes[0] : null;
       if (syncScope && !payload.regcode && !payload.divcode) {
         const divisionDirectory = await loadDivisionDirectory();
-        const resolved = resolveEmployeeScope(divisionDirectory, new Map(), '', '', payload.stacode ?? '', syncScope);
+        const resolved = resolveEmployeeScope(divisionDirectory, new Map(), '', '', String(payload.stacode ?? ''), syncScope);
         payload.regcode = resolved.regcode;
         payload.divcode = resolved.divcode;
         (payload as Record<string, unknown>).division_id = resolved.divisionId;
       }
-      const { error: err } = await supabase.from('employees').insert(payload);
+      const { error: err } = await supabase.from(EMPLOYEES_COLLECTION).insert(sanitizeEmployeePayload(payload));
       if (err) {
-        setError(err.code === '23505' ? 'Employee number already exists.' : err.message);
+        setError((err as { code?: string }).code === '23505' ? 'Employee number already exists.' : err.message);
         setSaving(false);
         return;
       }
@@ -499,7 +575,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
       .eq('status', 'Posted')
       .limit(1);
     if (posted && posted.length > 0) {
-      alert(`Cannot delete ${name}, ${fname} — they have posted payroll entries. Reverse the posted pay period in the Payroll page first, then try again.`);
+      alert(`Cannot delete ${name}, ${fname} â€” they have posted payroll entries. Reverse the posted pay period in the Payroll page first, then try again.`);
       return;
     }
     const { error } = await supabase.from('employees').delete().eq('id', e.id);
@@ -514,7 +590,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     try {
       // Only ever delete the employees inside the current Region/Division scope.
       // One division's masterfile must never be wiped by another division's
-      // action — nor blocked by another division's posted payroll.
+      // action â€” nor blocked by another division's posted payroll.
       const scope = { scopedDivisionIds, scopedCodes };
       const all = await fetchAll(() =>
         supabase.from('employees').select('id,division_id,regcode,divcode'),
@@ -526,16 +602,16 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
         throw new Error('No employees found in the current division scope to delete.');
       }
 
-      // Batches keep every request URL small — a single .in() with thousands
+      // Batches keep every request URL small â€” a single .in() with thousands
       // of ids exceeds URL length limits and the connection dies with a raw
       // "TypeError: Failed to fetch".
       const BATCH = 100;
 
       // Division-scoped posted check: only THIS scope's posted payroll entries
-      // block the delete — other divisions' postings do not. Restored/uploaded
+      // block the delete â€” other divisions' postings do not. Restored/uploaded
       // payroll files also arrive with status 'Posted' (not just the Post
       // button), so the error names the exact pay periods AND the division
-      // each posted entry belongs to — otherwise it looks like "no posted
+      // each posted entry belongs to â€” otherwise it looks like "no posted
       // payroll" when the posted entries live in another division.
       const divisionNameById = new Map(orgDivisions.map((d) => [d.id, d.division_name]));
       const divisionNameByCode = new Map(orgDivisions.map((d) => [d.division_code, d.division_name]));
@@ -580,9 +656,9 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
         const unique = new Map<string, { period: string; division: string }>();
         for (const d of postedDetails) unique.set(`${d.period}|${d.division}`, d);
         const rows = [...unique.values()].slice(0, 5);
-        const summary = rows.map((r) => `${r.period} — ${r.division}`).join('; ');
+        const summary = rows.map((r) => `${r.period} â€” ${r.division}`).join('; ');
         throw new Error(
-          'Cannot delete all employees — posted payroll entries exist in: ' +
+          'Cannot delete all employees â€” posted payroll entries exist in: ' +
           summary +
           (unique.size > 5 ? ` and ${unique.size - 5} more.` : '.') +
           ' Reverse the posted pay period(s) in the Payroll page first, then try again.'
@@ -600,7 +676,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/failed to fetch|networkerror|network error|load failed|typeerror/i.test(msg)) {
-        throw new Error('Network error while deleting — check your connection and try again.');
+        throw new Error('Network error while deleting â€” check your connection and try again.');
       }
       throw err instanceof Error ? err : new Error(msg);
     }
@@ -608,7 +684,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
 
   async function exportDbf() {
     const allEmps = await fetchAll(() => supabase.from('employees').select('*').order('lname', { ascending: true }));
-    // Honor the selected Region/Division scope — by division_id first, then by
+    // Honor the selected Region/Division scope â€” by division_id first, then by
     // the REGCODE/DIVCODE codes carried by legacy masterfile rows.
     const scopedEmps = allEmps.filter((e) => matchesOrgScope(e, { scopedDivisionIds, scopedCodes }));
     const content = generateMasterfileDbf(scopedEmps);
@@ -645,131 +721,6 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     reader.readAsArrayBuffer(file);
   }
 
-  function dbfRecordToEmployee(rec: DbfRecord): Record<string, unknown> {
-    const str = (key: string): string => {
-      const v = rec[key];
-      return v != null ? String(v).trim() : '';
-    };
-    const num = (key: string): number => {
-      const v = rec[key];
-      if (v == null) return 0;
-      const n = Number(v);
-      return Number.isNaN(n) ? 0 : n;
-    };
-    const dateStr = (key: string): string | null => {
-      const v = rec[key];
-      if (!v || typeof v !== 'string') return null;
-      return v.length >= 10 ? v.slice(0, 10) : null;
-    };
-    const statusChar = str('STATUS').toUpperCase();
-    const statusMap: Record<string, string> = { A: 'Active', I: 'Inactive', R: 'Resigned', T: 'Terminated' };
-    const empno = str('EMPNO');
-    const fname = str('FNAME');
-    const lname = str('LNAME');
-    return {
-      empno,
-      fname,
-      mi: str('MI'),
-      lname,
-      appel: str('APPEL'),
-      empname: str('EMPNAME'),
-      regcode: str('REGCODE'),
-      divcode: str('DIVCODE'),
-      stacode: str('STACODE'),
-      account: str('ACCOUNT'),
-      poscode: str('POSCODE'),
-      paymode: str('PAYMODE') || 'ATM',
-      grade: parseInt(str('GRADE')) || 0,
-      step: parseInt(str('STEP')) || 0,
-      basic: num('BASIC'),
-      trans: num('TRANS'),
-      pera: num('PERA'),
-      aca: num('ACA'),
-      rata: num('RATA'),
-      ontop: num('ONTOP'),
-      long: num('LONG'),
-      clothing: num('CLOTHING'),
-      cashallow: num('CASHALLOW'),
-      dedlnr: num('DEDLNR'),
-      dedmed: num('DEDMED'),
-      dedtax: num('DEDTAX'),
-      dedpag: num('DEDPAG'),
-      netpay: num('NETPAY'),
-      govtlnr: num('GOVTLNR'),
-      govtecc: num('GOVTECC'),
-      govtmed: num('GOVTMED'),
-      govtpag: num('GOVTPAG'),
-      pagcode: str('PAGCODE'),
-      taxcode: str('TAXCODE') || 'ME1',
-      civilstat: str('CIVILSTAT'),
-      attend: str('ATTEND'),
-      status: statusMap[statusChar] || 'Active',
-      sex: str('SEX'),
-      tin: str('TIN'),
-      gsis_pn: str('GSIS_PN'),
-      gsis_id: str('GSIS_ID'),
-      hdmf_id: str('HDMF_ID'),
-      phic_id: str('PHIC_ID'),
-      banker: str('BANKER'),
-      pib: str('PIB'),
-      birthdate: dateStr('BIRTHDATE'),
-      update: dateStr('UPDATE'),
-      paydate: dateStr('PAYDATE'),
-      hiredate: dateStr('HIREDATE'),
-      mid_bonus: num('MID_BONUS'),
-      mid_cash: num('MID_CASH'),
-      end_bonus: num('END_BONUS'),
-      end_cash: num('END_CASH'),
-      add_bonus: num('ADD_BONUS'),
-      taxref: num('TAXREF'),
-      special: num('SPECIAL'),
-      over_wheld: num('OVER_WHELD'),
-      exposcode: str('EXPOSCODE'),
-      exgrade: parseInt(str('EXGRADE')) || 0,
-      exstep: parseInt(str('EXSTEP')) || 0,
-      exbasic: num('EXBASIC'),
-      exlnr: num('EXLNR'),
-      exmed: num('EXMED'),
-      expag: num('EXPAG'),
-      extax: num('EXTAX'),
-      exglnr: num('EXGLNR'),
-      exgmed: num('EXGMED'),
-      exgpag: num('EXGPAG'),
-      exgecc: num('EXGECC'),
-      saldiff: num('SALDIFF'),
-      lnrdiff: num('LNRDIFF'),
-      meddiff: num('MEDDIFF'),
-      pagdiff: num('PAGDIFF'),
-      taxdiff: num('TAXDIFF'),
-      glnrdiff: num('GLNRDIFF'),
-      gmeddiff: num('GMEDDIFF'),
-      gpagdiff: num('GPAGDIFF'),
-      geccdiff: num('GECCDIFF'),
-      updcode: str('UPDCODE'),
-      editor: str('EDITOR'),
-      depname1: str('DEPNAME1'), depname2: str('DEPNAME2'),
-      depname3: str('DEPNAME3'), depname4: str('DEPNAME4'),
-      depdate1: dateStr('DEPDATE1'), depdate2: dateStr('DEPDATE2'),
-      depdate3: dateStr('DEPDATE3'), depdate4: dateStr('DEPDATE4'),
-      // Sync legacy fields
-      employee_number: empno,
-      first_name: fname,
-      last_name: lname,
-      middle_name: str('MI'),
-      position: str('POSCODE'),
-      bank_name: str('BANKER'),
-      bank_account: str('ACCOUNT'),
-      basic_salary: num('BASIC'),
-      tax_status: str('TAXCODE') || 'ME1',
-      philhealth_number: str('PHIC_ID'),
-      pagibig_number: str('HDMF_ID'),
-      hire_date: dateStr('HIREDATE'),
-      payroll_group_id: classifyByStacode(str('STACODE'), payrollGroups as PayrollGroup[])?.id ?? null,
-      distcode: str('DISTCODE') || '',
-      updated_at: new Date().toISOString(),
-    };
-  }
-
   async function importDbf() {
     if (!uploadPreview || uploadPreview.records.length === 0) return;
     setUploading(true);
@@ -780,47 +731,49 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
 
     // Stamp every imported row with its resolved division context (canonical
     // REGCODE + DIVCODE + division_id) so the records show up in the uploader's
-    // Employee Records scope — the same resolution Smart Import uses. Rows
+    // Employee Records scope â€” the same resolution Smart Import uses. Rows
     // without usable codes fall back to the selected division, then to the
     // STACODE's school.
     const syncScope = scopedCodes && scopedCodes.length === 1 ? scopedCodes[0] : null;
     const divisionDirectory = await loadDivisionDirectory();
     const schoolDivision = await loadSchoolDivisionMap();
 
-    // Build payload + metadata from DBF records
+    // Build payload + metadata from DBF records â€” every MASTFILE column flows
+    // through the shared hardcoded masterfile builder so no column is lost.
     const payloads: Record<string, unknown>[] = [];
     const stacodeChanges: { empno: string; employeeName: string; oldStacode: string; newStacode: string }[] = [];
     const invalidStacodeRecords: { empno: string; employeeName: string; stacode: string; error: string }[] = [];
     let skipped = 0;
+    const nowIso = new Date().toISOString();
+    const present = new Set((uploadPreview.fields ?? []).map((f) => f.trim().toUpperCase()));
 
     for (const rec of uploadPreview.records) {
-      const empno = String(rec['EMPNO'] ?? '').trim();
-      const lname = String(rec['LNAME'] ?? '').trim();
-      if (!empno || !lname) { skipped++; continue; }
+      const empno = dbfStr(rec, 'EMPNO');
+      if (!empno) { skipped++; continue; }
 
-      const newStacode = String(rec['STACODE'] ?? '').trim();
-      const employeeName = `${lname}, ${String(rec['FNAME'] ?? '').trim()}`;
-      const payload = dbfRecordToEmployee(rec);
+      const newStacode = dbfStr(rec, 'STACODE');
+      const lname = dbfStr(rec, 'LNAME');
+      const employeeName = `${lname}, ${dbfStr(rec, 'FNAME')}`.replace(/^, /, '') || empno;
 
       // Stamp division context: canonical codes + division_id so scoped users
       // (per REGCODE/DIVCODE) can see the imported record in Employee Records.
       const resolved = resolveEmployeeScope(
         divisionDirectory,
         schoolDivision,
-        String(rec['REGCODE'] ?? '').trim(),
-        String(rec['DIVCODE'] ?? '').trim(),
+        dbfStr(rec, 'REGCODE'),
+        dbfStr(rec, 'DIVCODE'),
         newStacode,
         syncScope,
       );
-      payload['regcode'] = resolved.regcode;
-      payload['divcode'] = resolved.divcode;
-      payload['division_id'] = resolved.divisionId;
 
       // Classify by new STACODE
       const newGroup = stacodeSyncEnabled ? classifyByStacode(newStacode, groupList) : null;
-      if (stacodeSyncEnabled) {
-        payload['payroll_group_id'] = newGroup?.id ?? null;
-      }
+      const payload = buildMastfilePayload(rec, {
+        regcode: resolved.regcode,
+        divcode: resolved.divcode,
+        divisionId: resolved.divisionId,
+      }, stacodeSyncEnabled ? (newGroup?.id ?? null) : null, nowIso, present);
+      if (!payload) { skipped++; continue; }
 
       // Track invalid STACODE
       if (!newStacode || !/^\d+$/.test(newStacode) || !newGroup) {
@@ -836,17 +789,28 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     }
 
     if (payloads.length === 0) {
-      setUploadResult({ success: false, message: 'No valid records found. Each row needs at least EMPNO and LNAME.', imported: 0, skipped });
+      setUploadResult({ success: false, message: 'No valid records found. Each row needs at least EMPNO.', imported: 0, skipped });
       setUploading(false);
       return;
     }
 
-    // Fetch existing employees to determine insert vs update + detect STACODE changes
-    const { data: existing } = await supabase.from('employees').select('id,empno,employee_number,stacode,lname,fname');
-    const existingMap = new Map<string, { id: string; stacode: string; empno: string; lname: string; fname: string }>();
-    (existing ?? []).forEach((e: { id: string; empno: string | null; employee_number: string; stacode: string | null; lname: string | null; fname: string | null }) => {
-      const key = (e.empno || e.employee_number || '').trim();
-      if (key) existingMap.set(key, { id: e.id, stacode: (e.stacode ?? '').trim(), empno: key, lname: e.lname ?? '', fname: e.fname ?? '' });
+    // Fetch existing employees (full rows) to determine insert vs update +
+    // detect STACODE changes. Merges keep stored values the file does not carry.
+    // Hardcoded `employees` PocketBase table â€” the only sync target for MASTFILE rows.
+    const existingFull = await fetchAll(() => supabase.from(EMPLOYEES_COLLECTION).select('*'));
+    const existingMap = new Map<string, { id: string; stacode: string; empno: string; lname: string; fname: string; row: Record<string, unknown> }>();
+    (existingFull ?? []).forEach((e: Record<string, unknown>) => {
+      const key = String(e.empno ?? e.employee_number ?? '').trim();
+      if (key && !existingMap.has(key)) {
+        existingMap.set(key, {
+          id: e.id as string,
+          stacode: String(e.stacode ?? '').trim(),
+          empno: key,
+          lname: String(e.lname ?? e.last_name ?? ''),
+          fname: String(e.fname ?? e.first_name ?? ''),
+          row: e,
+        });
+      }
     });
 
     const toInsert: Record<string, unknown>[] = [];
@@ -863,7 +827,8 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
         if (stacodeSyncEnabled && oldStacode !== newStacode) {
           stacodeChanges.push({ empno, employeeName, oldStacode: oldStacode || '(empty)', newStacode: newStacode || '(empty)' });
         }
-        toUpdate.push({ id: existingRec.id, data: payload, empno, employeeName, oldStacode, newStacode });
+        // Merge: file values win when provided; stored values survive blanks.
+        toUpdate.push({ id: existingRec.id, data: mergeWithoutDataLoss(existingRec.row, payload), empno, employeeName, oldStacode, newStacode });
       } else {
         toInsert.push(payload);
         newEmployeesAdded++;
@@ -871,21 +836,32 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
     }
 
     let imported = 0;
-    // Batch insert new employees
+    // Count exactly what PocketBase accepted; retry only the rows the batch
+    // did not accept (proven absent pre-batch, so no duplicate risk).
     if (toInsert.length > 0) {
-      const { error } = await supabase.from('employees').insert(toInsert);
-      if (error) {
-        setUploadResult({ success: false, message: `Insert failed: ${error.message}`, imported, skipped });
-        setUploading(false);
-        return;
+      const res = await supabase.from(EMPLOYEES_COLLECTION).insert(toInsert.map((r) => ({ ...r })));
+      const created = Array.isArray(res.data) ? res.data as Record<string, unknown>[] : [];
+      imported += created.length;
+      newEmployeesAdded = created.length;
+      if (created.length < toInsert.length) {
+        const doneEmpnos = new Set(created.map((r) => String(r.empno ?? r.employee_number ?? '').trim()));
+        for (const row of toInsert) {
+          if (doneEmpnos.has(String(row.empno ?? '').trim())) continue;
+          const one = await supabase.from(EMPLOYEES_COLLECTION).insert(row);
+          if (one.error || !one.data) {
+            skipped++;
+          } else {
+            imported++;
+            newEmployeesAdded++;
+          }
+        }
       }
-      imported += toInsert.length;
     }
 
     // Batch update existing employees + log STACODE changes to audit trail
     const auditEntries: Record<string, unknown>[] = [];
     for (const u of toUpdate) {
-      const { error } = await supabase.from('employees').update(u.data).eq('id', u.id);
+      const { error } = await supabase.from(EMPLOYEES_COLLECTION).update(u.data).eq('id', u.id);
       if (error) {
         skipped++;
       } else {
@@ -943,7 +919,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by Employee ID, First, Middle, or Last name…"
+              placeholder="Search by Employee ID, First, Middle, or Last nameâ€¦"
               className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
             />
           </div>
@@ -997,7 +973,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
-          <div className="py-20 text-center text-slate-400 text-sm">Loading employees…</div>
+          <div className="py-20 text-center text-slate-400 text-sm">Loading employeesâ€¦</div>
         ) : employees.length === 0 ? (
           <div className="py-20 text-center text-slate-400 text-sm">
             <Building2 className="w-10 h-10 mx-auto mb-3 text-slate-200" />
@@ -1028,7 +1004,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       <td className="px-4 py-3">
                         <p className="font-medium text-slate-800">{lname}, {fname} {e.mi || ''}</p>
                       </td>
-                      <td className="px-4 py-3"><span className="font-mono text-xs text-slate-600">{e.poscode || e.position || '—'}</span>{(() => { const pos = lookupPosition(e.poscode || e.position); return pos ? <span className="block text-xs text-slate-400 mt-0.5">{pos.position_title || pos.position_name}</span> : null; })()}</td>
+                      <td className="px-4 py-3"><span className="font-mono text-xs text-slate-600">{e.poscode || e.position || 'â€”'}</span>{(() => { const pos = lookupPosition(e.poscode || e.position); return pos ? <span className="block text-xs text-slate-400 mt-0.5">{pos.position_title || pos.position_name}</span> : null; })()}</td>
                       <td className="px-4 py-3 text-slate-600 text-xs">{e.grade}/{e.step}</td>
                       <td className="px-4 py-3 text-right font-medium text-slate-700">{currency(e.basic || e.basic_salary)}</td>
                       <td className="px-4 py-3 text-right font-medium text-emerald-700">{currency(e.netpay)}</td>
@@ -1175,7 +1151,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                             <td className="px-2 py-1.5 text-slate-700">{String(rec['LNAME'] ?? '')}, {String(rec['FNAME'] ?? '')}</td>
                             <td className="px-2 py-1.5 font-mono text-slate-500">{String(rec['STACODE'] ?? '')}</td>
                             <td className="px-2 py-1.5 text-slate-500">{String(rec['GRADE'] ?? '')}/{String(rec['STEP'] ?? '')}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-600">{rec['BASIC'] ? currency(Number(rec['BASIC'])) : '—'}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums text-slate-600">{rec['BASIC'] ? currency(Number(rec['BASIC'])) : 'â€”'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1200,7 +1176,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                     disabled={uploading}
                     className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors"
                   >
-                    {uploading ? 'Importing…' : `Import ${uploadPreview.records.length} Records`}
+                    {uploading ? 'Importingâ€¦' : `Import ${uploadPreview.records.length} Records`}
                   </button>
                 </div>
               </div>
@@ -1257,7 +1233,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       <input
                         value={schoolSearch}
                         onChange={e => setSchoolSearch(e.target.value)}
-                        placeholder="Search by school code or name…"
+                        placeholder="Search by school code or nameâ€¦"
                         className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
                       />
                     </div>
@@ -1274,10 +1250,10 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       }}
                       className={inputCls}
                     >
-                      <option value="">— Select School —</option>
+                      <option value="">â€” Select School â€”</option>
                       {filteredSchools.map(s => (
                         <option key={s.school_code} value={s.school_code}>
-                          {s.school_code} — {s.school_name}
+                          {s.school_code} â€” {s.school_name}
                         </option>
                       ))}
                     </select>
@@ -1309,7 +1285,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 <input value={form.distcode} onChange={e => setFormWithSalary({ ...form, distcode: e.target.value })} className={inputCls} />
               </label>
 
-              {/* Position picker — sourced from position_management table */}
+              {/* Position picker â€” sourced from position_management table */}
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <button
                   type="button"
@@ -1326,7 +1302,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       <input
                         value={positionSearch}
                         onChange={e => setPositionSearch(e.target.value)}
-                        placeholder="Search position code or title…"
+                        placeholder="Search position code or titleâ€¦"
                         className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
                       />
                     </div>
@@ -1349,7 +1325,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       }}
                       className={inputCls}
                     >
-                      <option value="">— Select Position —</option>
+                      <option value="">â€” Select Position â€”</option>
                       {positionList
                         .filter(p => {
                           if (!positionSearch) return true;
@@ -1360,7 +1336,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                         })
                         .map(p => (
                           <option key={p.id} value={p.position_code}>
-                            {p.position_code} — {p.position_title || p.position_name} (SG {p.salary_grade})
+                            {p.position_code} â€” {p.position_title || p.position_name} (SG {p.salary_grade})
                           </option>
                         ))}
                     </select>
@@ -1375,7 +1351,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       return (
                         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs">
                           <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                          {pos.position_title || pos.position_name} · SG {pos.salary_grade} · {pos.personnel_category}
+                          {pos.position_title || pos.position_name} Â· SG {pos.salary_grade} Â· {pos.personnel_category}
                         </div>
                       );
                     })()}
@@ -1395,7 +1371,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
               <CollapsibleSection title="Salary & Allowances" defaultOpen fields={[
                 { key: 'grade', label: 'GRADE', type: 'number' }, { key: 'step', label: 'STEP (default 1)', type: 'number' },
                 { key: 'basic', label: 'BASIC (auto from SG+STEP)', type: 'number', step: '0.01' },
-                { key: 'pera', label: 'PERA (default ₱2,000)', type: 'number', step: '0.01' },
+                { key: 'pera', label: 'PERA (default â‚±2,000)', type: 'number', step: '0.01' },
                 { key: 'trans', label: 'TRANS', type: 'number', step: '0.01' },
                 { key: 'aca', label: 'ACA', type: 'number', step: '0.01' },
                 { key: 'rata', label: 'RATA', type: 'number', step: '0.01' },
@@ -1423,26 +1399,26 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 { key: 'banker', label: 'BANKER' }, { key: 'pib', label: 'PIB' },
               ]} form={form} setForm={setFormWithSalary} />
 
-              {/* Deductions (Employee Share) — auto-computed, only DEDTAX editable */}
+              {/* Deductions (Employee Share) â€” auto-computed, only DEDTAX editable */}
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-default">
-                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Deductions (Employee Share) — Auto-Computed</span>
+                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Deductions (Employee Share) â€” Auto-Computed</span>
                 </button>
                 <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDLNR — GSIS (9% of basic)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDLNR â€” GSIS (9% of basic)</span>
                     <input value={form.dedlnr} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDMED — PhilHealth (2.5%)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDMED â€” PhilHealth (2.5%)</span>
                     <input value={form.dedmed} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDPAG — Pag-IBIG (₱200)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDPAG â€” Pag-IBIG (â‚±200)</span>
                     <input value={form.dedpag} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDTAX — Withholding Tax (editable)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">DEDTAX â€” Withholding Tax (editable)</span>
                     <input type="number" step="0.01" value={form.dedtax} onChange={e => {
                       const val = parseFloat(e.target.value) || 0;
                       const gross = form.basic + form.trans + form.pera + form.aca + form.rata + form.ontop + form.long + form.clothing + form.cashallow;
@@ -1457,22 +1433,22 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 </div>
               </div>
 
-              {/* Government Share — auto-computed, read-only */}
+              {/* Government Share â€” auto-computed, read-only */}
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <button type="button" className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 cursor-default">
-                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Government Share — Auto-Computed</span>
+                  <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Government Share â€” Auto-Computed</span>
                 </button>
                 <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTLNR — GSIS (12% of basic)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTLNR â€” GSIS (12% of basic)</span>
                     <input value={form.govtlnr} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTECC — GSIS ECC (₱100)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTECC â€” GSIS ECC (â‚±100)</span>
                     <input value={form.govtecc} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                   <label className="block">
-                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTMED — PhilHealth (2.5%)</span>
+                    <span className="block text-[11px] text-slate-500 mb-0.5">GOVTMED â€” PhilHealth (2.5%)</span>
                     <input value={form.govtmed} readOnly className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-500 cursor-not-allowed" />
                   </label>
                 </div>
@@ -1534,7 +1510,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50 sticky bottom-0">
               <button onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">Cancel</button>
               <button onClick={save} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors">
-                {saving ? 'Saving…' : editing ? 'Save Changes' : 'Add Employee'}
+                {saving ? 'Savingâ€¦' : editing ? 'Save Changes' : 'Add Employee'}
               </button>
             </div>
           </div>

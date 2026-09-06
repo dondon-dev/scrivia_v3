@@ -128,6 +128,8 @@ export function generateMasterfileDbf(employees: Employee[]): Uint8Array {
     DEPDATE2: e.depdate2 || null,
     DEPDATE3: e.depdate3 || null,
     DEPDATE4: e.depdate4 || null,
+    DISTCODE: e.distcode || '',
+    CATEGORY: '',
   }));
   return encodeDbf(MASTERFILE_FIELDS, records);
 }

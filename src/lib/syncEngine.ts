@@ -1192,6 +1192,10 @@ export async function rollbackSession(sessionId: string): Promise<boolean> {
   const perFile = session.per_file as Record<string, PerFileResult>;
   for (const [tableName, info] of Object.entries(perFile)) {
     if (info.inserted === 0 && info.updated === 0) continue;
+    // MASTFILE → hardcoded `employees` table is NEVER time-rolled-back: a
+    // time predicate would wipe manually added employees alongside synced ones
+    // (data loss). Use the explicit per-record delete instead.
+    if (tableName === 'MASTFILE') continue;
     const dbTable = TABLE_TO_DB[tableName as SyncTableName];
     if (!dbTable) continue;
     await supabase.from(dbTable).delete().gte('updated_at', new Date(Date.now() - 3600000).toISOString());

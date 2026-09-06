@@ -156,6 +156,7 @@ const MASTFILE: DbfTableTemplate = {
     { name: 'DEPDATE2',  type: 'D', length: 8,  decimals: 0 },
     { name: 'DEPDATE3',  type: 'D', length: 8,  decimals: 0 },
     { name: 'DEPDATE4',  type: 'D', length: 8,  decimals: 0 },
+    { name: 'DISTCODE',  type: 'C', length: 3,  decimals: 0 },
     { name: 'CATEGORY',  type: 'C', length: 20, decimals: 0 },
   ],
 };
