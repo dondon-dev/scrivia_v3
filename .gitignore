@@ -53,6 +53,8 @@ pb_output.log*
 # PocketBase database
 pb_data/
 *.db
+*.db-shm
+*.db-wal
 
 # Environment variables*.env
 .env.*

@@ -41,7 +41,12 @@ app.use(errorHandler);
 
 const PORT = process.env.APP_PORT || process.env.PORT || 3000;
 
-if (require.main === module) {
+// Bind unconditionally. Hostinger serves this app with Phusion Passenger,
+// which loads the startup file through its own bootstrap, so
+// `require.main === module` is never true there — guarding on it means the
+// process never listens and the deployment fails. Local importers/smoke tests
+// that only want the app object can set SKIP_LISTEN=1.
+if (process.env.SKIP_LISTEN !== '1') {
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`Server running on http://localhost:${PORT}`);

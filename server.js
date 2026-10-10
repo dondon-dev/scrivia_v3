@@ -8,6 +8,10 @@
  * The database path is resolved inside backend/config/db.js relative to that
  * file (backend/app.db), so the working directory does not matter.
  */
+// The API itself binds its port on import; this wrapper only re-exports it for
+// hosts whose app root is the repo root. Keep the inner bind disabled here and
+// bind once, below, so running `node server.js` from the repo root works too.
+process.env.SKIP_LISTEN = process.env.SKIP_LISTEN || '1';
 const app = require('./backend/server');
 
 const PORT = process.env.APP_PORT || process.env.PORT || 3000;
