@@ -8,7 +8,22 @@
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'app.db');
+/**
+ * Resolve where app.db lives, in order of preference:
+ *   1. DB_PATH env var (e.g. set in Hostinger hPanel > Node.js env vars).
+ *   2. Hostinger layout: each deploy is rewritten to
+ *      <domain>/hbuilds/versions/<id>/nodejs, so a DB there would reset to an
+ *      empty file on every release. Use the persistent sibling <domain>/data.
+ *   3. Local checkout default: backend/app.db.
+ */
+function resolveDbPath() {
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+  const host = __dirname.replace(/\\/g, '/').match(/^(.*\/domains\/[^/]+)\/hbuilds\/versions\/[^/]+\/nodejs\/config$/);
+  if (host) return path.join(host[1], 'data', 'app.db');
+  return path.join(__dirname, '..', 'app.db');
+}
+
+const DB_PATH = resolveDbPath();
 
 const db = new Database(DB_PATH);
 
