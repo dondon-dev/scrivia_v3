@@ -1,0 +1,1 @@
+function i(t,e){if(!t||!t.trim())return null;const u=t.trim();if(!/^\d+$/.test(u))return null;const l=parseInt(u,10);return isNaN(l)?null:e.find(n=>n.status==="Active"&&n.stacode_min!==null&&n.stacode_max!==null&&l>=n.stacode_min&&l<=n.stacode_max)??null}export{i as c};

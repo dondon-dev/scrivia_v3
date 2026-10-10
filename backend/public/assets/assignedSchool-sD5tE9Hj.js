@@ -1,0 +1,1 @@
+const c=["700","701"];function r(n){const o=String(n??"").trim();return o==="700"||o==="701"}function s(n){if(!r(n?.stacode))return"";const o=String(n?.assigned_school_code??"").trim();return r(o)?"":o}function i(n,o){const t=s(n);if(!t)return null;const e=o.get(t);return e?{stacode:t,schoolName:e}:null}export{c as S,s as a,i as c};

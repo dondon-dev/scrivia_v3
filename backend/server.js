@@ -10,6 +10,8 @@
  */
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const { DB_PATH } = require('./config/db');
 const { listCollections } = require('./config/schema');
@@ -24,6 +26,21 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// Optional static SPA (backend/public) — serves the built React app and the API
+// from the same origin. Mounted before the API routes; /api/* still hits the
+// JSON handlers while every other GET falls back to index.html for SPA routing.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+if (fs.existsSync(PUBLIC_DIR) && fs.statSync(PUBLIC_DIR).isDirectory()) {
+  app.use(express.static(PUBLIC_DIR, { index: 'index.html', maxAge: '1h' }));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api/')) return next();
+    if (path.extname(req.path)) return next();
+    if (!req.accepts('html')) return next();
+    return res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+  });
+}
 
 app.get('/', (_req, res) => res.send('API Running'));
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', db: DB_PATH, collections: listCollections().length }));
