@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import { supabase } from '@/lib/pb';
+import { useOrg } from '@/lib/org';
 import type { SchoolType } from '@/types/schools';
 
 interface ParsedRow {
@@ -118,6 +119,7 @@ function validateRow(row: Record<string, string>, schoolType: SchoolType): Parse
 }
 
 export default function SchoolImportModal({ open, onClose, schoolType, onImported }: SchoolImportModalProps) {
+  const { selectedDivision, selectedRegion, scopedDivisionIds, scopedCodes } = useOrg();
   const [stage, setStage] = useState<'upload' | 'preview' | 'importing' | 'done'>('upload');
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [fileName, setFileName] = useState('');
@@ -183,7 +185,23 @@ export default function SchoolImportModal({ open, onClose, schoolType, onImporte
       setStage('preview');
       return;
     }
-    const payload = valid.map(({ _errors, ...rest }) => rest);
+    // Same stamp as the Add School form: without a division_id the division-scoped
+    // Organization RPC can never return the imported school, and without a STACODE
+    // payroll/PAL cannot match employees to it.
+    const division_id = selectedDivision?.id ?? scopedDivisionIds?.[0] ?? '';
+    const region_id = selectedRegion?.id ?? selectedDivision?.region_id ?? '';
+    const activeScope = scopedCodes?.length === 1
+      ? scopedCodes[0]
+      : selectedDivision?.division_code && selectedRegion?.region_code
+        ? { regcode: selectedRegion.region_code, divcode: selectedDivision.division_code }
+        : null;
+    const payload = valid.map(({ _errors, ...rest }) => ({
+      ...rest,
+      stacode: rest.school_code,
+      ...(division_id ? { division_id } : {}),
+      ...(region_id ? { region_id } : {}),
+      ...(activeScope ? { regcode: activeScope.regcode, divcode: activeScope.divcode } : {}),
+    }));
     const { error } = await supabase
       .from('schools')
       .upsert(payload, { onConflict: 'school_code' });

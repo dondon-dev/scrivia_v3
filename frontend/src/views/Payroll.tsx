@@ -539,7 +539,7 @@ export default function Payroll({ profile }: PayrollProps) {
             {periods.length === 0 && <option>No pay periods yet</option>}
             {periods.map((p) => <option key={p.id} value={p.id}>{p.period_name} ({p.status})</option>)}
             {periods.length > 0 && (
-              <option value="__generate" className="text-emerald-600 font-medium">+ Generate Monthly Periods…</option>
+              <option value="__generate" className="text-emerald-600 font-medium">+ New Monthly Period…</option>
             )}
           </select>
           {currentPeriod && (
@@ -1082,47 +1082,6 @@ function NewPeriodModal({ existing, regcode, divcode, onClose, onCreated }: { ex
     onCreated();
   }
 
-  async function generateFullYear() {
-    setSaving(true);
-    setError('');
-    try {
-      // Prefer the server-side RPC (custom PocketBase backend). Send both the
-      // Go-native field names and the legacy p_-prefixed names so the payload
-      // binds correctly regardless of which backend binary is deployed.
-      const { error: err } = await supabase.rpc('generate_monthly_periods', {
-        year, regcode, divcode,
-        p_year: year, p_regcode: regcode, p_divcode: divcode,
-      });
-      if (!err) {
-        onCreated();
-        return;
-      }
-      // Server route unavailable (e.g. stock PocketBase backend without the
-      // custom /api/payroll/generate-periods route) — fall back to creating
-      // each month client-side, exactly like the "Create Period" button.
-      for (let m = 1; m <= 12; m++) {
-        if (existingSet.has(`${year}-${m}`)) continue;
-        const start = `${year}-${String(m).padStart(2, '0')}-01`;
-        const end = new Date(year, m, 0).toISOString().slice(0, 10);
-        const payDate = new Date(year, m, 15).toISOString().slice(0, 10);
-        const { error: insErr } = await supabase.from('pay_periods').insert({
-          period_name: `${MONTHS[m - 1]} ${year}`, start_date: start, end_date: end, pay_date: payDate,
-          frequency: 'Monthly', status: 'draft', month: m, year, period_number: m,
-          regcode, divcode,
-        });
-        if (insErr) {
-          setError(`Failed creating ${MONTHS[m - 1]} ${year}: ${insErr.message}`);
-          return;
-        }
-      }
-      onCreated();
-    } catch (e) {
-      setError('Failed to generate periods: ' + formatError(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
   const inputCls = 'w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400';
   const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 1 + i);
 
@@ -1136,7 +1095,7 @@ function NewPeriodModal({ existing, regcode, divcode, onClose, onCreated }: { ex
         <div className="p-6 space-y-4">
           {error && <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-rose-50 text-rose-700 text-sm"><AlertCircle className="w-4 h-4" /> {error}</div>}
           <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2.5 text-xs text-blue-700">
-            Payroll is computed once per month. Select a month and year to create a new monthly pay period, or generate all 12 months at once.
+            Payroll is computed once per month. Select a month and year to create a single monthly pay period. Periods are created one month at a time — add a month only when you are ready to run its payroll.
           </div>
           <div className="grid grid-cols-2 gap-4">
             <label className="block">
@@ -1167,16 +1126,11 @@ function NewPeriodModal({ existing, regcode, divcode, onClose, onCreated }: { ex
             <p><span className="font-medium text-slate-600">Pay Date:</span> {MONTHS[month % 12]} 15, {month === 12 ? year + 1 : year}</p>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
-          <button onClick={generateFullYear} disabled={saving} className="px-4 py-2 rounded-lg text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60 transition-colors">
-            {saving ? 'Generating…' : 'Generate All 12 Months'}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">Cancel</button>
+          <button onClick={save} disabled={saving || alreadyExists} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors">
+            {saving ? 'Creating…' : 'Create Period'}
           </button>
-          <div className="flex items-center gap-3">
-            <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">Cancel</button>
-            <button onClick={save} disabled={saving || alreadyExists} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors">
-              {saving ? 'Creating…' : 'Create Period'}
-            </button>
-          </div>
         </div>
       </div>
     </div>

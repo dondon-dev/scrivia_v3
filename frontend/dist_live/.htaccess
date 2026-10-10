@@ -1,0 +1,11 @@
+# Serve index.html as always-fresh so browsers revalidate on every visit.
+# Build assets are content-hashed (index-*.js / index-*.css), so a revalidated
+# index.html is enough to always load the newest deploy — this prevents users
+# from being stuck on a stale page after an update.
+<IfModule mod_headers.c>
+    <FilesMatch "\.(html|htm)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+</IfModule>

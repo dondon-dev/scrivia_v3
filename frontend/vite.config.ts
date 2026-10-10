@@ -11,11 +11,18 @@ export default defineConfig({
     },
   },
 
-  // Tauri & Web dev server configuration
   server: {
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+
     allowedHosts: [
       'scriviapayroll.com',
       'www.scriviapayroll.com',
@@ -23,6 +30,7 @@ export default defineConfig({
       'localhost',
       '127.0.0.1',
     ],
+
     watch: {
       ignored: ['**/src-tauri/target/**'],
     },

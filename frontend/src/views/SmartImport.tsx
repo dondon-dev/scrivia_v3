@@ -13,14 +13,14 @@ import { useOrg } from '@/lib/org';
 import { supabase, fetchAll, formatError } from '@/lib/pb';
 import {
   SYNC_ORDER, TABLE_LABELS, TABLE_DESCRIPTIONS, TABLE_TO_DB,
-  extractTableName, previewDbf, executeSync, rollbackSession, loadSyncSessions,
-  deleteSyncSession, deleteTableData,
+  previewDbf, importElementaryFiles, importHighSchoolFiles,
+  rollbackSession, loadSyncSessions,
+  deleteSyncSession, clearElementaryTableData, clearHighSchoolTableData,
   type FilePreview, type PerFileResult, type SyncSessionResult, type SyncSessionRecord, type SyncTableName,
 } from '@/lib/syncEngine';
 import { validateFileSignature, validateFileSize } from '@/lib/uploadSecurity';
-import { type PayrollCategory } from '@/lib/categories';
+import { CATEGORIES, type PayrollCategory } from '@/lib/categories';
 import { usePagination, Pagination } from '@/components/Pagination';
-import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
 
 type Phase = 'idle' | 'uploading' | 'previewing' | 'syncing' | 'done' | 'error';
 
@@ -42,7 +42,7 @@ export default function SmartImport() {
     if (scopedCodes && scopedCodes.length === 1) return scopedCodes[0];
     return null;
   }, [scopedCodes]);
-  const [groupFilter, setGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
+  const [category, setCategory] = useState<PayrollCategory>('elementary');
   const [periodName, setPeriodName] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [previews, setPreviews] = useState<FilePreview[]>([]);
@@ -62,9 +62,6 @@ export default function SmartImport() {
     null
   >(null);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
-
-  const gf = useMemo(() => resolveGroupFilter(groupFilter, []), [groupFilter]);
-  const category = gf.category;
 
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -151,13 +148,15 @@ export default function SmartImport() {
     setResult(null);
 
     try {
-      const syncResult = await executeSync(
+      // Elementary and High School each save through their own import routine,
+      // so this batch only ever writes the selected category's STACODE range.
+      const importFiles = category === 'elementary' ? importElementaryFiles : importHighSchoolFiles;
+      const syncResult = await importFiles(
         previews,
         user?.email ?? 'unknown',
         (current, total, tableName, message) => {
           setProgress({ current, total, tableName, message });
         },
-        category,
         syncScope,
         periodName.trim() || null,
       );
@@ -183,7 +182,7 @@ export default function SmartImport() {
       setError(formatError(err));
       setProgress(null);
     }
-  }, [previews, user, logAudit, loadHistory, periodName]);
+  }, [previews, user, logAudit, loadHistory, periodName, category, syncScope]);
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     setDeleteInProgress(true);
@@ -206,14 +205,17 @@ export default function SmartImport() {
   const handleDeleteTable = useCallback(async (tableName: SyncTableName) => {
     setDeleteInProgress(true);
     try {
-      const result = await deleteTableData(tableName, category);
+      // Elementary and High School each clear through their own routine, so
+      // this only ever removes the selected category's rows.
+      const clearTable = category === 'elementary' ? clearElementaryTableData : clearHighSchoolTableData;
+      const result = await clearTable(tableName);
       if (result.error) {
-        setError(`Failed to delete ${tableName} data: ${result.error}`);
+        setError(`Failed to clear ${tableName} (${category === 'elementary' ? 'Elementary' : 'High School'}) data: ${result.error}`);
       } else {
         await logAudit('dbf_table_delete', TABLE_TO_DB[tableName], tableName, {
           tableName,
           deletedCount: result.deleted,
-          category: category ?? null,
+          category,
         });
         setTableRefreshKey((k) => k + 1);
       }
@@ -223,7 +225,7 @@ export default function SmartImport() {
       setDeleteInProgress(false);
       setDeleteTarget(null);
     }
-  }, [logAudit]);
+  }, [logAudit, category]);
 
   const [tableRefreshKey, setTableRefreshKey] = useState(0);
   const isSuperAdmin = isSuperAdminRole(profile?.role);
@@ -248,8 +250,8 @@ export default function SmartImport() {
   const sortedPreviews = [...previews].sort((a, b) => SYNC_ORDER.indexOf(a.tableName) - SYNC_ORDER.indexOf(b.tableName));
   const previewPag = usePagination(sortedPreviews, 10, sortedPreviews);
   const isAdmin = isSuperAdminRole(profile?.role) || profile?.role === 'payroll_admin';
-  const catLabel = gf.label;
-  const catIcon = category === 'elementary' ? School : category === 'highschool' ? GraduationCap : Database;
+  const catLabel = CATEGORIES[category].label;
+  const catIcon = category === 'elementary' ? School : GraduationCap;
   const CatIcon = catIcon;
   const accentColor = category === 'elementary' ? 'blue' : category === 'highschool' ? 'emerald' : 'slate';
   const accentBg = accentColor === 'blue' ? 'bg-blue-600' : accentColor === 'emerald' ? 'bg-emerald-600' : 'bg-slate-800';
@@ -260,20 +262,37 @@ export default function SmartImport() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${accentBg}`}>
           <CatIcon className="w-5 h-5 text-white" />
         </div>
         <div>
           <h1 className="text-xl font-bold text-slate-800">Smart Import — {catLabel}</h1>
           <p className="text-sm text-slate-500">
-            {category
-              ? `Upload FoxPro DBF files — only records in the ${catLabel} stacode range will be imported`
-              : 'Upload FoxPro DBF files — the system auto-detects, validates, and synchronizes all 10 payroll tables'}
+            Upload FoxPro DBF files — records in the {catLabel} stacode range will be imported (STNTABLE imports all stations for both Elementary and High School)
           </p>
         </div>
-        <div className="ml-auto">
-          <GroupFilter value={groupFilter} onChange={setGroupFilter} />
+        <div className="ml-auto flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
+          <button
+            onClick={() => setCategory('elementary')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+              category === 'elementary'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <School className="w-4 h-4" /> Elementary
+          </button>
+          <button
+            onClick={() => setCategory('highschool')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs sm:text-sm font-medium transition-colors ${
+              category === 'highschool'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <GraduationCap className="w-4 h-4" /> High School
+          </button>
         </div>
       </div>
 
@@ -330,11 +349,9 @@ export default function SmartImport() {
           <div className={`w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center transition-colors ${dragOver ? 'bg-blue-500' : 'bg-slate-100'}`}>
             <Upload className={`w-7 h-7 ${dragOver ? 'text-white' : 'text-slate-400'}`} />
           </div>
-          <p className="text-sm font-semibold text-slate-700">Drag and drop FoxPro DBF files here{category ? ` — ${catLabel} only` : ''}</p>
+          <p className="text-sm font-semibold text-slate-700">Drag and drop FoxPro DBF files here — {catLabel} only</p>
           <p className="text-xs text-slate-500 mt-1">
-            {category
-              ? `Only records in the ${catLabel} stacode range will be imported. Upload tables: DEDFILE, DIVTABLE, INCLUDED, EXCLUDED, MASTFILE, STNTABLE — EXCLUDED = undeducted obligations`
-              : 'Upload tables: DEDFILE, DIVTABLE, INCLUDED, EXCLUDED, MASTFILE, STNTABLE — EXCLUDED = undeducted obligations (lowest priority)'}
+            Records in the {catLabel} stacode range will be imported — STNTABLE syncs every station to its own organization (Elementary or High School). Upload tables: DEDFILE, DIVTABLE, INCLUDED, EXCLUDED, MASTFILE, STNTABLE — EXCLUDED = undeducted obligations
           </p>
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -362,7 +379,7 @@ export default function SmartImport() {
           </div>
           <div className="divide-y divide-slate-100">
             {previewPag.pagedItems.map((p, idx) => (
-              <PreviewRow key={p.tableName} preview={p} order={idx + 1} onRemove={() => removePreview(p.tableName)} />
+              <PreviewRow key={p.tableName} preview={p} order={idx + 1} onRemove={() => removePreview(p.tableName)} highlighted={p.tableName === 'MASTFILE'} />
             ))}
           </div>
           <Pagination page={previewPag.page} totalPages={previewPag.totalPages} total={previewPag.total} onPageChange={previewPag.setPage} label="files" />
@@ -373,6 +390,18 @@ export default function SmartImport() {
                 <Info className="w-3.5 h-3.5 shrink-0" />
                 <span>Sync order: {SYNC_ORDER.join(' → ')}</span>
               </div>
+              {sortedPreviews.some((p) => p.tableName === 'MASTFILE') && (
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <User className="w-3.5 h-3.5 shrink-0" />
+                  <span><span className="font-medium text-slate-700">MASTFILE.DBF</span><ArrowRight className="w-3 h-3 inline-block" /><span className="font-medium text-slate-700">Employee Records</span></span>
+                </div>
+              )}
+              {sortedPreviews.some((p) => p.tableName === 'STNTABLE') && (
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <School className="w-3.5 h-3.5 shrink-0" />
+                  <span><span className="font-medium text-slate-700">STNTABLE.DBF</span><ArrowRight className="w-3 h-3 inline-block" /><span className="font-medium text-slate-700">Organization — Elementary &amp; High School</span></span>
+                </div>
+              )}
               {/* Period name input for files that need it (PAYROLLS, INCLUDED, EXCLUDED) */}
               {(sortedPreviews.some(p => ['INCLUDED', 'EXCLUDED'].includes(p.tableName))) && (
                 <div className="flex items-center gap-3">
@@ -394,7 +423,7 @@ export default function SmartImport() {
                     onClick={startSync}
                     className={`inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm ${accentBg} ${accentHoverBg}`}
                   >
-                    <Database className="w-4 h-4" /> Start {category ? catLabel : ''} Sync
+                    <Database className="w-4 h-4" /> Start {catLabel} Sync
                   </button>
                 </div>
               )}
@@ -489,7 +518,7 @@ export default function SmartImport() {
               </p>
             ) : (
               <p className="text-sm text-slate-600 mb-5">
-                Delete <span className="font-semibold text-rose-600">{deleteTarget.count.toLocaleString()}</span> records from the <span className="font-semibold text-slate-800">{deleteTarget.tableName}</span> table{category ? ` for ${category === 'elementary' ? 'Elementary' : 'High School'} Payroll (STACODE ${category === 'elementary' ? '1–499' : '500–701'})` : ''}? This action cannot be undone.
+                Permanently delete <span className="font-semibold text-rose-600">{deleteTarget.count.toLocaleString()}</span> records from the <span className="font-semibold text-slate-800">{deleteTarget.tableName}</span> table{category ? ` for ${category === 'elementary' ? 'Elementary' : 'High School'} Payroll (STACODE ${category === 'elementary' ? '1–499' : '500–701'})` : ''} — including the database records this import forwarded into the system. This is a hard delete and cannot be undone.
               </p>
             )}
             <div className="flex items-center justify-end gap-2.5">
@@ -518,17 +547,22 @@ export default function SmartImport() {
     </div>
   );
 }
-function PreviewRow({ preview, order, onRemove }: { preview: FilePreview; order: number; onRemove: () => void }) {
+function PreviewRow({ preview, order, onRemove, highlighted = false }: { preview: FilePreview; order: number; onRemove: () => void; highlighted?: boolean }) {
   const [showFields, setShowFields] = useState(false);
   return (
-    <div className="px-5 py-4">
+    <div className={highlighted ? 'px-5 py-4 bg-emerald-50/60 ring-1 ring-inset ring-emerald-200' : 'px-5 py-4'}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center shrink-0 text-xs font-bold text-slate-500">{order}</div>
+          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold ${highlighted ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{order}</div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <p className="text-sm font-bold text-slate-800">{preview.tableName}</p>
               <span className="text-[10px] text-slate-400">— {TABLE_LABELS[preview.tableName]}</span>
+              {highlighted && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">
+                  <User className="w-3 h-3" /> Employee Records
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-500 truncate mt-0.5">
               {preview.fileName} · {preview.recordCount.toLocaleString()} records · {preview.fieldCount} fields · {(preview.fileSize / 1024).toFixed(1)} KB

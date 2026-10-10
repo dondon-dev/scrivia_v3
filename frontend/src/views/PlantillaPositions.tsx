@@ -177,11 +177,12 @@ export default function PlantillaPositions() {
     const teaching = positions.filter((p) => p.personnel_category === 'Teaching').length;
     const teachingRelated = positions.filter((p) => p.personnel_category === 'Teaching Related').length;
     const nonTeaching = positions.filter((p) => p.personnel_category === 'Non-Teaching').length;
+    const schoolAdministration = positions.filter((p) => p.personnel_category === 'School Administration').length;
     const authorizedSalary = positions.reduce((acc, p) => acc + (p.authorized_salary || p.annual_salary || 0), 0);
     const actualSalary = positions.reduce((acc, p) => acc + (p.position_status === 'Filled' ? (p.actual_salary || p.annual_salary || 0) : 0), 0);
     const utilizationRate = total > 0 ? ((filled / total) * 100).toFixed(1) : '0.0';
 
-    return { total, filled, vacant, teaching, teachingRelated, nonTeaching, authorizedSalary, actualSalary, utilizationRate };
+    return { total, filled, vacant, teaching, teachingRelated, nonTeaching, schoolAdministration, authorizedSalary, actualSalary, utilizationRate };
   }, [positions]);
 
   const pagination = usePagination(filteredPositions, 10);
@@ -719,6 +720,7 @@ function DashboardView({ kpis, positions, auditLogs, headers, onNavigate }: {
           </h3>
           <div className="space-y-3">
             <DistributionBar label="Teaching" count={kpis.teaching} total={kpis.total} color="bg-depedblue-600" />
+            <DistributionBar label="School Administration" count={kpis.schoolAdministration} total={kpis.total} color="bg-violet-500" />
             <DistributionBar label="Teaching Related" count={kpis.teachingRelated} total={kpis.total} color="bg-amber-500" />
             <DistributionBar label="Non-Teaching" count={kpis.nonTeaching} total={kpis.total} color="bg-slate-400" />
           </div>
@@ -905,6 +907,7 @@ function PositionsView(props: {
           <select value={props.categoryFilter} onChange={(e) => props.setCategoryFilter(e.target.value)} className="input-base">
             <option value="All">All Categories</option>
             <option value="Teaching">Teaching</option>
+            <option value="School Administration">School Administration</option>
             <option value="Teaching Related">Teaching Related</option>
             <option value="Non-Teaching">Non-Teaching</option>
           </select>
@@ -1964,6 +1967,7 @@ function StatusBadge({ status }: { status: PositionStatus }) {
 function CategoryBadge({ category }: { category: PersonnelCategory }) {
   const styles: Record<PersonnelCategory, string> = {
     'Teaching': 'bg-depedblue-100 text-depedblue-800 dark:bg-depedblue-950 dark:text-depedblue-300 border-depedblue-200 dark:border-depedblue-800',
+    'School Administration': 'bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300 border-violet-200 dark:border-violet-800',
     'Teaching Related': 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-200 dark:border-amber-800',
     'Non-Teaching': 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-200 dark:border-slate-700',
   };
@@ -2055,6 +2059,7 @@ interface KpiData {
   filled: number;
   vacant: number;
   teaching: number;
+  schoolAdministration: number;
   teachingRelated: number;
   nonTeaching: number;
   authorizedSalary: number;

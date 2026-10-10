@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Command, Search, CornerDownLeft, User, Clock, type LucideIcon } from 'lucide-react';
-import { NAV_SECTIONS, type NavItem } from '@/lib/navConfig';
+import { NAV_SECTIONS, type NavItem, isSectionHiddenForRole, isNavItemHiddenForRole } from '@/lib/navConfig';
 import type { PayrollCategory } from '@/lib/categories';
 import { usePermissions } from '@/lib/permissions';
 import { useOrg, codeScope } from '@/lib/org';
@@ -108,25 +108,32 @@ export default function CommandPalette({ profile, open, onOpenChange, onNavigate
     return () => clearTimeout(t);
   }, [query, open, canEmployees]);
 
-  // Flatten permission-filtered nav into a searchable list.
+  // Flatten permission-filtered nav into a searchable list. Sections hidden
+  // for the user's role (e.g. Remittance for School Payroll Coordinator) are
+  // excluded outright so they cannot resurface through search.
   const flatNav = useMemo<FlatEntry[]>(() => {
     const out: FlatEntry[] = [];
     for (const section of NAV_SECTIONS) {
+      if (isSectionHiddenForRole(section, profile.role)) continue;
       if (section.items) {
         for (const item of section.items) {
-          if (hasPermission(item.permission)) out.push({ item, section: section.label });
+          if (hasPermission(item.permission) && !isNavItemHiddenForRole(item, profile.role)) {
+            out.push({ item, section: section.label });
+          }
         }
       }
       if (section.subGroups) {
         for (const sg of section.subGroups) {
           for (const item of sg.items) {
-            if (hasPermission(item.permission)) out.push({ item, section: `${section.label} › ${sg.label}` });
+            if (hasPermission(item.permission) && !isNavItemHiddenForRole(item, profile.role)) {
+              out.push({ item, section: `${section.label} › ${sg.label}` });
+            }
           }
         }
       }
     }
     return out;
-  }, [hasPermission]);
+  }, [hasPermission, profile.role]);
 
   const q = query.trim().toLowerCase();
 

@@ -2,7 +2,7 @@ import { supabase, fetchAll } from '@/lib/pb';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-export type PersonnelCategory = 'Teaching' | 'Teaching Related' | 'Non-Teaching';
+export type PersonnelCategory = 'Teaching' | 'Teaching Related' | 'Non-Teaching' | 'School Administration';
 export type PositionStatus = 'Filled' | 'Vacant';
 export type SchoolType = 'Elementary' | 'High School' | 'Implementing Unit' | 'Division Office';
 export type ApprovalStatus = 'Approved' | 'Pending_Approval' | 'Draft' | 'Rejected';
@@ -99,13 +99,34 @@ export interface SchoolPlantillaSummary {
 // ── Automatic Personnel Classification ──────────────────────────────────────
 
 export function classifyPersonnelCategory(title: string): PersonnelCategory {
-  const upper = title.toUpperCase();
+  const upper = (title || '').toUpperCase().trim();
 
+  // ── School Administration (DO 7, s. 2023 Annex A) ────────────────
+  if (
+    upper.includes('SCHOOL PRINCIPAL') ||
+    upper.includes('SPECIAL SCHOOL PRINCIPAL') ||
+    upper.includes('ASSISTANT SCHOOL PRINCIPAL') ||
+    upper.includes('ASSISTANT SPECIAL SCHOOL PRINCIPAL') ||
+    upper.includes('PRINCIPAL') ||
+    upper.includes('HEAD TEACHER') ||
+    upper.includes('TEACHER-IN-CHARGE')
+  ) {
+    return 'School Administration';
+  }
+
+  // ── Related-Teaching titles that contain "TEACHER" (Annex A) ─────
+  if (
+    upper.includes('TEACHER CREDENTIALS EVALUATOR') ||
+    upper.includes('TEACHING-AIDS SPECIALIST') ||
+    upper.includes('TEACHING AIDS SPECIALIST')
+  ) {
+    return 'Teaching Related';
+  }
+
+  // ── Teaching (Annex A: Teacher I + higher teaching positions per GMIS/BHROD) ──
   if (
     upper.includes('TEACHER') ||
     upper.includes('MASTER TEACHER') ||
-    upper.includes('HEAD TEACHER') ||
-    upper.includes('PRINCIPAL') ||
     upper.includes('SPET') ||
     upper.includes('INSTRUCTOR') ||
     upper.includes('PROFESSOR')
@@ -113,15 +134,20 @@ export function classifyPersonnelCategory(title: string): PersonnelCategory {
     return 'Teaching';
   }
 
+  // ── Related-Teaching (Annex A) ───────────────────────────────────
+  const isScienceResearchTechnicianI = /^SCIENCE RESEARCH TECHNICIAN I$/.test(upper);
   if (
     upper.includes('EDUCATION PROGRAM') ||
-    upper.includes('SUPERVISOR') ||
-    upper.includes('PSDS') ||
-    upper.includes('EPS') ||
-    upper.includes('GUIDANCE') ||
-    upper.includes('LIBRARIAN') ||
-    upper.includes('VOCATIONAL') ||
-    upper.includes('CHIEF EDUCATION')
+    upper.includes('DISTRICT SUPERVISOR') ||
+    upper.includes('VOCATIONAL INSTRUCTION') ||
+    upper.includes('GUIDANCE COUNSELOR') ||
+    upper.includes('GUIDANCE COORDINATOR') ||
+    upper.includes('SCIENCE RESEARCH SPECIALIST') ||
+    (upper.includes('SCIENCE RESEARCH TECHNICIAN') && !isScienceResearchTechnicianI) ||
+    upper.includes('SCHOOL FARMING COORDINATOR') ||
+    upper.includes('CRAFTS EDUCATION DEMONSTRATOR') ||
+    upper.includes('EDUCATION RESEARCH ASSISTANT') ||
+    upper.includes('SCHOOL FARM DEMONSTRATOR')
   ) {
     return 'Teaching Related';
   }
@@ -496,7 +522,7 @@ export const INITIAL_PLANTILLA_POSITIONS: PlantillaPosition[] = [
     last_promotion_date: '',
     eligibility: 'NQESH / NOP Passed',
     employment_status: '',
-    personnel_category: 'Teaching',
+    personnel_category: 'School Administration',
     position_status: 'Vacant',
     approval_status: 'Approved',
     imported_by: 'HR Officer',
@@ -702,6 +728,20 @@ function markReimportIfSchoolCodeMissing(list: PlantillaPosition[] | null | unde
   }
 }
 
+/**
+ * Re-derive the personnel_category of every position from its position_title
+ * (DO 7, s. 2023 Annex A) so the UI always reflects the authoritative
+ * classification even when the stored record (DB or localStorage snapshot)
+ * carries a stale/incorrect category.
+ */
+function recategorizePositions(positions: PlantillaPosition[]): PlantillaPosition[] {
+  return positions.map((p) => {
+    const category = classifyPersonnelCategory(p.position_title || p.item_number);
+    if (category === p.personnel_category) return p;
+    return { ...p, personnel_category: category };
+  });
+}
+
 export async function loadPlantillaPositions(): Promise<PlantillaPosition[]> {
   try {
     const data = await fetchAll<PlantillaPosition>(() =>
@@ -711,7 +751,7 @@ export async function loadPlantillaPositions(): Promise<PlantillaPosition[]> {
       // Backfill: if school_id is empty for all items, the PSIPOP was imported
       // before the school code extraction fix. Mark for re-import.
       markReimportIfSchoolCodeMissing(data);
-      return data;
+      return recategorizePositions(data);
     }
   } catch {
     // fall through to localStorage
@@ -725,9 +765,9 @@ export async function loadPlantillaPositions(): Promise<PlantillaPosition[]> {
       // Background sync: if PB is empty but localStorage has data,
       // push localStorage records to PB so the Plantilla Positions page shows them.
       if (Array.isArray(parsed) && parsed.length > 0) {
-        syncLocalStorageToPB(parsed).catch(() => {}); // fire-and-forget
+        syncLocalStorageToPB(recategorizePositions(parsed)).catch(() => {}); // fire-and-forget
       }
-      return parsed;
+      return recategorizePositions(parsed);
     } catch { /* ignore */ }
   }
   // No hardcoded seed data — the Plantilla Intelligence Center starts empty

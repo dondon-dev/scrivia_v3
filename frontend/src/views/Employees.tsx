@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Pagination } from '@/components/Pagination';
 import { useServerPagination } from '@/lib/useServerPagination';
-import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical, Eye } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import { generateMasterfileDbf, downloadFile, currency } from '@/lib/reports';
@@ -13,7 +13,7 @@ import { inCategory, type PayrollCategory } from '@/lib/categories';
 import { validateUpload } from '@/lib/uploadSecurity';
 import DeleteAllConfirm from '@/components/DeleteAllConfirm';
 import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
-import { getEmployeeFilter, isReadOnlyRole, canWritePayrollData } from '@/lib/authz';
+import { getEmployeeFilter, canWritePayrollData, canSeeNetPay } from '@/lib/authz';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import type { UserProfile } from '@/types/auth';
@@ -329,6 +329,13 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
 
   // Server-side pagination: fetch only 10 rows per page instead of all 2,710
   const scopeFilter = profile ? getEmployeeFilter(profile) : null;
+  // Read-only roles (incl. School Payroll Coordinator) get the list and the
+  // detail view but no Add / Edit / Delete / Import / Export — the server
+  // refuses their writes regardless (employeeWriteGuard in main.go).
+  const canWrite = profile ? canWritePayrollData(profile.role) : true;
+  // The School Payroll Coordinator verifies records, not payroll: NETPAY is
+  // hidden for that role (see canSeeNetPay in lib/authz).
+  const showNetPay = profile ? canSeeNetPay(profile.role) : true;
   const groupsForFilter = useMemo(() => payrollGroups as PayrollGroup[], [payrollGroups]);
   const gf = useMemo(() => resolveGroupFilter(groupFilter, groupsForFilter), [groupFilter, groupsForFilter]);
   const { scopedDivisionIds, scopedCodes, divisions: orgDivisions, regions: orgRegions } = useOrg();
@@ -1016,48 +1023,61 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
           <GroupFilter value={groupFilter} onChange={setGroupFilter} />
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => { setShowUpload(true); setUploadPreview(null); setUploadResult(null); }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            <Upload className="w-4 h-4" /> Import DBF
-          </button>
-          <button
-            onClick={exportDbf}
-            disabled={serverPag.total === 0}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download className="w-4 h-4" /> Export DBF
-          </button>
-          <button
-            onClick={openAdd}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Add Employee
-          </button>
-          <div className="relative">
+          {canWrite && (
+            <>
+              <button
+                onClick={() => { setShowUpload(true); setUploadPreview(null); setUploadResult(null); }}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Upload className="w-4 h-4" /> Import DBF
+              </button>
+              <button
+                onClick={exportDbf}
+                disabled={serverPag.total === 0}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <Download className="w-4 h-4" /> Export DBF
+              </button>
+            </>
+          )}
+          {canWrite && (
             <button
-              onClick={() => setMenuOpen(!menuOpen)}
-              className="inline-flex items-center gap-1 px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-              title="More actions"
+              onClick={openAdd}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors"
             >
-              <MoreVertical className="w-4 h-4" />
+              <Plus className="w-4 h-4" /> Add Employee
             </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 mt-2 w-52 bg-white rounded-lg shadow-xl border border-slate-200 z-20 py-1">
-                  <button
-                    onClick={() => { setMenuOpen(false); setShowDeleteAll(true); }}
-                    disabled={serverPag.total === 0}
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" /> Delete All Employees
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          )}
+          {canWrite && (
+            <div className="relative">
+              <button
+                onClick={() => setMenuOpen(!menuOpen)}
+                className="inline-flex items-center gap-1 px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                title="More actions"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 mt-2 w-52 bg-white rounded-lg shadow-xl border border-slate-200 z-20 py-1">
+                    <button
+                      onClick={() => { setMenuOpen(false); setShowDeleteAll(true); }}
+                      disabled={serverPag.total === 0}
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" /> Delete All Employees
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {!canWrite && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700" title="Your role has view-only access to Employee Records">
+              <Eye className="w-3.5 h-3.5" /> View only
+            </span>
+          )}
         </div>
       </div>
 
@@ -1079,7 +1099,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                   <th className="text-left px-4 py-3 font-medium">Position</th>
                   <th className="text-left px-4 py-3 font-medium">Grade/Step</th>
                   <th className="text-right px-4 py-3 font-medium">BASIC</th>
-                  <th className="text-right px-4 py-3 font-medium">NETPAY</th>
+                  {showNetPay && <th className="text-right px-4 py-3 font-medium">NETPAY</th>}
                   <th className="text-left px-4 py-3 font-medium">Status</th>
                   <th className="text-right px-4 py-3 font-medium">Actions</th>
                 </tr>
@@ -1097,7 +1117,7 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       <td className="px-4 py-3"><span className="font-mono text-xs text-slate-600">{e.poscode || e.position || '—'}</span>{(() => { const pos = lookupPosition(e.poscode || e.position); return pos ? <span className="block text-xs text-slate-400 mt-0.5">{pos.position_title || pos.position_name}</span> : null; })()}</td>
                       <td className="px-4 py-3 text-slate-600 text-xs">{e.grade}/{e.step}</td>
                       <td className="px-4 py-3 text-right font-medium text-slate-700">{currency(e.basic || e.basic_salary)}</td>
-                      <td className="px-4 py-3 text-right font-medium text-emerald-700">{currency(e.netpay)}</td>
+                      {showNetPay && <td className="px-4 py-3 text-right font-medium text-emerald-700">{currency(e.netpay)}</td>}
                       <td className="px-4 py-3">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                           e.status === 'Active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
@@ -1105,12 +1125,16 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => openEdit(e)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700" title="Edit">
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => remove(e)} className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-500 hover:text-rose-600" title="Delete">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {canWrite && (
+                            <button onClick={() => openEdit(e)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700" title="Edit">
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canWrite && (
+                            <button onClick={() => remove(e)} className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-500 hover:text-rose-600" title="Delete">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1341,12 +1365,15 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                       className={inputCls}
                     >
                       <option value="">— Select School —</option>
-                      {filteredSchools.map(s => (
+                      {(schoolSearch ? filteredSchools : schools).map(s => (
                         <option key={s.school_code} value={s.school_code}>
                           {s.school_code} — {s.school_name}
                         </option>
                       ))}
                     </select>
+                    {schools.length > 0 && (
+                      <p className="text-[10px] text-slate-400 mt-1">{schools.length} schools loaded from School Directory</p>
+                    )}
                     {form.stacode && (() => {
                       const school = schools.find(s => s.school_code === form.stacode);
                       if (!school) return (
@@ -1598,10 +1625,12 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
               ]} form={form} setForm={setFormWithSalary} />
             </div>
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50 sticky bottom-0">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">Cancel</button>
-              <button onClick={save} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors">
-                {saving ? 'Saving…' : editing ? 'Save Changes' : 'Add Employee'}
-              </button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">Close</button>
+              {canWrite && (
+                <button onClick={save} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors">
+                  {saving ? 'Saving…' : editing ? 'Save Changes' : 'Add Employee'}
+                </button>
+              )}
             </div>
           </div>
         </div>

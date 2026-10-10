@@ -1,0 +1,5 @@
+{
+  "title": "Export Excel",
+  "labels": ["action", "PAL"],
+  "notes": "Requested restore of a header labelled Export Excel. If that means bring back the old Office-style title band/tab/ribbon for PAL, say so directly."
+}

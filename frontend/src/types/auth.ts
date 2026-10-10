@@ -2,6 +2,10 @@ export type UserRole =
   | 'super_admin'
   | 'payroll_admin'
   | 'payroll_processor'
+  | 'payroll_preparer'
+  | 'payroll_reviewer'
+  | 'payroll_approver'
+  | 'payroll_payer'
   | 'accounting_officer'
   | 'hr_administrator'
   | 'school_coordinator'
@@ -74,8 +78,36 @@ export interface AuditLog {
 // Roles that are scoped to a specific school STACODE
 export const STACODE_SCOPED_ROLES: UserRole[] = ['school_coordinator', 'school_head'];
 
+/**
+ * The four payroll duties that internal control requires to be held by four
+ * different people.
+ *
+ * Preparing, reviewing, approving and releasing a payroll run must not sit in
+ * one pair of hands: whoever computes the payroll must not also be the person
+ * who checks it, authorises it, or moves the money. This is the account model
+ * that makes that rule enforceable, because the rule can only be broken by
+ * giving one person two accounts — which is exactly what
+ * `pb_hooks/mfa_totp.pb.js` now refuses on save.
+ *
+ * Kept in step with `DUTIES` in `pb_hooks/mfa_totp.pb.js` (server enforcement)
+ * and `PAYROLL_DUTY_ROLES` in `lib/authz.ts`.
+ */
+export const PAYROLL_DUTY_ROLES: UserRole[] = [
+  'payroll_preparer', 'payroll_reviewer', 'payroll_approver', 'payroll_payer',
+];
+
+/** One line per duty, in the order the duties are performed. */
+export const PAYROLL_DUTY_STAGES: Record<string, string> = {
+  payroll_preparer: 'Stage 1 — Prepare: encode the payroll, import the masterfile, build the draft run.',
+  payroll_reviewer: 'Stage 2 — Review: independently verify computations, deductions and registers against the draft.',
+  payroll_approver: 'Stage 3 — Approve: authorise the reviewed run and lock the period.',
+  payroll_payer: 'Stage 4 — Pay & remit: release the approved run, credit accounts, remit GSIS / PhilHealth / Pag-IBIG / BIR.',
+};
+
 export const ALL_ROLES: UserRole[] = [
-  'super_admin', 'payroll_admin', 'payroll_processor', 'accounting_officer',
+  'super_admin', 'payroll_admin', 'payroll_processor',
+  'payroll_preparer', 'payroll_reviewer', 'payroll_approver', 'payroll_payer',
+  'accounting_officer',
   'hr_administrator', 'school_coordinator', 'division_finance', 'auditor',
   'school_head', 'ess', 'read_only',
 ];
@@ -84,6 +116,10 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: 'Super Administrator',
   payroll_admin: 'Payroll Administrator',
   payroll_processor: 'Payroll Processor',
+  payroll_preparer: 'Payroll Preparer',
+  payroll_reviewer: 'Payroll Reviewer',
+  payroll_approver: 'Payroll Approver',
+  payroll_payer: 'Payroll Payer / Releasing Officer',
   accounting_officer: 'Accounting Officer',
   hr_administrator: 'HR Administrator',
   school_coordinator: 'School Payroll Coordinator',
@@ -98,6 +134,10 @@ export const ROLE_COLORS: Record<UserRole, string> = {
   super_admin: 'bg-red-50 text-red-700 border-red-200',
   payroll_admin: 'bg-blue-50 text-blue-700 border-blue-200',
   payroll_processor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  payroll_preparer: 'bg-lime-50 text-lime-700 border-lime-200',
+  payroll_reviewer: 'bg-sky-50 text-sky-700 border-sky-200',
+  payroll_approver: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+  payroll_payer: 'bg-rose-50 text-rose-700 border-rose-200',
   accounting_officer: 'bg-cyan-50 text-cyan-700 border-cyan-200',
   hr_administrator: 'bg-violet-50 text-violet-700 border-violet-200',
   school_coordinator: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -112,9 +152,13 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   super_admin: 'Full system access. Approve/reject users, manage roles, security policies.',
   payroll_admin: 'Primary payroll processor. Import DBF files, process payroll, generate reports.',
   payroll_processor: 'Daily payroll encoding. Upload data, update records, generate draft reports.',
+  payroll_preparer: 'PREPARE — encodes the payroll, imports the masterfile and builds the draft run. Cannot review, approve or release it.',
+  payroll_reviewer: 'REVIEW — independently verifies the prepared payroll against the registers. Cannot prepare, approve or release it.',
+  payroll_approver: 'APPROVE — authorises the reviewed payroll run and locks the period. Cannot prepare, review or release it.',
+  payroll_payer: 'PAY & REMIT — releases the approved run, credits accounts and remits GSIS / PhilHealth / Pag-IBIG / BIR. Cannot prepare, review or approve it.',
   accounting_officer: 'Payroll accounting and reconciliation. View computations, generate entries.',
   hr_administrator: 'Employee information management. Add/update employees, positions, salary grades.',
-  school_coordinator: 'School-level payroll verification. View assigned school employees only.',
+  school_coordinator: 'School-level payroll verification. View assigned school employees only (read-only, Employee Records).',
   division_finance: 'Division-level monitoring. View all reports, summaries, remittances.',
   auditor: 'Audit and compliance review. View audit logs, payroll reports, transactions.',
   school_head: 'School payroll monitoring. View school register and employee list.',
@@ -139,14 +183,38 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   payroll_processor: [
     'dashboard', 'employees', 'deductions', 'dedmaster', 'dedengine', 'payroll', 'stacode', 'comm_allowance',
   ],
+  // The four separated payroll duties. Each is deliberately narrower than
+  // `payroll_admin`: a preparer can build a run, a reviewer can see it and its
+  // registers, an approver can authorise it, a payer can release it — but no
+  // single one of them can do another's job. Module permissions cannot express
+  // "stage", so the separation is also enforced server-side by refusing to let
+  // one person hold two of these roles (see pb_hooks/mfa_totp.pb.js).
+  payroll_preparer: [
+    'dashboard', 'employees', 'deductions', 'dedmaster', 'dedengine', 'payroll', 'stacode', 'comm_allowance', 'dbf_restore',
+  ],
+  payroll_reviewer: [
+    'dashboard', 'employees', 'payroll', 'deductions', 'dedmaster', 'dedengine', 'reports', 'audit_logs',
+  ],
+  payroll_approver: [
+    'dashboard', 'employees', 'payroll', 'reports', 'audit_logs',
+  ],
+  payroll_payer: [
+    'dashboard', 'payroll', 'reports', 'comm_allowance',
+  ],
   accounting_officer: [
     'dashboard', 'reports', 'employees', 'comm_allowance',
   ],
   hr_administrator: [
     'dashboard', 'employees', 'salary',
   ],
+  // School Payroll Coordinator: verification only. Dashboard + Employee
+  // Records for the assigned school — no Reports, no other modules. `groups`
+  // exists solely so the "My School" Organization entry renders; the
+  // directory view is scoped to their assigned school. Write actions inside
+  // Employee Records are withheld by `isReadOnlyRole` in lib/authz.ts and
+  // enforced server-side (main.go).
   school_coordinator: [
-    'dashboard', 'employees', 'reports',
+    'dashboard', 'employees', 'groups',
   ],
   division_finance: [
     'dashboard', 'reports', 'employees', 'comm_allowance',

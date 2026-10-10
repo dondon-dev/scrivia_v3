@@ -12,9 +12,11 @@ import { currency } from '@/lib/reports';
 import { usePositions } from '@/lib/usePositions';
 import { useSalarySchedule } from '@/lib/useSalarySchedule';
 import { usePermissions } from '@/lib/permissions';
+import { dashboardKindForRole, toUserRole } from '@/lib/authz';
 import { useOrg } from '@/lib/org';
 import {
-  ROLE_LABELS, ROLE_DESCRIPTIONS, type UserProfile, type UserRole,
+  ROLE_LABELS, ROLE_DESCRIPTIONS, PAYROLL_DUTY_ROLES, PAYROLL_DUTY_STAGES,
+  type UserProfile, type UserRole,
 } from '@/types/auth';
 import type { PayPeriod, PayrollGroup } from '@/types/payroll';
 import { staggerContainer, sparkSeries } from '@/lib/motion';
@@ -42,16 +44,21 @@ interface RoleDashboardProps {
 }
 
 export default function RoleDashboard({ role, profile, onNavigate }: RoleDashboardProps) {
-  if (role === 'ess') return <EssDashboard profile={profile} />;
-  switch (role) {
-    case 'payroll_processor': return <ProcessorDashboard profile={profile} onNavigate={onNavigate} />;
-    case 'accounting_officer': return <AccountingDashboard profile={profile} onNavigate={onNavigate} />;
-    case 'hr_administrator': return <HrDashboard profile={profile} onNavigate={onNavigate} />;
-    case 'school_coordinator':
-    case 'school_head': return <SchoolDashboard profile={profile} onNavigate={onNavigate} />;
-    case 'division_finance': return <FinanceDashboard profile={profile} onNavigate={onNavigate} />;
+  // dashboardKindForRole canonicalizes the stored role first, so an account saved
+  // as "School_Coordinator" or "payroll processor " still gets the layout built
+  // for its role instead of silently falling through to the read-only dashboard.
+  // 'operations' cannot reach here: App.tsx routes those roles to the full
+  // Dashboard before this component mounts, which also keeps that chunk lazy for
+  // every other role.
+  switch (dashboardKindForRole(role)) {
+    case 'ess': return <EssDashboard profile={profile} />;
+    case 'processor': return <ProcessorDashboard profile={profile} onNavigate={onNavigate} />;
+    case 'payroll_duty': return <PayrollDutyDashboard profile={profile} onNavigate={onNavigate} />;
+    case 'accounting': return <AccountingDashboard profile={profile} onNavigate={onNavigate} />;
+    case 'hr': return <HrDashboard profile={profile} onNavigate={onNavigate} />;
+    case 'school': return <SchoolDashboard profile={profile} onNavigate={onNavigate} />;
+    case 'finance': return <FinanceDashboard profile={profile} onNavigate={onNavigate} />;
     case 'auditor': return <AuditorDashboard profile={profile} onNavigate={onNavigate} />;
-    case 'read_only': return <ReadOnlyDashboard profile={profile} onNavigate={onNavigate} />;
     default: return <ReadOnlyDashboard profile={profile} onNavigate={onNavigate} />;
   }
 }
@@ -470,6 +477,7 @@ function HrDashboard({ profile, onNavigate }: { profile: UserProfile; onNavigate
               <SectionHeader title="Positions by Category" icon={Award} />
               <div className="space-y-3">
                 <ProgressBar value={positionList.filter((p) => p.personnel_category === 'Teaching').length} max={Math.max(positionList.length, 1)} label="Teaching" color="bg-emerald-500" />
+                <ProgressBar value={positionList.filter((p) => p.personnel_category === 'School Administration').length} max={Math.max(positionList.length, 1)} label="School Administration" color="bg-violet-500" />
                 <ProgressBar value={positionList.filter((p) => p.personnel_category === 'Teaching Related').length} max={Math.max(positionList.length, 1)} label="Teaching Related" color="bg-blue-500" />
                 <ProgressBar value={positionList.filter((p) => p.personnel_category === 'Non-Teaching').length} max={Math.max(positionList.length, 1)} label="Non-Teaching" color="bg-amber-500" />
               </div>
@@ -676,6 +684,121 @@ function FinanceDashboard({ profile, onNavigate }: { profile: UserProfile; onNav
                 <div className="flex items-center justify-between rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
                   <span className="text-amber-700 dark:text-amber-400 font-medium">Invalid STACODE records</span>
                   <span className="tabular font-bold text-amber-700 dark:text-amber-300">{data.unassignedCount.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </RolePage>
+  );
+}
+
+// ── Separated payroll duties: prepare / review / approve / pay ───────────────
+
+/**
+ * The four separated duties each get the same shape of dashboard: the payroll
+ * numbers they are accountable for, the action that belongs to their stage, and
+ * a standing reminder of who must hold the other three stages.
+ *
+ * The reminder is not decoration. The single measured finding behind this change
+ * was a division payroll of ₱1.64 billion running through one processor account,
+ * so the useful thing to put in front of a new duty-holder is which stage they
+ * own and which stages they must never be given.
+ */
+function PayrollDutyDashboard({ profile, onNavigate }: { profile: UserProfile; onNavigate: (v: NavView) => void }) {
+  const { data, loading } = useDashboardStats();
+  const { hasPermission: can } = usePermissions();
+  const role = toUserRole(profile.role) ?? 'payroll_preparer';
+  const stage = PAYROLL_DUTY_ROLES.indexOf(role) + 1;
+
+  const actions = [
+    { label: 'Payroll Runs', desc: 'Process and open payroll periods', icon: Wallet, color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', view: 'payroll', show: can('payroll') },
+    { label: 'Deduction Engine', desc: 'Loans, billing and remittances', icon: Receipt, color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', view: 'dedengine', show: can('dedengine') },
+    { label: 'Generate Reports', desc: 'Registers and summaries', icon: FileSpreadsheet, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', view: 'reports', show: can('reports') },
+    { label: 'Employee Records', desc: 'Masterfile and salary data', icon: Users, color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', view: 'employees', show: can('employees') },
+    { label: 'Audit Trail', desc: 'System activity and logins', icon: ScrollText, color: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', view: 'audit', show: can('audit_logs') },
+  ];
+
+  return (
+    <RolePage>
+      <RoleGreeting role={role} profile={profile} onNavigate={onNavigate} />
+      {loading || !data ? (
+        <StatsLoader />
+      ) : (
+        <>
+          <KpiGrid>
+            <KpiCard label="Active Employees" value={data.activeEmployees.toLocaleString()} raw={data.activeEmployees} icon={Users} accent="blue" sublabel={`${data.totalRecords} total records`} spark={sparkSeries('duty-employees')} />
+            <KpiCard label="Gross This Period" value={currency(data.totalGross)} raw={data.totalGross} format={(n) => currency(n)} icon={Wallet} accent="emerald" sublabel="Total gross payroll" spark={sparkSeries('duty-gross')} />
+            <KpiCard label="Net Pay This Period" value={currency(data.periodNet)} raw={data.periodNet} format={(n) => currency(n)} icon={Landmark} accent="cyan" sublabel="Take-home pay" spark={sparkSeries('duty-net')} />
+            <KpiCard label="Awaiting Approval" value={data.pendingCount.toLocaleString()} raw={data.pendingCount} icon={Clock} accent="amber" sublabel={`${data.processedCount} already processed`} spark={sparkSeries('duty-pending')} />
+          </KpiGrid>
+
+          {data.currentPeriod && <CurrentPeriodChip period={data.currentPeriod} net={data.periodNet} />}
+
+          <div className="card-base p-5">
+            <SectionHeader title="Segregation of Duties" icon={ShieldAlert} />
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-4">
+              You hold <span className="font-semibold text-slate-700 dark:text-slate-200">stage {stage} of 4</span>.
+              Preparing, reviewing, approving and releasing the payroll must be four different people — the system
+              refuses to save a second payroll duty onto the same person, on any account.
+            </p>
+            <ol className="space-y-2">
+              {PAYROLL_DUTY_ROLES.map((duty, i) => {
+                const mine = duty === role;
+                return (
+                  <li
+                    key={duty}
+                    className={`flex items-start gap-3 rounded-lg border p-3 ${
+                      mine
+                        ? 'border-deped-200 bg-deped-50/60 dark:border-deped-900 dark:bg-deped-900/20'
+                        : 'border-slate-100 dark:border-slate-800'
+                    }`}
+                  >
+                    <span className={`mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                      mine
+                        ? 'bg-deped-600 text-white'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                    }`}>
+                      {i + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{ROLE_LABELS[duty]}</p>
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                          mine
+                            ? 'border-deped-200 bg-white text-deped-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                        }`}>
+                          {mine ? <><CheckCircle2 className="h-3 w-3" /> YOUR DUTY</> : 'DIFFERENT PERSON REQUIRED'}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {PAYROLL_DUTY_STAGES[duty]}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+
+          <QuickActions onNavigate={onNavigate} actions={actions} />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <DeductionBars totals={data.dedTotalsByCode} onNavigate={onNavigate} />
+            <div className="card-base p-5">
+              <SectionHeader title="Period Progress" icon={Building2} />
+              <div className="space-y-3">
+                <ProgressBar value={data.processedCount} max={Math.max(data.processedCount + data.pendingCount, 1)} label="Processed payroll entries" color="bg-emerald-500" />
+                <ProgressBar value={data.pendingCount} max={Math.max(data.processedCount + data.pendingCount, 1)} label="Pending approval entries" color="bg-amber-500" />
+                <div className="flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/50 p-3 text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Payroll groups covered</span>
+                  <span className="tabular font-semibold text-slate-800 dark:text-slate-100">{data.groupStats.length.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/50 p-3 text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Active loan accounts</span>
+                  <span className="tabular font-semibold text-slate-800 dark:text-slate-100">{data.activeLoanAccounts.toLocaleString()}</span>
                 </div>
               </div>
             </div>

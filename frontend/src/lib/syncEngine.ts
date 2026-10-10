@@ -2,6 +2,7 @@ import { supabase, fetchAll, chunkedIn, formatError } from '@/lib/pb';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { syncMastfile, syncDedfile, loadDivisionDirectory, resolveDivisionId, type SyncResult, type SyncScope } from '@/lib/restoreSync';
 import { inCategory, categoryOfStacode, type PayrollCategory } from '@/lib/categories';
+import { classifyStacode } from '@/lib/payrollComputation';
 
 export type { SyncScope };
 
@@ -167,11 +168,21 @@ function filterRecordsByCategory(records: DbfRecord[], category: PayrollCategory
   });
 }
 
-async function syncStntable(bytes: Uint8Array, category?: PayrollCategory | null): Promise<PerFileResult> {
+async function syncStntable(bytes: Uint8Array, category?: PayrollCategory | null, scope?: SyncScope | null): Promise<PerFileResult> {
   const start = Date.now();
   const { records } = decodeDbf(bytes);
   if (records.length === 0) return { tableName: 'STNTABLE', fileName: '', inserted: 0, updated: 0, skipped: 0, duplicates: 0, errors: ['No records found'], durationMs: Date.now() - start };
-  const filtered = filterRecordsByCategory(records, category);
+  // STNTABLE is the station/school masterfile shared by BOTH payroll
+  // categories, so unlike MASTFILE/INCLUDED/EXCLUDED/PAYROLLS the whole
+  // uploaded file is imported regardless of the active tab. Each station is
+  // classified by its own STACODE and synced to the organization it belongs
+  // to — Elementary stations (1-499) go to the Elementary organization, High
+  // School stations (500-701) to the High School organization — and forwarded
+  // into the School Directory. One STNTABLE.DBF import therefore populates
+  // both organizations instead of dropping the stations outside the selected
+  // tab's range. A station whose STACODE matches neither range keeps the
+  // active tab's category as a fallback so it is never silently lost.
+  const filtered = records;
 
   // Use dbfTemplate for field validation and mapping
   const template = DBF_TABLES.find(t => t.name === 'STNTABLE');
@@ -179,32 +190,43 @@ async function syncStntable(bytes: Uint8Array, category?: PayrollCategory | null
     return { tableName: 'STNTABLE', fileName: '', inserted: 0, updated: 0, skipped: 0, duplicates: 0, errors: ['STNTABLE template not found'], durationMs: Date.now() - start };
   }
 
+  // Build rows using the dbf_stntable collection schema. The template's
+  // UPPERCASE names (REGCODE, SCHNAME, …) are DBF notation only — they don't
+  // exist in the PocketBase collection, which is lowercase (stacode, staname,
+  // divcode, regcode, address, cluster, category, munic, province, zipcode).
+  // Writing the UPPERCASE names makes PocketBase reject every insert with an
+  // unknown-field error, so everything is remapped to the collection below.
+  const now = new Date().toISOString();
   const rows: Record<string, unknown>[] = filtered.map((rec) => {
-    // Use template field names for proper mapping
-    const row: Record<string, unknown> = {};
-    template.fields.forEach(field => {
-      row[field.name] = str(rec, field.name);
-    });
-    
-    // Apply fallbacks for common DBF field-name variations
-    if (!row['STACODE']) row['STACODE'] = str(rec, 'STACODE') || str(rec, 'STATION');
-    if (!row['SCHNAME']) row['SCHNAME'] = str(rec, 'SCHNAME') || str(rec, 'STANAME') || str(rec, 'STATION_NA') || str(rec, 'NAME');
-    if (!row['DIVCODE']) row['DIVCODE'] = str(rec, 'DIVCODE');
-    if (!row['REGCODE']) row['REGCODE'] = str(rec, 'REGCODE');
-    if (!row['SCHADDR']) row['SCHADDR'] = str(rec, 'SCHADDR') || str(rec, 'ADDRESS') || str(rec, 'ADDR');
-    if (!row['SCHHEAD']) row['SCHHEAD'] = str(rec, 'SCHHEAD') || str(rec, 'HEAD') || str(rec, 'PRINCIPAL');
-    if (!row['SCHTYPE']) row['SCHTYPE'] = str(rec, 'SCHTYPE') || str(rec, 'TYPE');
-    if (!row['STATUS']) row['STATUS'] = str(rec, 'STATUS') || str(rec, 'ACTIVE');
-    
-    row['updated_at'] = new Date().toISOString();
+    const stacode = str(rec, 'STACODE') || str(rec, 'STATION');
+    const row: Record<string, unknown> = {
+      stacode,
+      staname: str(rec, 'STANAME') || str(rec, 'SCHNAME') || str(rec, 'STATION_NA') || str(rec, 'NAME'),
+      divcode: str(rec, 'DIVCODE'),
+      regcode: str(rec, 'REGCODE'),
+      address: str(rec, 'SCHADDR') || str(rec, 'ADDRESS') || str(rec, 'ADDR'),
+      cluster: str(rec, 'DISTRICT') || str(rec, 'CLUSTER'),
+      munic: str(rec, 'MUNIC'),
+      province: str(rec, 'PROV') || str(rec, 'PROVINCE'),
+      zipcode: str(rec, 'ZIPCODE') || str(rec, 'ZIP'),
+      created_at: now,
+      updated_at: now,
+    };
+    // Stamp each row with the category its own STACODE belongs to so a single
+    // import populates both the Elementary and High School organizations.
+    const rowCategory = categoryOfStacode(stacode) ?? category ?? null;
+    if (rowCategory) row.category = rowCategory;
     return row;
-  }).filter((r) => r['STACODE']);
+  }).filter((r) => r.stacode);
 
   const result = await upsertTable('dbf_stntable', rows, ['stacode'], (r) => r.stacode as string, 'id,stacode');
   
   // STNTABLE.DBF → School Directory: upsert into the schools table so uploaded
-  // stations appear in the School Directory view immediately.
-  const schoolErrors = await forwardStntableToSchools(filtered);
+  // stations appear in the Organization (Elementary / High School) views
+  // immediately. The uploader's scope is passed so stations whose REGCODE/DIVCODE
+  // don't resolve against the divisions directory are still stamped with the
+  // division being imported into (same fallback as MASTFILE).
+  const schoolErrors = await forwardStntableToSchools(filtered, scope);
   result.errors.push(...schoolErrors);
 
   return { tableName: 'STNTABLE', fileName: '', ...result, durationMs: Date.now() - start };
@@ -214,11 +236,15 @@ async function syncStntable(bytes: Uint8Array, category?: PayrollCategory | null
  * Forward STNTABLE rows into the schools table (School Directory).
  * school_code is unique, so this is a plain upsert keyed on it.
  */
-async function forwardStntableToSchools(records: DbfRecord[]): Promise<string[]> {
+async function forwardStntableToSchools(records: DbfRecord[], scope?: SyncScope | null): Promise<string[]> {
   const errors: string[] = [];
   // Stamp each school with the division its REGCODE/DIVCODE resolves to so the
   // School Directory is scoped per division — and so a later MASTFILE import
   // whose rows only carry STACODE can derive the division from the school.
+  // When the row's codes are missing or don't resolve against the divisions
+  // directory, fall back to the uploader's scope (the division being imported
+  // into) so no STNTABLE station is left unscoped — unscoped stations never
+  // show up in the Organization → Schools views, which filter by division.
   const divisionDirectory = await loadDivisionDirectory();
   const rows = records
     .map((rec) => {
@@ -235,19 +261,30 @@ async function forwardStntableToSchools(records: DbfRecord[]): Promise<string[]>
       } else if (schtype.includes('JUNIOR') || schtype.includes('HIGH') || schtype === 'JHS') {
         schoolType = 'Junior High School';
       } else {
-        // No SCHTYPE match — fall back to STACODE range (1-499 Elem, 500-701 HS)
-        const cat = categoryOfStacode(stacode);
-        if (cat === 'highschool') schoolType = 'Junior High School';
+        // No SCHTYPE match — fall back to STACODE range:
+        // 001-499 = Elementary, 500-699 = Junior High School, 700-701 = Senior High School
+        const group = classifyStacode(stacode);
+        if (group === 'JHS') schoolType = 'Junior High School';
+        else if (group === 'SHS') schoolType = 'Senior High School';
       }
       const regcode = str(rec, 'REGCODE');
       const divcode = str(rec, 'DIVCODE');
+      let divisionId = resolveDivisionId(divisionDirectory, regcode, divcode);
+      if (!divisionId && scope) {
+        divisionId = resolveDivisionId(divisionDirectory, scope.regcode, scope.divcode);
+      }
+      const divisionMeta = divisionId ? divisionDirectory.byId.get(divisionId) : undefined;
       return {
         school_code: stacode,
+        stacode,
         school_name: str(rec, 'SCHNAME') || str(rec, 'STANAME') || str(rec, 'STATION_NA') || str(rec, 'NAME') || `School ${stacode}`,
         school_type: schoolType,
-        school_head: str(rec, 'SCHHEAD') || '',
-        address: str(rec, 'SCHADDR') || str(rec, 'ADDRESS') || str(rec, 'ADDR'),
-        division_id: resolveDivisionId(divisionDirectory, regcode, divcode),
+        district: str(rec, 'DISTRICT') || str(rec, 'CLUSTER') || null,
+        cluster: str(rec, 'DISTRICT') || str(rec, 'CLUSTER') || null,
+        municipality: str(rec, 'MUNIC') || null,
+        province: str(rec, 'PROV') || str(rec, 'PROVINCE') || null,
+        region_id: divisionMeta?.region_id ?? null,
+        division_id: divisionId,
         status: 'Active',
       };
     })
@@ -267,6 +304,13 @@ async function forwardStntableToSchools(records: DbfRecord[]): Promise<string[]>
     if (existingId) {
       const rest = { ...row } as Record<string, unknown>;
       delete rest.school_code;
+      // Never wipe a previously resolved division/region with an unresolved one
+      // (e.g. a re-import of a file that carries no codes): leave the fields
+      // untouched instead of writing null over a good value.
+      if (!rest.division_id) {
+        delete rest.division_id;
+        delete rest.region_id;
+      }
       const { error } = await supabase.from('schools').update(rest).eq('id', existingId);
       if (error) errors.push(`schools update: ${error.message}`);
     } else {
@@ -289,22 +333,19 @@ async function syncDivtable(bytes: Uint8Array): Promise<PerFileResult> {
   }
 
   const rows: Record<string, unknown>[] = records.map((rec) => {
-    // Use template field names for proper mapping
-    const row: Record<string, unknown> = {};
-    template.fields.forEach(field => {
-      row[field.name] = str(rec, field.name);
-    });
-    
-    // Apply fallbacks for common variations (as in current implementation)
-    if (!row['DIVCODE']) row['DIVCODE'] = str(rec, 'DIVCODE');
-    if (!row['DIVNAME']) row['DIVNAME'] = str(rec, 'DIVNAME') || str(rec, 'DIVISION_N') || str(rec, 'NAME');
-    if (!row['REGCODE']) row['REGCODE'] = str(rec, 'REGCODE');
-    if (!row['ADDRESS']) row['ADDRESS'] = str(rec, 'ADDRESS') || str(rec, 'ADDR');
-    if (!row['CHIEF']) row['CHIEF'] = str(rec, 'CHIEF') || str(rec, 'OFFICER') || str(rec, 'HEAD');
-    
-    row['updated_at'] = new Date().toISOString();
+    // Use the dbf_divtable collection schema (lowercase). The template's
+    // UPPERCASE names only exist in the DBF, not in PocketBase — writing them
+    // makes PocketBase reject every insert with an unknown-field error.
+    const row: Record<string, unknown> = {
+      divcode: str(rec, 'DIVCODE'),
+      divname: str(rec, 'DIVNAME') || str(rec, 'DIVISION_N') || str(rec, 'NAME'),
+      regcode: str(rec, 'REGCODE'),
+      address: str(rec, 'ADDRESS') || str(rec, 'ADDR'),
+      chief: str(rec, 'CHIEF') || str(rec, 'OFFICER') || str(rec, 'HEAD'),
+      updated_at: new Date().toISOString(),
+    };
     return row;
-  }).filter((r) => r['DIVCODE']);
+  }).filter((r) => r.divcode);
 
   const result = await upsertTable('dbf_divtable', rows, ['divcode'], (r) => r.divcode as string, 'id,divcode');
   return { tableName: 'DIVTABLE', fileName: '', ...result, durationMs: Date.now() - start };
@@ -478,6 +519,25 @@ async function resolveEmpIds(empnos: string[]): Promise<Map<string, string>> {
   (rows as { id: string; empno: string | null; employee_number: string | null }[]).forEach((e) => {
     if (e.empno) map.set(e.empno.trim(), e.id);
     if (e.employee_number) map.set(e.employee_number.trim(), e.id);
+  });
+  return map;
+}
+
+/**
+ * Resolve each employee id to the payroll category its own STACODE belongs to.
+ * A null value means the STACODE is blank/unclassifiable — those employees are
+ * treated as matching both categories so an import without station codes is
+ * never silently dropped.
+ */
+async function loadEmployeeCategoryById(ids: string[]): Promise<Map<string, PayrollCategory | null>> {
+  const map = new Map<string, PayrollCategory | null>();
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (unique.length === 0) return map;
+  const rows = await chunkedIn('id', unique, (chunk) =>
+    supabase.from('employees').select('id,stacode').in('id', chunk),
+  );
+  (rows as { id: string; stacode: string | null }[]).forEach((e) => {
+    map.set(e.id, categoryOfStacode(e.stacode));
   });
   return map;
 }
@@ -955,11 +1015,16 @@ async function syncPyent(tableName: SyncTableName, bytes: Uint8Array, category?:
   const start = Date.now();
   const { records } = decodeDbf(bytes);
   if (records.length === 0) return { tableName, fileName: '', inserted: 0, updated: 0, skipped: 0, duplicates: 0, errors: ['No records found'], durationMs: Date.now() - start };
-  // PYENT records don't carry STACODE — they reference employees by EMPNO.
-  // Category filtering already happened at the MASTFILE level, so we pass
-  // all PYENT records through. The forwardPyentToPayent function resolves
-  // employee IDs from the employees table which is already category-scoped.
-  const filtered = records;
+  // PYENT records reference employees by EMPNO and may or may not carry a
+  // STACODE. When the file does carry station codes, keep only the active
+  // category's range; rows with a blank/unclassifiable STACODE still pass and
+  // are separated later by the employee's own category (forwardPyentToPayent).
+  const filtered = category
+    ? records.filter((rec) => {
+        const recCat = categoryOfStacode(str(rec, 'STACODE'));
+        return !recCat || recCat === category;
+      })
+    : records;
 
   const dbTable = tableName === 'PYENT' ? 'dbf_pyent' : tableName === 'PYENT1' ? 'dbf_pyent1' : 'dbf_pyent2';
   const rows: Record<string, unknown>[] = filtered.map((rec) => ({
@@ -979,7 +1044,7 @@ async function syncPyent(tableName: SyncTableName, bytes: Uint8Array, category?:
   // Regular Payroll. PYENT.DBF feeds the full-month payent, PYENT1.DBF the
   // first half, PYENT2.DBF the second half — one row per employee/period/half
   // with the net amount to credit to the employee's bank account.
-  const forwardErrors = await forwardPyentToPayent(filtered, tableName);
+  const forwardErrors = await forwardPyentToPayent(filtered, tableName, category);
   result.errors.push(...forwardErrors);
 
   return { tableName, fileName: '', ...result, durationMs: Date.now() - start };
@@ -993,11 +1058,11 @@ async function syncPyent(tableName: SyncTableName, bytes: Uint8Array, category?:
  * - employee_id / pay_period_id are resolved when the empno and payperiod match
  *   an existing employee masterfile / pay period; the raw keys are always kept.
  */
-async function forwardPyentToPayent(records: DbfRecord[], tableName: SyncTableName): Promise<string[]> {
+async function forwardPyentToPayent(records: DbfRecord[], tableName: SyncTableName, category?: PayrollCategory | null): Promise<string[]> {
   const errors: string[] = [];
   const half = tableName === 'PYENT1' ? 'first' : tableName === 'PYENT2' ? 'second' : 'full';
 
-  const rows = records
+  let rows = records
     .map((rec) => ({
       empno: str(rec, 'EMPNO'),
       stacode: str(rec, 'STACODE'),
@@ -1017,6 +1082,18 @@ async function forwardPyentToPayent(records: DbfRecord[], tableName: SyncTableNa
   if (rows.length === 0) return errors;
 
   const empIdMap = await resolveEmpIds(rows.map((r) => r.empno));
+  // Separate the Elementary and High School saves: drop rows whose employee is
+  // explicitly classified in the other category's STACODE range so an
+  // Elementary PYENT import never credits High School employees (employees with
+  // a blank/unclassifiable STACODE still pass through).
+  if (category) {
+    const empCategories = await loadEmployeeCategoryById([...empIdMap.values()]);
+    rows = rows.filter((r) => {
+      const empCat = empCategories.get(empIdMap.get(r.empno) ?? '');
+      return !empCat || empCat === category;
+    });
+    if (rows.length === 0) return errors;
+  }
   const periodIdMap = await resolvePeriodIds(rows, errors);
 
   // Aggregate per employee + payperiod: one payent row per employee/period/half.
@@ -1106,18 +1183,59 @@ async function forwardPyentToPayent(records: DbfRecord[], tableName: SyncTableNa
   return errors.slice(0, 10);
 }
 
-const SYNC_FUNCTIONS: Record<SyncTableName, (bytes: Uint8Array, category?: PayrollCategory | null, scope?: SyncScope | null, periodName?: string | null) => Promise<PerFileResult | SyncResult>> = {
-  STNTABLE: syncStntable,
-  DIVTABLE: syncDivtable,
-  MASTFILE: syncMastfileWrapper,
-  INCLUDED: syncIncluded,
-  EXCLUDED: syncExcluded,
-  DEDFILE: syncDedfileWrapper,
-  PAYROLLS: syncPayrolls,
-  PYENT: (b, cat) => syncPyent('PYENT', b, cat),
-  PYENT1: (b, cat) => syncPyent('PYENT1', b, cat),
-  PYENT2: (b, cat) => syncPyent('PYENT2', b, cat),
-};
+/**
+ * One table's import + save routine with its Elementary/High School scope
+ * already applied. The STACODE range a routine writes is fixed when the
+ * routine is built (below), not passed in as a mutable flag.
+ */
+export type CategorySyncFn = (
+  bytes: Uint8Array,
+  scope?: SyncScope | null,
+  periodName?: string | null,
+) => Promise<PerFileResult | SyncResult>;
+
+export type CategorySyncFunctions = Record<SyncTableName, CategorySyncFn>;
+
+export type SyncProgressCallback = (
+  current: number,
+  total: number,
+  tableName: SyncTableName,
+  message: string,
+) => void;
+
+/**
+ * Build the per-table import + save routines bound to one payroll category.
+ *
+ * Category-scoped tables (MASTFILE, INCLUDED, EXCLUDED, PAYROLLS, DEDFILE and
+ * PYENT/PYENT1/PYENT2) always receive the bound category, so an Elementary
+ * import can only ever save STACODE 1–499 and a High School import 500–701.
+ * STNTABLE and DIVTABLE are shared infrastructure and are imported whole:
+ * STNTABLE classifies each station by its own STACODE so one upload still
+ * populates both organizations.
+ */
+export function buildCategorySyncFunctions(category: PayrollCategory): CategorySyncFunctions {
+  return {
+    STNTABLE: (bytes, scope) => syncStntable(bytes, category, scope),
+    DIVTABLE: (bytes) => syncDivtable(bytes),
+    MASTFILE: (bytes, scope) => syncMastfileWrapper(bytes, category, scope),
+    INCLUDED: (bytes, scope, period) => syncIncluded(bytes, category, scope, period),
+    EXCLUDED: (bytes, scope, period) => syncExcluded(bytes, category, scope, period),
+    DEDFILE: (bytes, scope) => syncDedfileWrapper(bytes, category, scope),
+    PAYROLLS: (bytes, scope, period) => syncPayrolls(bytes, category, scope, period),
+    PYENT: (bytes) => syncPyent('PYENT', bytes, category),
+    PYENT1: (bytes) => syncPyent('PYENT1', bytes, category),
+    PYENT2: (bytes) => syncPyent('PYENT2', bytes, category),
+  };
+}
+
+// Elementary and High School each own a distinct set of import + save routines.
+export const ELEMENTARY_SYNC_FUNCTIONS = buildCategorySyncFunctions('elementary');
+export const HIGHSCHOOL_SYNC_FUNCTIONS = buildCategorySyncFunctions('highschool');
+
+/** Pick the import + save routine set for a payroll category. */
+export function getSyncFunctions(category: PayrollCategory): CategorySyncFunctions {
+  return category === 'elementary' ? ELEMENTARY_SYNC_FUNCTIONS : HIGHSCHOOL_SYNC_FUNCTIONS;
+}
 
 async function syncMastfileWrapper(bytes: Uint8Array, category?: PayrollCategory | null, scope?: SyncScope | null): Promise<PerFileResult> {
   const start = Date.now();
@@ -1179,8 +1297,8 @@ export interface SyncSessionRecord {
 export async function executeSync(
   previews: FilePreview[],
   userEmail: string,
-  onProgress?: (current: number, total: number, tableName: SyncTableName, message: string) => void,
-  category?: PayrollCategory | null,
+  onProgress: SyncProgressCallback | undefined,
+  category: PayrollCategory,
   scope?: SyncScope | null,
   periodName?: string | null,
 ): Promise<SyncSessionResult> {
@@ -1189,18 +1307,19 @@ export async function executeSync(
   const { data: sessionRow, error: sessionErr } = await supabase
     .from('dbf_sync_sessions')
     .insert({
-      session_label: `Import ${new Date().toLocaleString('en-PH')}${category ? ` (${category === 'elementary' ? 'Elementary' : 'High School'})` : ''}`,
+      session_label: `Import ${new Date().toLocaleString('en-PH')} (${category === 'elementary' ? 'Elementary' : 'High School'})`,
       files_uploaded: JSON.stringify(previews.map((p) => p.fileName)),
       status: 'running',
       performed_by: userEmail,
       user_id: (await supabase.auth.getUser()).data.user?.id ?? null,
-      category: category ?? null,
+      category,
     })
     .select('id')
     .single();
   if (sessionErr) throw new Error(`Failed to create sync session: ${sessionErr.message}`);
 
   const sessionId = sessionRow.id;
+  const syncFns = getSyncFunctions(category);
   const sorted = [...previews].sort((a, b) => SYNC_ORDER.indexOf(a.tableName) - SYNC_ORDER.indexOf(b.tableName));
   const results: PerFileResult[] = [];
 
@@ -1208,8 +1327,8 @@ export async function executeSync(
     const p = sorted[i];
     onProgress?.(i + 1, sorted.length, p.tableName, `Synchronizing ${TABLE_LABELS[p.tableName]}...`);
     try {
-      const fn = SYNC_FUNCTIONS[p.tableName];
-      const result = await fn(p.bytes, category, scope, periodName);
+      const fn = syncFns[p.tableName];
+      const result = await fn(p.bytes, scope, periodName);
       const perFile: PerFileResult = { ...(result as unknown as PerFileResult), tableName: p.tableName, fileName: p.fileName };
       results.push(perFile);
     } catch (err) {
@@ -1250,6 +1369,39 @@ export async function executeSync(
   };
 }
 
+/**
+ * Import + save a batch of Elementary DBF files (STACODE 1–499).
+ *
+ * This is the Elementary counterpart of {@link importHighSchoolFiles}: it runs
+ * the Elementary-bound routines from {@link ELEMENTARY_SYNC_FUNCTIONS}, so only
+ * records in the Elementary STACODE range are written to the system.
+ */
+export async function importElementaryFiles(
+  previews: FilePreview[],
+  userEmail: string,
+  onProgress?: SyncProgressCallback,
+  scope?: SyncScope | null,
+  periodName?: string | null,
+): Promise<SyncSessionResult> {
+  return executeSync(previews, userEmail, onProgress, 'elementary', scope, periodName);
+}
+
+/**
+ * Import + save a batch of High School DBF files (STACODE 500–701).
+ *
+ * High School counterpart of {@link importElementaryFiles}; runs the
+ * High-School-bound routines from {@link HIGHSCHOOL_SYNC_FUNCTIONS}.
+ */
+export async function importHighSchoolFiles(
+  previews: FilePreview[],
+  userEmail: string,
+  onProgress?: SyncProgressCallback,
+  scope?: SyncScope | null,
+  periodName?: string | null,
+): Promise<SyncSessionResult> {
+  return executeSync(previews, userEmail, onProgress, 'highschool', scope, periodName);
+}
+
 export async function rollbackSession(sessionId: string): Promise<boolean> {
   const { data: session, error } = await supabase
     .from('dbf_sync_sessions')
@@ -1288,88 +1440,181 @@ export async function deleteSyncSession(sessionId: string): Promise<boolean> {
   return !error;
 }
 
-export async function deleteTableData(
+export interface ClearTableResult {
+  deleted: number | null;
+  error: string | null;
+}
+
+/** Clear one table's records for a payroll category. */
+export type ClearTableFn = (tableName: SyncTableName) => Promise<ClearTableResult>;
+
+/**
+ * Clear one table's records for a single payroll category — and the rows that
+ * table's import forwarded into the rest of the system — so an Elementary clear
+ * can never touch High School data (and vice versa).
+ *
+ * stacode is stored as text, so database-side range filters would compare
+ * strings ('9' > '499'). Every row is fetched and matched numerically in JS,
+ * then deleted by id in chunks.
+ */
+async function clearTableDataForCategory(
   tableName: SyncTableName,
-  category?: PayrollCategory | null,
-): Promise<{ deleted: number | null; error: string | null }> {
+  category: PayrollCategory,
+): Promise<ClearTableResult> {
   const dbTable = TABLE_TO_DB[tableName];
   if (!dbTable) return { deleted: null, error: `Unknown table: ${tableName}` };
 
-  // DIVTABLE has no stacode column — it is shared infrastructure and cannot
-  // be scoped by category. Only delete when no category filter is active.
-  if (dbTable === 'dbf_divtable' && category) {
-    return { deleted: null, error: 'Division table is shared across both categories and cannot be deleted per-category.' };
+  // DIVTABLE has no stacode column — shared infrastructure that belongs to
+  // neither category, so it cannot be cleared per-category.
+  if (dbTable === 'dbf_divtable') {
+    return { deleted: null, error: 'Division table is shared across both categories and cannot be cleared per-category.' };
   }
 
-  // stacode is stored as text, so database-side gte/lte filters do string
-  // comparison ('9' > '499'). Fetch all rows, filter numerically in JS, then
-  // delete by ID to get correct numeric-range scoping.
-  if (category) {
-    if (dbTable === 'employees') {
-      const rows = await fetchAll(() =>
-        supabase.from('employees').select('id,stacode'),
-      );
-      const ids = (rows as { id: string; stacode: string | null }[])
-        .filter((r) => inCategory(r.stacode, category))
-        .map((r) => r.id);
-      if (ids.length === 0) return { deleted: 0, error: null };
-      const { deleted, error: delError } = await deleteInChunks('employees', 'id', ids);
-      if (delError) return { deleted: null, error: delError };
-      return { deleted, error: null };
-    }
+  let total = 0;
 
-    if (dbTable === 'payroll_deductions') {
-      const empRows = await fetchAll(() =>
-        supabase.from('employees').select('id,stacode'),
-      );
-      const empIds = (empRows as { id: string; stacode: string | null }[])
-        .filter((r) => inCategory(r.stacode, category))
-        .map((r) => r.id);
-      if (empIds.length === 0) return { deleted: 0, error: null };
-      const { deleted, error: delError } = await deleteInChunks('payroll_deductions', 'employee_id', empIds);
-      if (delError) return { deleted: null, error: delError };
-      return { deleted, error: null };
-    }
+  // Employee ids that belong to this category by their own STACODE. Used to
+  // scope tables keyed by employee_id rather than stacode.
+  const empRows = await fetchAll(() => supabase.from('employees').select('id,stacode'));
+  const empIds = (empRows as { id: string; stacode: string | null }[])
+    .filter((r) => inCategory(r.stacode, category))
+    .map((r) => r.id);
 
-    // DBF mirror tables with a direct stacode column
-    const rows = await fetchAll(() =>
-      supabase.from(dbTable).select('id,stacode'),
-    );
+  // Delete this category's rows from a table that carries its own stacode,
+  // optionally restricted to a column/value (e.g. a forwarded deductions
+  // `source`). Matches on the row's own STACODE — the same column the status
+  // grid counts — so what the UI reports is what actually gets deleted.
+  const clearByStacode = async (
+    table: string,
+    filter?: { column: string; value: string },
+  ): Promise<string | null> => {
+    const rows = await fetchAll(() => {
+      let q = supabase.from(table).select('id,stacode');
+      if (filter) q = q.eq(filter.column, filter.value);
+      return q;
+    });
     const ids = (rows as { id: string; stacode: string | null }[])
       .filter((r) => inCategory(r.stacode, category))
       .map((r) => r.id);
-    if (ids.length === 0) return { deleted: 0, error: null };
-    const { deleted, error: delError } = await deleteInChunks(dbTable, 'id', ids);
-    if (delError) return { deleted: null, error: delError };
-    return { deleted, error: null };
-  }
+    if (ids.length === 0) return null;
+    const { deleted, error } = await deleteInChunks(table, 'id', ids);
+    if (error) return error;
+    total += deleted;
+    return null;
+  };
 
-  // Count records first, then delete all (PocketBase delete doesn't return count)
-  const allRows = await fetchAll(() => supabase.from(dbTable).select('id'));
-  const totalCount = allRows.length;
-  const { error: delError } = await supabase
-    .from(dbTable)
-    .delete()
-    .neq('id', '00000000-0000-0000-0000-000000000000');
-  if (delError) return { deleted: null, error: delError.message };
-
-  // PYENT/PYENT1/PYENT2 uploads are also forwarded into the `payent` bank-
-  // crediting table — clear those forwarded rows together with the mirror.
-  if (tableName === 'PYENT' || tableName === 'PYENT1' || tableName === 'PYENT2') {
-    if (category) {
-      const rows = await fetchAll(() => supabase.from('payent').select('id,stacode').eq('source', tableName));
-      const ids = (rows as { id: string; stacode: string | null }[])
-        .filter((r) => inCategory(r.stacode, category))
-        .map((r) => r.id);
-      if (ids.length > 0) {
-        await deleteInChunks('payent', 'id', ids);
-      }
-    } else {
-      await supabase.from('payent').delete().eq('source', tableName);
+  // Delete this category's rows from a table keyed by employee_id, optionally
+  // restricted to a column/value (e.g. a forwarded deductions `source`).
+  const clearByEmployee = async (
+    table: string,
+    filter?: { column: string; value: string },
+  ): Promise<string | null> => {
+    if (empIds.length === 0) return null;
+    let count = 0;
+    for (let i = 0; i < empIds.length; i += 60) {
+      const chunk = empIds.slice(i, i + 60);
+      let q = supabase.from(table).delete().in('employee_id', chunk);
+      if (filter) q = q.eq(filter.column, filter.value);
+      const { count: n, error } = await q;
+      if (error) return error.message;
+      count += n ?? 0;
     }
+    total += count;
+    return null;
+  };
+
+  switch (tableName) {
+    case 'MASTFILE':
+      // MASTFILE is saved straight into `employees`; clearing it removes only
+      // the category's employee rows.
+      {
+        const err = await clearByStacode('employees');
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    case 'DEDFILE':
+      {
+        // payroll_deductions (the DEDFILE masterfile) and the forwarded
+        // deductions rows each carry the DEDFILE record's own STACODE. Clear by
+        // that column — clearing by employee_id silently deleted nothing when
+        // the linked employee had no STACODE while the grid still counted rows.
+        let err = await clearByStacode('payroll_deductions');
+        if (err) return { deleted: null, error: err };
+        err = await clearByStacode('deductions', { column: 'source', value: 'DEDFILE' });
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    case 'INCLUDED':
+      {
+        let err = await clearByStacode('dbf_included');
+        if (err) return { deleted: null, error: err };
+        err = await clearByEmployee('deductions', { column: 'source', value: 'INCLUDED' });
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    case 'EXCLUDED':
+      {
+        let err = await clearByStacode('dbf_excluded');
+        if (err) return { deleted: null, error: err };
+        err = await clearByEmployee('undeducted_obligations');
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    case 'PAYROLLS':
+      {
+        let err = await clearByStacode('dbf_payrolls');
+        if (err) return { deleted: null, error: err };
+        err = await clearByEmployee('payroll_entries');
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    case 'PYENT':
+    case 'PYENT1':
+    case 'PYENT2':
+      {
+        const err = await clearByStacode(dbTable);
+        if (err) return { deleted: null, error: err };
+        const err2 = await clearByEmployee('payent', { column: 'source', value: tableName });
+        if (err2) return { deleted: null, error: err2 };
+      }
+      break;
+    case 'STNTABLE':
+      // STNTABLE is saved into the station mirror and forwarded into the School
+      // Directory (`schools`) — hard-delete both rows for this category.
+      {
+        let err = await clearByStacode('dbf_stntable');
+        if (err) return { deleted: null, error: err };
+        err = await clearByStacode('schools');
+        if (err) return { deleted: null, error: err };
+      }
+      break;
+    default:
+      // Any other direct-stacode mirror table.
+      {
+        const err = await clearByStacode(dbTable);
+        if (err) return { deleted: null, error: err };
+      }
   }
 
-  return { deleted: totalCount, error: null };
+  return { deleted: total, error: null };
+}
+
+/**
+ * Clear an Elementary table (STACODE 1–499) and the Elementary rows its import
+ * forwarded into the rest of the system.
+ */
+export const clearElementaryTableData: ClearTableFn = (tableName) =>
+  clearTableDataForCategory(tableName, 'elementary');
+
+/**
+ * Clear a High School table (STACODE 500–701) and the High School rows its
+ * import forwarded into the rest of the system.
+ */
+export const clearHighSchoolTableData: ClearTableFn = (tableName) =>
+  clearTableDataForCategory(tableName, 'highschool');
+
+/** Pick the clear routine for a payroll category. */
+export function getClearTableFn(category: PayrollCategory): ClearTableFn {
+  return category === 'elementary' ? clearElementaryTableData : clearHighSchoolTableData;
 }
 
 /**

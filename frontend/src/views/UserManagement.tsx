@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback, Fragment } from 'react';
 import {
   Users as UsersIcon, Shield, Mail, Phone, Lock, Unlock, Trash2, Search,
   Check, CheckCircle, XCircle, Clock, UserCheck, UserX, Ban, Eye, X, AlertTriangle,
-  Building2, Briefcase, Hash, ChevronRight, RefreshCw, ShieldCheck,
+  Building2, Briefcase, Hash, ChevronRight, RefreshCw, ShieldCheck, ShieldAlert,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
-import { isSuperAdminRole } from '@/lib/authz';
+import { isSuperAdminRole, isPayrollDutyRole, isMfaPrivileged } from '@/lib/authz';
 import { usePermissions } from '@/lib/permissions';
 import { useOrg } from '@/lib/org';
 import { usePagination, Pagination } from '@/components/Pagination';
@@ -16,15 +16,12 @@ import type { Region, Division } from '@/types/org';
 import {
   ROLE_LABELS, ROLE_COLORS, ROLE_DESCRIPTIONS, STACODE_SCOPED_ROLES,
   STATUS_LABELS, STATUS_COLORS, PERMISSION_CATALOG, PERMISSION_GROUPS,
-  ROLE_PERMISSIONS, ALL_PERMISSIONS,
+  ROLE_PERMISSIONS, ALL_PERMISSIONS, ALL_ROLES,
   type UserRole, type UserProfile, type UserStatus,
 } from '@/types/auth';
-
-const ALL_ROLES: UserRole[] = [
-  'super_admin', 'payroll_admin', 'payroll_processor', 'accounting_officer',
-  'hr_administrator', 'school_coordinator', 'division_finance', 'auditor',
-  'school_head', 'ess', 'read_only',
-];
+// ALL_ROLES is imported rather than re-declared here: this file previously kept
+// its own copy, which meant a role added to the model was invisible to the role
+// picker and the permissions matrix until someone remembered to edit both.
 
 type TabKey = UserStatus | 'all';
 
@@ -33,7 +30,7 @@ interface ValidationState {
 }
 
 export default function UserManagement({ initialTab }: { initialTab?: TabKey }) {
-  const { profile: currentUser, logAudit } = useAuth();
+  const { profile: currentUser, logAudit, resetUserMfa } = useAuth();
   // SuperAdmin org-scope: when a Region/Division is selected, the user list
   // only shows users of that division (unassigned/pending users stay visible
   // so they can still be reviewed and assigned).
@@ -193,10 +190,28 @@ export default function UserManagement({ initialTab }: { initialTab?: TabKey }) 
     loadUsers();
   };
 
-  const toggleMfa = async (userId: string, enabled: boolean) => {
-    const { error: rpcError } = await supabase.rpc('set_user_mfa', { p_target_user: userId, p_enabled: enabled });
-    if (rpcError) { setError('Failed to toggle MFA: ' + rpcError.message); return; }
+  /**
+   * Clear another account's second factor so it enrols again.
+   *
+   * This used to flip `profiles.mfa_enabled` via `/api/auth/set-mfa`, which was a
+   * no-op once the factor became a TOTP secret: the flag described the intent,
+   * not the factor, so "enabling" it locked nobody out and "disabling" it left a
+   * live secret in place. Destroying the secret is the only meaningful
+   * administrative action, and it is deliberately one-way.
+   */
+  const resetMfa = async (userId: string) => {
+    setActionLoading(userId);
+    setError(null);
+    const { error: rpcError } = await resetUserMfa(userId);
+    setActionLoading(null);
+    if (rpcError) {
+      setError('Failed to reset two-factor authentication: ' + rpcError);
+      return;
+    }
+    setSuccess(`${selectedUser ? `${selectedUser.first_name} ${selectedUser.last_name}` : 'The account'} must set up two-factor authentication again at its next sign-in.`);
+    await logAudit('user_mfa_reset', 'profiles', userId, {});
     loadUsers();
+    setTimeout(() => setSuccess(null), 5000);
   };
 
   const unlockAccount = async (userId: string) => {
@@ -626,7 +641,7 @@ export default function UserManagement({ initialTab }: { initialTab?: TabKey }) 
           onRoleChange={updateRole}
           onAssignStacode={handleAssignStacode}
           onAssignDivision={handleAssignDivision}
-          onToggleMfa={toggleMfa}
+          onResetMfa={resetMfa}
           onUpdateEmployeeNumber={handleUpdateEmployeeNumber}
         />
       )}
@@ -693,7 +708,7 @@ function StatCard({ label, value, icon, color }: { label: string; value: number;
   );
 }
 
-function UserDetailModal({ user, currentUser, canAssignSchool, validation, regions, divisions, onClose, onValidate, onRoleChange, onAssignStacode, onAssignDivision, onToggleMfa, onUpdateEmployeeNumber }: {
+function UserDetailModal({ user, currentUser, canAssignSchool, validation, regions, divisions, onClose, onValidate, onRoleChange, onAssignStacode, onAssignDivision, onResetMfa, onUpdateEmployeeNumber }: {
   user: UserProfile;
   currentUser: UserProfile | null;
   canAssignSchool: boolean;
@@ -705,10 +720,11 @@ function UserDetailModal({ user, currentUser, canAssignSchool, validation, regio
   onRoleChange: (userId: string, role: UserRole) => void;
   onAssignStacode: (userId: string, stacode: string) => void;
   onAssignDivision: (userId: string, regionId: string | null, divisionId: string | null) => void;
-  onToggleMfa: (userId: string, enabled: boolean) => void;
+  onResetMfa: (userId: string) => void;
   onUpdateEmployeeNumber: (userId: string, empNo: string) => void;
 }) {
   const [editingRole, setEditingRole] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const [selectedRole, setSelectedRole] = useState<UserRole>(user.role);
   const [stacodeInput, setStacodeInput] = useState(user.assigned_stacode ?? '');
   const [editingStacode, setEditingStacode] = useState(false);
@@ -878,6 +894,17 @@ function UserDetailModal({ user, currentUser, canAssignSchool, validation, regio
                   ))}
                 </select>
                 <p className="text-xs text-slate-500">{ROLE_DESCRIPTIONS[selectedRole]}</p>
+
+                {isPayrollDutyRole(selectedRole) && (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5">
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-amber-800 leading-relaxed">
+                      Segregation of duties: preparing, reviewing, approving and releasing payroll must
+                      be four different people. The system will refuse this role if the same person
+                      already holds another payroll duty.
+                    </p>
+                  </div>
+                )}
 
                 {needsStacode && (
                   <div>
@@ -1174,20 +1201,59 @@ function UserDetailModal({ user, currentUser, canAssignSchool, validation, regio
             )}
           </div>
 
-          {/* MFA toggle */}
+          {/* Two-factor authentication (TOTP) */}
           {canManage && (
             <div className="border-t border-slate-100 pt-4 mt-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
                   <h4 className="text-sm font-semibold text-slate-700">Two-Factor Authentication</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">Email OTP verification at login</p>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                    {user.mfa_enabled
+                      ? isMfaPrivileged(user.role)
+                        ? 'Enrolled — an authenticator code is required at every sign-in.'
+                        : 'Enrolled, but this role is exempt — no code is asked at sign-in.'
+                      : isMfaPrivileged(user.role)
+                        ? 'Not enrolled — a privileged role, so this account is held at the enrolment screen until it is set up.'
+                        : 'Not enrolled.'}
+                  </p>
+                  {user.mfa_enabled && (
+                    <span className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                      <ShieldCheck className="w-3 h-3" /> ENROLLED
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={() => onToggleMfa(user.id, !user.mfa_enabled)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${user.mfa_enabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${user.mfa_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                </button>
+                <div className="shrink-0 text-right">
+                  {!confirmingReset ? (
+                    <button
+                      onClick={() => setConfirmingReset(true)}
+                      disabled={!user.mfa_enabled}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Reset 2FA
+                    </button>
+                  ) : (
+                    <div className="max-w-[16rem]">
+                      <p className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">
+                        Clears the authenticator secret so the user enrols again. Their password is
+                        unchanged. Only do this when they have lost their device.
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => setConfirmingReset(false)}
+                          className="px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => { setConfirmingReset(false); onResetMfa(user.id); }}
+                          className="px-2.5 py-1.5 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700"
+                        >
+                          Confirm Reset
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

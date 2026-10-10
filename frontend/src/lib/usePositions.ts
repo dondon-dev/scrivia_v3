@@ -10,7 +10,7 @@ export interface PositionMgmt {
   salary_grade: number;
   step1: number; step2: number; step3: number; step4: number;
   step5: number; step6: number; step7: number; step8: number;
-  personnel_category: 'Teaching' | 'Teaching Related' | 'Non-Teaching';
+  personnel_category: 'Teaching' | 'Teaching Related' | 'Non-Teaching' | 'School Administration';
   position_category_code: string;
   remarks: string;
   status: 'Active' | 'Inactive';

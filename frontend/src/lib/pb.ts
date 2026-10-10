@@ -1,44 +1,384 @@
 /**
- * PocketBase Client Adapter — drop-in replacement for Supabase client.
- *
- * Exports `supabase`, `fetchAll`, `chunkedIn`, `formatError`, `rpc` and
- * aliases that every existing file imports from '@/lib/pb'.
+ * Native API client adapter — drop-in replacement for the PocketBase SDK and
+ * for the old Supabase client.
  *
  * Architecture:
- *   React frontend  →  PocketBase HTTP API  →  SQLite (single .db file)
- *   Litestream       →  continuously streams WAL to Cloudflare R2 / S3
+ *   React frontend  →  Express API (backend/)  →  SQLite (app.db)
+ *
+ * This module is the single seam between the app and the network. Every other
+ * file imports `pb`, `supabase`, `fetchAll`, `chunkedIn`, `formatError` or
+ * `rpc` from here, so the transport can change without touching call sites.
+ *
+ * Exports (preserved from the PocketBase-adapter era):
+ *   pb               — PocketBase-shaped client (authStore / collection / send)
+ *   supabase         — Supabase-shaped facade (from / rpc / auth / functions)
+ *   from             — alias of supabase.from
+ *   supabaseCompat   — the auth sub-object
+ *   fetchAll         — read-everything helper (string name OR arrow fn)
+ *   chunkedIn        — batched `col IN (...)` helper
+ *   rpc              — named-RPC helper
+ *   formatError      — error → human string
+ *   SUPABASE_URL, SUPABASE_ANON_KEY, PB_API_URL — legacy constants
  */
-import PocketBase, { RecordService, type RecordModel } from 'pocketbase';
 
-// ── PocketBase URL resolution ───────────────────────────────────────────────
-// The API base URL comes exclusively from the build-time env var VITE_PB_URL:
-//   .env.local      → the local dev PocketBase   (see .env.local)
-//   .env.production → the deployed PocketBase    (see .env.production)
-// There is deliberately NO code fallback pointing at a localhost URL, so a
-// production bundle can never dial the visitor's own machine (that is what
-// caused the CSP / upgrade-insecure-requests failures on the deployed
-// scriviapayroll.com site). With no env var set, '/' means same-origin
-// (PocketBase serving the SPA + API from one origin, as in the Docker deploy).
-const PB_URL =
-  ((import.meta.env.VITE_PB_URL as string | undefined) ?? '')
+// ── API URL resolution ──────────────────────────────────────────────────────
+// Prefer VITE_API_URL (the new Express backend); fall back to VITE_PB_URL for
+// deployments where Express simply replaced PocketBase on the same host. With
+// neither set, '' means same-origin (SPA + API served together).
+const API_URL =
+  (
+    (import.meta.env.VITE_API_URL as string | undefined) ??
+    (import.meta.env.VITE_PB_URL as string | undefined) ??
+    ''
+  )
     .trim()
-    .replace(/\/+$/, '') || '/';
+    .replace(/\/+$/, '') || '';
 
-export const pb = new PocketBase(PB_URL);
-pb.autoCancellation(false);
+export const SUPABASE_URL = API_URL;
+export const SUPABASE_ANON_KEY = '';
+export const PB_API_URL = API_URL;
 
-// ── Timestamp aliasing ───────────────────────────────────────────────────────
-// PocketBase stamps every record with system `created`/`updated` fields, but
-// most collections in this app have NO custom `created_at`/`updated_at` fields —
-// the Supabase-port code queries them by name anyway, which makes PocketBase
-// return 400 ("failed to resolve field"). Alias the *_at names to the system
-// fields on the way in, and back-fill them on the way out so callers that read
-// `rec.created_at` keep working unchanged.
-const TIMESTAMP_ALIAS: Record<string, string> = {
-  created_at: 'created',
-  updated_at: 'updated',
+// ── Error shape ─────────────────────────────────────────────────────────────
+// Mirrors PocketBase's ClientResponseError closely enough for the app
+// (`.status`, `.message`, `.data`, `.isAbort`).
+export class ClientResponseError extends Error {
+  status: number;
+  data: any;
+  url: string;
+  isAbort = false;
+  constructor(message: string, status = 0, data: any = {}, url = '') {
+    super(message);
+    this.name = 'ClientResponseError';
+    this.status = status;
+    this.data = data;
+    this.url = url;
+  }
+}
+
+// ── Auth store (localStorage, PocketBase-compatible key/shape) ──────────────
+const AUTH_STORAGE_KEY = 'pb_auth';
+
+function decodeJwtExp(token: string): number | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload || typeof atob !== 'function') return null;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = JSON.parse(decodeURIComponent(escape(atob(normalized))));
+    return typeof decoded.exp === 'number' ? decoded.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+type AuthChangeListener = () => void;
+
+class AuthStore {
+  private token_ = '';
+  private model_: any = null;
+  private listeners = new Set<AuthChangeListener>();
+
+  constructor() {
+    this.load();
+  }
+
+  get token(): string {
+    return this.token_;
+  }
+
+  get model(): any {
+    return this.model_;
+  }
+
+  get isValid(): boolean {
+    if (!this.token_ || !this.model_) return false;
+    const exp = decodeJwtExp(this.token_);
+    if (exp != null && Date.now() / 1000 > exp + 60) return false;
+    return true;
+  }
+
+  save(token: string, model: any): void {
+    this.token_ = token || '';
+    this.model_ = model || null;
+    this.persist();
+    this.emit();
+  }
+
+  clear(): void {
+    this.token_ = '';
+    this.model_ = null;
+    try {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    this.emit();
+  }
+
+  onChange(cb: AuthChangeListener): () => void {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  }
+
+  private load(): void {
+    try {
+      const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      this.token_ = typeof parsed?.token === 'string' ? parsed.token : '';
+      this.model_ = parsed?.model ?? parsed?.record ?? null;
+    } catch {
+      this.token_ = '';
+      this.model_ = null;
+    }
+  }
+
+  private persist(): void {
+    try {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token: this.token_, model: this.model_ }));
+    } catch {
+      /* storage might be unavailable (private mode) */
+    }
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch {
+        /* a bad listener must not break the others */
+      }
+    }
+  }
+}
+
+export const authStore = new AuthStore();
+
+// ── HTTP transport ──────────────────────────────────────────────────────────
+
+interface SendOptions {
+  method?: string;
+  body?: any;
+  headers?: Record<string, string>;
+  query?: Record<string, unknown>;
+  // Accepted for PocketBase signature compatibility; the Express backend has no
+  // per-request cancellation, so it is ignored.
+  requestKey?: string | null;
+  signal?: AbortSignal;
+}
+
+function buildUrl(path: string, query?: Record<string, unknown>): string {
+  const base = /^https?:\/\//i.test(path)
+    ? path
+    : `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
+  if (!query) return base;
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) {
+    if (v === undefined || v === null) continue;
+    usp.append(k, String(v));
+  }
+  const qs = usp.toString();
+  if (!qs) return base;
+  return base + (base.includes('?') ? '&' : '?') + qs;
+}
+
+async function send<T = any>(path: string, options: SendOptions = {}): Promise<T> {
+  const { method = 'GET', body, headers = {}, query, signal } = options;
+  const url = buildUrl(path, query);
+
+  const finalHeaders: Record<string, string> = { Accept: 'application/json', ...headers };
+  let payload: BodyInit | undefined;
+  if (body !== undefined && body !== null) {
+    if (body instanceof FormData) {
+      payload = body;
+    } else {
+      finalHeaders['Content-Type'] = 'application/json';
+      payload = JSON.stringify(body);
+    }
+  }
+  if (authStore.token) finalHeaders.Authorization = `Bearer ${authStore.token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method, headers: finalHeaders, body: payload, signal });
+  } catch (err: any) {
+    throw new ClientResponseError(err?.message ?? 'Network request failed', 0, {}, url);
+  }
+
+  const text = await response.text();
+  let parsed: any = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+
+  if (!response.ok) {
+    const message =
+      (parsed && (parsed.message || parsed.error)) ||
+      (typeof parsed === 'string' ? parsed : '') ||
+      `Request failed with status ${response.status}`;
+    throw new ClientResponseError(message, response.status, parsed ?? {}, url);
+  }
+
+  return parsed as T;
+}
+
+// ── Native PocketBase-shaped client ─────────────────────────────────────────
+
+interface ListOptions {
+  filter?: any;
+  sort?: string;
+  fields?: string | string[];
+  expand?: string;
+  batch?: number;
+}
+
+function toFilterArg(filter: any): any {
+  if (!filter) return undefined;
+  if (typeof filter === 'object') return filter;
+  if (typeof filter === 'string') {
+    const trimmed = filter.trim();
+    if (!trimmed) return undefined;
+    return parsePocketBaseFilter(trimmed);
+  }
+  return undefined;
+}
+
+function toFieldsArg(fields?: string | string[]): string[] | undefined {
+  if (!fields) return undefined;
+  if (Array.isArray(fields)) return fields.map((f) => f.trim()).filter(Boolean);
+  if (fields === '*') return undefined;
+  return fields
+    .split(',')
+    .map((f) => f.trim())
+    .filter(Boolean);
+}
+
+function collectionService(name: string) {
+  const rest = `/api/db/${name}`;
+  const query = (payload: Record<string, unknown>) =>
+    send<{ data: any; total?: number; page?: number; perPage?: number }>(`${rest}/query`, {
+      method: 'POST',
+      body: payload,
+    });
+
+  return {
+    async getOne(id: string): Promise<any> {
+      return send(`${rest}/${encodeURIComponent(id)}`);
+    },
+
+    async getFullList<T = any>(opts: ListOptions = {}): Promise<T[]> {
+      const sort = opts.sort || '-created';
+      const fields = toFieldsArg(opts.fields);
+      const filter = toFilterArg(opts.filter);
+      // The old PocketBase server capped every page at 500 rows, so getFullList
+      // walked pages behind the scenes. Keep walking so the SQLite backend is
+      // never handed an unbounded query.
+      const batch = Math.min(opts.batch ?? 1000, 2000);
+      const out: T[] = [];
+      let offset = 0;
+      // Hard stop well past the current data volume; guards against a runaway.
+      for (let guard = 0; guard < 100_000; guard++) {
+        const res = await query({ filter, sort, fields, limit: batch, offset, noCount: true });
+        const items = (res?.data as T[]) || [];
+        out.push(...items);
+        if (items.length < batch) break;
+        offset += batch;
+      }
+      return out;
+    },
+
+    async getList<T = any>(page = 1, perPage = 30, opts: ListOptions = {}) {
+      const safePage = Math.max(1, Number(page) || 1);
+      const safePerPage = Math.max(1, Number(perPage) || 30);
+      const res = await query({
+        filter: toFilterArg(opts.filter),
+        sort: opts.sort,
+        fields: toFieldsArg(opts.fields),
+        limit: safePerPage,
+        offset: (safePage - 1) * safePerPage,
+      });
+      const items = (res?.data as T[]) || [];
+      const totalItems = typeof res?.total === 'number' ? res.total : items.length;
+      return {
+        page: safePage,
+        perPage: safePerPage,
+        totalItems,
+        totalPages: Math.max(1, Math.ceil(totalItems / safePerPage)),
+        items,
+      };
+    },
+
+    async getFirstListItem<T = any>(filter: any, opts: { sort?: string; fields?: string | string[] } = {}): Promise<T> {
+      const res = await query({
+        filter: toFilterArg(filter),
+        sort: opts.sort,
+        fields: toFieldsArg(opts.fields),
+        single: true,
+      });
+      if (!res || res.data == null) {
+        throw new ClientResponseError('The requested resource was not found.', 404);
+      }
+      return res.data as T;
+    },
+
+    async create<T = any>(data: any): Promise<T> {
+      return send<T>(rest, { method: 'POST', body: data });
+    },
+
+    async update<T = any>(id: string, data: any): Promise<T> {
+      return send<T>(`${rest}/${encodeURIComponent(id)}`, { method: 'PUT', body: data });
+    },
+
+    async delete(id: string): Promise<boolean> {
+      await send(`${rest}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return true;
+    },
+
+    async authWithPassword(identity: string, password: string) {
+      const res = await send<{ token: string; record: any }>(
+        '/api/collections/profiles/auth-with-password',
+        { method: 'POST', body: { identity, password } },
+      );
+      authStore.save(res.token, res.record);
+      return res;
+    },
+  };
+}
+
+export const pb = {
+  authStore,
+  collection: collectionService,
+  send,
+  autoCancellation: (_enabled: boolean) => {
+    /* no-op: the Express backend does not implement request cancellation */
+  },
+  baseUrl: API_URL,
 };
-const tsCol = (col: string) => TIMESTAMP_ALIAS[col] ?? col;
+
+// ── formatError ─────────────────────────────────────────────────────────────
+
+export function formatError(err: any, _context?: any): string {
+  if (!err) return 'Unknown error';
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  const m = err.message ?? err.data?.message ?? err.error?.message ?? err.error_description;
+  if (typeof m === 'string' && m.trim()) return m;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+// ── Timestamp aliasing ──────────────────────────────────────────────────────
+// The server already back-fills created_at/updated_at from created/updated, but
+// keep the client-side back-fill too so records fetched before a redeploy still
+// expose the alias names legacy code reads.
 const tsBackfill = (rec: any): any => {
   if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return rec;
   let out = rec;
@@ -47,28 +387,8 @@ const tsBackfill = (rec: any): any => {
   return out;
 };
 
-// Legacy aliases so existing code that references these still compiles.
-export const SUPABASE_URL = PB_URL;
-export const SUPABASE_ANON_KEY = '';
-export const PB_API_URL = PB_URL;
+// ── Bounded-concurrency write pool ──────────────────────────────────────────
 
-// ── Error formatter ────────────────────────────────────────────────────────
-
-export function formatError(err: any, _context?: any): string {
-  if (!err) return 'Unknown error';
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  const m = err.message ?? err.data?.message ?? err.error?.message ?? err.error_description;
-  if (typeof m === 'string' && m.trim()) return m;
-  try { return JSON.stringify(err); } catch { return String(err); }
-}
-
-// ── Bounded-concurrency write pool ────────────────────────────────────────
-// PocketBase has no batch-write endpoint, so bulk operations (payroll runs,
-// Smart Import, DBF sync) issue one HTTP request per record. Doing that
-// sequentially makes a multi-thousand-employee payroll run take many minutes;
-// a small concurrency pool (12 in flight) cuts the wall time by ~12x while
-// staying polite to the server — no request storm, no connection exhaustion.
 const WRITE_CONCURRENCY = 12;
 
 async function runPool<T>(
@@ -85,57 +405,43 @@ async function runPool<T>(
       await worker(items[i]);
     }
   }
-  const runners = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => runner(),
-  );
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, () => runner());
   await Promise.all(runners);
 }
 
-// ── fetchAll — works with both string collection names AND arrow functions ─
+// ── fetchAll — works with string collection names AND arrow functions ───────
+// Callers overwhelmingly pass an arrow function that returns a builder, e.g.
+//   fetchAll(() => supabase.from('employees').select('*').eq('status', 'Active'))
+// The string form (collection name) is kept for completeness.
+
+type FetchSource = string | ((...args: any[]) => any);
 
 export async function fetchAll<T = any>(
-  collectionOrFn: string | RecordService | (() => any),
+  collectionOrFn: FetchSource,
   filterOrPageSize?: string | number,
   sort?: string,
   expand?: string,
   batchSize = 1000,
 ): Promise<T[]> {
-  // If caller passed an arrow function like () => supabase.from('employees').select('*'),
-  // invoke it and extract the builder results.
   if (typeof collectionOrFn === 'function') {
     try {
       const result = await collectionOrFn();
-      // The result could be a SupabaseQueryBuilder (then await it) or already data
-      if (result && typeof result.then === 'function') {
-        const awaited = await result;
-        if (Array.isArray(awaited)) return awaited as T[];
-        if (awaited?.data && Array.isArray(awaited.data)) return awaited.data as T[];
-        return (awaited ?? []) as T[];
-      }
-      if (result?.data && Array.isArray(result.data)) return result.data as T[];
-      if (Array.isArray(result)) return result as T[];
-      return [];
+      const awaited = result && typeof result.then === 'function' ? await result : result;
+      if (Array.isArray(awaited)) return awaited as T[];
+      if (awaited?.data && Array.isArray(awaited.data)) return awaited.data as T[];
+      return (awaited ?? []) as T[];
     } catch {
       return [];
     }
   }
 
-  // String collection name — use PocketBase API. getFullList() walks every page
-  // automatically and has no per-page cap, which is what we want for "all rows".
-  const svc = typeof collectionOrFn === 'string'
-    ? pb.collection(collectionOrFn)
-    : collectionOrFn;
-
+  const svc = collectionService(collectionOrFn);
   const filter = typeof filterOrPageSize === 'string' ? filterOrPageSize : '';
   const all = await svc.getFullList<T>({
-    filter: filter ?? '',
+    filter: filter || undefined,
     sort: sort ?? '-created',
     expand: expand ?? '',
-    // PocketBase caps every page at 500; asking the SDK for larger batches makes
-    // getFullList stop after the first page and silently truncate the result.
-    batch: Math.min(batchSize, 500),
-    requestKey: null,
+    batch: Math.min(batchSize, 2000),
   });
   return all;
 }
@@ -146,10 +452,8 @@ export async function chunkedIn<T = any>(
   column: string,
   values: (string | number)[],
   queryFn: (chunk: (string | number)[]) => any,
-  // PocketBase's filter parser 400s on OR-expansions much above ~100 terms
-  // ("Something went wrong while processing your request."), and `.in()`
-  // expands every value into one OR term. 60 keeps every sub-query well under
-  // that ceiling while still batching lookups efficiently.
+  // SQLite has no OR-expansion ceiling, but keep chunking so each request stays
+  // a reasonable size (and so existing call sites keep their batching semantics).
   chunkSize = 60,
 ): Promise<T[]> {
   if (values.length === 0) return [];
@@ -178,8 +482,11 @@ const RPC_MAP: Record<string, string> = {
   reject_user: 'auth/reject',
   disable_user: 'auth/disable',
   enable_user: 'auth/enable',
-  issue_mfa_code: 'auth/mfa/issue',
-  verify_mfa_code: 'auth/mfa/verify',
+  enrol_mfa: 'auth/mfa/enrol',
+  verify_mfa_enrolment: 'auth/mfa/verify-enrolment',
+  get_mfa_status: 'auth/mfa/status',
+  regenerate_mfa_recovery_codes: 'auth/mfa/recovery-codes/regenerate',
+  reset_mfa: 'auth/mfa/reset',
   get_role_permissions: 'permissions',
   upsert_role_permission: 'permissions/upsert',
   delete_role_permission: 'permissions/delete',
@@ -202,7 +509,6 @@ const RPC_MAP: Record<string, string> = {
   run_payroll_engine: 'payroll/run',
   reverse_payroll: 'payroll/reverse',
   get_payroll_engine_stats: 'payroll/engine-stats',
-  generate_monthly_periods: 'payroll/generate-periods',
   get_deduction_engine_stats: 'payroll/deduction-engine',
   get_school_stats: 'schools/stats',
   query_schools_with_stats: 'query-schools-with-stats',
@@ -214,21 +520,179 @@ export async function rpc(
 ): Promise<{ data: any; error: any | null }> {
   const endpoint = RPC_MAP[name] ?? name;
   try {
-    const result = await pb.send(`/api/${endpoint}`, {
-      method: 'POST',
-      body: params ?? {},
-    });
+    const result = await send(`/api/${endpoint}`, { method: 'POST', body: params ?? {} });
     return { data: result, error: null };
   } catch (err) {
     return { data: null, error: err };
   }
 }
 
+// ── PostgREST `.or(...)` parser ─────────────────────────────────────────────
+// Views call `.or('a.eq.1,b.ilike.%x%')` and `.or('and(a.eq.1,b.in.(x,y)),c.is.null')`.
+// Translate that PostgREST grammar into the structured filter tree the backend
+// understands.
+
+function splitTopLevel(input: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of input) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim() !== '') out.push(cur);
+  return out;
+}
+
+function stripPercent(v: string): string {
+  return v.replace(/^%+/, '').replace(/%+$/, '');
+}
+
+function postgrestLeaf(col: string, opRaw: string, value: string): any {
+  const op = opRaw.toLowerCase();
+  const isNullLiteral = value.toLowerCase() === 'null';
+  switch (op) {
+    case 'eq':
+      return { col, op: 'eq', val: isNullLiteral ? null : value };
+    case 'neq':
+    case 'not':
+      return { col, op: 'neq', val: isNullLiteral ? null : value };
+    case 'gt':
+      return { col, op: 'gt', val: value };
+    case 'gte':
+      return { col, op: 'gte', val: value };
+    case 'lt':
+      return { col, op: 'lt', val: value };
+    case 'lte':
+      return { col, op: 'lte', val: value };
+    case 'like':
+    case 'ilike':
+      return { col, op: 'contains', val: stripPercent(value) };
+    case 'is':
+      return isNullLiteral ? { col, op: 'eq', val: null } : { col, op: 'neq', val: null };
+    case 'in': {
+      const inner = value.replace(/^\(/, '').replace(/\)$/, '');
+      const arr = inner
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s !== '');
+      return { col, op: 'in', val: arr };
+    }
+    default:
+      return { col, op: 'eq', val: value };
+  }
+}
+
+function parsePostgrestNode(expr: string): any {
+  const e = expr.trim();
+  const grouped = e.match(/^(and|or)\(([\s\S]*)\)$/i);
+  if (grouped) {
+    const op = grouped[1].toLowerCase();
+    const conditions = splitTopLevel(grouped[2]).map(parsePostgrestNode).filter(Boolean);
+    return { op, conditions };
+  }
+  const firstDot = e.indexOf('.');
+  if (firstDot < 0) return null;
+  const col = e.slice(0, firstDot);
+  const rest = e.slice(firstDot + 1);
+  const secondDot = rest.indexOf('.');
+  const opRaw = secondDot < 0 ? rest : rest.slice(0, secondDot);
+  const value = secondDot < 0 ? '' : rest.slice(secondDot + 1);
+  return postgrestLeaf(col, opRaw, value);
+}
+
+// ── Minimal PocketBase filter-string → tree (legacy fetchAll string path) ───
+// Only the shapes the old adapter emitted are supported: leaves joined by
+// `&&` / `||`, with `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, and `null`.
+function parsePocketBaseFilter(input: string): any {
+  function splitBy(str: string, separator: string): string[] {
+    const out: string[] = [];
+    let depth = 0;
+    let quote = '';
+    let cur = '';
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (quote) {
+        cur += ch;
+        if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        cur += ch;
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (depth === 0 && str.startsWith(separator, i)) {
+        out.push(cur);
+        cur = '';
+        i += separator.length - 1;
+        continue;
+      }
+      cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  function leaf(str: string): any {
+    const s = str.trim().replace(/^\(/, '').replace(/\)$/, '').trim();
+    const m = s.match(/^(\w+)\s*(!=|>=|<=|=|>|<|~)\s*(.*)$/);
+    if (!m) return null;
+    const col = m[1];
+    const opToken = m[2];
+    let raw = m[3].trim();
+    if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+      raw = raw.slice(1, -1).replace(/''/g, "'");
+    }
+    const isNull = raw.toLowerCase() === 'null';
+    switch (opToken) {
+      case '=':
+        return { col, op: 'eq', val: isNull ? null : raw };
+      case '!=':
+        return { col, op: 'neq', val: isNull ? null : raw };
+      case '>':
+        return { col, op: 'gt', val: raw };
+      case '>=':
+        return { col, op: 'gte', val: raw };
+      case '<':
+        return { col, op: 'lt', val: raw };
+      case '<=':
+        return { col, op: 'lte', val: raw };
+      case '~':
+        return { col, op: 'contains', val: raw };
+      default:
+        return null;
+    }
+  }
+
+  function build(str: string): any {
+    const orParts = splitBy(str, '||').map((p) => p.trim()).filter(Boolean);
+    if (orParts.length > 1) {
+      return { op: 'or', conditions: orParts.map(build).filter(Boolean) };
+    }
+    const andParts = splitBy(str, '&&').map((p) => p.trim()).filter(Boolean);
+    if (andParts.length > 1) {
+      return { op: 'and', conditions: andParts.map(build).filter(Boolean) };
+    }
+    return leaf(str);
+  }
+
+  return build(input);
+}
+
 // ── Supabase-style query builder ───────────────────────────────────────────
 
 class SupabaseQueryBuilder {
   private _collection: string;
-  private _filter: string[] = [];
+  private _filter: any[] = [];
   private _selectFields = '*';
   private _sortField = '';
   private _rangeFrom = 0;
@@ -243,6 +707,10 @@ class SupabaseQueryBuilder {
   private _countExact = false;
   private _headOnly = false;
   private _upsertMode = false;
+  // Forward any unrecognised chained call back to the same builder so legacy
+  // chains that invoke unimplemented Supabase methods do not immediately break.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 
   constructor(collection: string) {
     this._collection = collection;
@@ -256,93 +724,79 @@ class SupabaseQueryBuilder {
   }
 
   eq(column: string, value: any) {
-    column = tsCol(column);
-    if (value === null || value === undefined) {
-      this._filter.push(`${column} = null`);
-    } else if (typeof value === 'string') {
-      this._filter.push(`${column} = '${value.replace(/'/g, "''")}'`);
-    } else {
-      this._filter.push(`${column} = ${value}`);
-    }
+    this._filter.push({ col: column, op: 'eq', val: value ?? null });
     return this;
   }
 
   neq(column: string, value: any) {
-    column = tsCol(column);
-    if (value === null || value === undefined) {
-      this._filter.push(`${column} != null`);
-    } else if (typeof value === 'string') {
-      this._filter.push(`${column} != '${value.replace(/'/g, "''")}'`);
-    } else {
-      this._filter.push(`${column} != ${value}`);
-    }
+    this._filter.push({ col: column, op: 'neq', val: value ?? null });
     return this;
   }
 
   gt(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} > ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
+    this._filter.push({ col: column, op: 'gt', val: value });
     return this;
   }
 
   gte(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} >= ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
+    this._filter.push({ col: column, op: 'gte', val: value });
     return this;
   }
 
   lt(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} < ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
+    this._filter.push({ col: column, op: 'lt', val: value });
     return this;
   }
 
   lte(column: string, value: any) {
-    this._filter.push(`${tsCol(column)} <= ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`);
+    this._filter.push({ col: column, op: 'lte', val: value });
     return this;
   }
 
   like(column: string, value: string) {
-    this._filter.push(`${tsCol(column)} ~ '${value.replace(/'/g, "''")}'`);
+    this._filter.push({ col: column, op: 'contains', val: value });
     return this;
   }
 
   ilike(column: string, value: string) {
-    this._filter.push(`lower(${tsCol(column)}) ~ lower('${value.replace(/'/g, "''")}')`);
+    this._filter.push({ col: column, op: 'contains', val: value });
     return this;
   }
 
   in(column: string, values: any[]) {
-    column = tsCol(column);
-    if (values.length === 0) return this;
-    // PocketBase does not support SQL `IN (...)` or array `~ [...]` filters —
-    // only OR-expansion works (verified against the live instance, which 400s
-    // on both). Expand `col IN (a, b, ...)` into `col='a' || col='b' || ...`.
-    // Callers must keep `values` under ~100 (see chunkedIn) — the PocketBase
-    // filter parser rejects longer OR-expansions with a generic 400.
-    const ors = values.map((v) => {
-      const esc = typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : String(v);
-      return `${column} = ${esc}`;
-    });
-    this._filter.push(`(${ors.join(' || ')})`);
+    if (!Array.isArray(values) || values.length === 0) return this;
+    this._filter.push({ col: column, op: 'in', val: values });
+    return this;
+  }
+
+  is(column: string, value: any) {
+    // Supabase `is(col, 'null')` / `.is(col, null)` → IS NULL; `is(col,'not.null')` → IS NOT NULL.
+    const isNull = value === null || value === undefined || value === 'null';
+    this._filter.push({ col: column, op: isNull ? 'eq' : 'neq', val: null });
     return this;
   }
 
   isNull(column: string) {
-    this._filter.push(`${tsCol(column)} = null`);
+    this._filter.push({ col: column, op: 'eq', val: null });
     return this;
   }
 
   isNotNull(column: string) {
-    this._filter.push(`${tsCol(column)} != null`);
+    this._filter.push({ col: column, op: 'neq', val: null });
     return this;
   }
 
   or(filter: string) {
-    this._filter.push(`(${filter})`);
+    const parts = splitTopLevel(filter)
+      .map(parsePostgrestNode)
+      .filter(Boolean);
+    if (parts.length === 1) this._filter.push(parts[0]);
+    else if (parts.length > 1) this._filter.push({ op: 'or', conditions: parts });
     return this;
   }
 
   order(column: string, opts?: { ascending?: boolean }) {
     const dir = opts?.ascending === false ? '-' : '';
-    column = tsCol(column);
     this._sortField = this._sortField ? `${this._sortField}, ${dir}${column}` : `${dir}${column}`;
     return this;
   }
@@ -389,56 +843,59 @@ class SupabaseQueryBuilder {
     return this as any;
   }
 
-  count(exact?: string) {
+  count(_exact?: string) {
     this._countOnly = true;
-    this._countExact = exact === 'exact';
+    this._countExact = _exact === 'exact';
     return this as any;
   }
 
-  // Support then() so the builder can be awaited
-  then<TResult = any>(resolve?: (value: any) => TResult | PromiseLike<TResult>, reject?: (reason: any) => TResult | PromiseLike<TResult>): Promise<TResult> {
+  then<TResult = any>(
+    resolve?: (value: any) => TResult | PromiseLike<TResult>,
+    reject?: (reason: any) => TResult | PromiseLike<TResult>,
+  ): Promise<TResult> {
     return this._execute().then(resolve, reject);
   }
 
-  private _buildFilter(): string {
-    return this._filter.join(' && ');
+  private _buildFilter(): any {
+    const conds = this._filter.filter(Boolean);
+    if (conds.length === 0) return undefined;
+    if (conds.length === 1) return conds[0];
+    return { op: 'and', conditions: conds };
+  }
+
+  private _svc() {
+    return collectionService(this._collection);
   }
 
   private async _execute(): Promise<any> {
     try {
-      // Handle insert — support both single object and array (batch)
+      const svc = this._svc();
+
+      // ── Insert ──────────────────────────────────────────────────────────
       if (this._insertData) {
         if (Array.isArray(this._insertData)) {
-          // PocketBase doesn't accept batch POST with array body.
-          // Insert records individually via the SDK, but run them through a
-          // bounded-concurrency pool instead of a serial loop.
           const items = this._insertData;
           const results: any[] = [];
           await runPool(items, async (item) => {
             try {
-              const created = await pb.collection(this._collection).create(item);
-              results.push(created);
+              results.push(await svc.create(item));
             } catch (err: any) {
-              // If a record fails, skip it but continue with the rest
               console.warn(`Batch insert skip [${this._collection}]:`, err?.message ?? err);
             }
           });
           return { data: results, error: null };
         }
-        const result = await pb.collection(this._collection).create(this._insertData);
+        const result = await svc.create(this._insertData);
         return { data: result, error: null };
       }
 
-      // Handle update / upsert
+      // ── Update / upsert ─────────────────────────────────────────────────
       if (this._updateData && !this._deleteMode) {
-        // Batch upsert: array of objects — create each individually, fall back to update on conflict
         if (this._upsertMode && Array.isArray(this._updateData)) {
           if (typeof window !== 'undefined') (window as any).__PB_BATCH_UPSERT__ = true;
-          const items = this._updateData as Record<string, unknown>[];
+          const items = this._updateData as Record<string, any>[];
           const results: any[] = [];
-          const errors: string[] = [];
 
-          // Natural key fields per collection for fallback lookup
           const NATURAL_KEYS: Record<string, string[]> = {
             payroll_entries: ['employee_id', 'pay_period_id'],
             employees: ['employee_number', 'empno'],
@@ -450,190 +907,126 @@ class SupabaseQueryBuilder {
           };
           const keyFields = NATURAL_KEYS[this._collection] ?? [];
 
-          const upsertOne = async (item: Record<string, unknown>): Promise<void> => {
-            // If item has an id, try update-first (fast path for existing records)
+          const upsertOne = async (item: Record<string, any>): Promise<void> => {
             if (item.id) {
               try {
-                const { id: _id, ...rest } = item;
-                const updated = await pb.collection(this._collection).update(item.id as string, rest, { requestKey: null });
-                results.push(updated);
+                const { id, ...rest } = item;
+                results.push(await svc.update(id, rest));
                 return;
               } catch {
-                // Record doesn't exist yet — fall through to create
+                /* fall through to create */
               }
             }
-            // Try create
             try {
-              const created = await pb.collection(this._collection).create(item);
-              results.push(created);
+              results.push(await svc.create(item));
             } catch (createErr: any) {
-              // Create failed (likely duplicate) — try to find and update using natural keys
               try {
-                const filterParts: string[] = [];
+                const conditions: any[] = [];
                 for (const k of keyFields) {
                   const v = item[k];
-                  if (v != null && v !== '') {
-                    filterParts.push(`${k} = '${String(v).replace(/'/g, "''")}'`);
-                  }
+                  if (v != null && v !== '') conditions.push({ col: k, op: 'eq', val: v });
                 }
-                // Fallback: if no natural keys matched, use first non-null string field
-                if (filterParts.length === 0) {
+                if (conditions.length === 0) {
                   for (const [k, v] of Object.entries(item)) {
                     if (typeof v === 'string' && v && k !== 'id') {
-                      filterParts.push(`${k} = '${v.replace(/'/g, "''")}'`);
+                      conditions.push({ col: k, op: 'eq', val: v });
                       break;
                     }
                   }
                 }
-                if (filterParts.length > 0) {
-                  const existing = await pb.collection(this._collection).getFullList({ filter: filterParts.join(' && '), requestKey: null });
+                if (conditions.length > 0) {
+                  const filter = conditions.length === 1 ? conditions[0] : { op: 'and', conditions };
+                  const existing = await svc.getFullList({ filter });
                   if (existing.length > 0) {
-                    const { id: _id, ...rest } = item;
-                    const updated = await pb.collection(this._collection).update(existing[0].id, rest, { requestKey: null });
-                    results.push(updated);
-                  } else {
-                    errors.push(`Upsert skip: ${createErr?.message ?? 'unknown'}`);
+                    const { id, ...rest } = item;
+                    results.push(await svc.update(existing[0].id, rest));
                   }
-                } else {
-                  errors.push(`Upsert skip: ${createErr?.message ?? 'no key'}`);
                 }
               } catch {
-                errors.push(`Upsert error: ${createErr?.message ?? 'unknown'}`);
+                console.warn(`Batch upsert skip [${this._collection}]:`, createErr?.message ?? createErr);
               }
             }
           };
 
           await runPool(items, upsertOne);
-          if (errors.length > 0) console.warn(`Batch upsert [${this._collection}]:`, errors.slice(0, 5));
           return { data: results, error: null };
         }
+
         if (this._upsertMode && this._updateData.id) {
-          // Upsert with explicit id: try update first, fall back to create
           const id = this._updateData.id;
           try {
             const { id: _id, ...rest } = this._updateData;
-            const updated = await pb.collection(this._collection).update(id, rest);
-            return { data: updated, error: null };
+            return { data: await svc.update(id, rest), error: null };
           } catch {
-            const created = await pb.collection(this._collection).create(this._updateData);
-            return { data: created, error: null };
+            return { data: await svc.create(this._updateData), error: null };
           }
         }
-        // Regular update: find matching records and update each (in parallel)
+
         const filter = this._buildFilter();
-        const existing = await pb.collection(this._collection).getFullList({ filter });
+        const existing = await svc.getFullList({ filter });
         const results: any[] = [];
-        await runPool(existing, async (rec) => {
-          results.push(await pb.collection(this._collection).update(rec.id, this._updateData));
+        await runPool(existing, async (rec: any) => {
+          results.push(await svc.update(rec.id, this._updateData));
         });
         return { data: results, error: null };
       }
 
-      // Handle delete
+      // ── Delete ──────────────────────────────────────────────────────────
       if (this._deleteMode) {
         const filter = this._buildFilter();
-        const existing = await pb.collection(this._collection).getFullList({ filter });
-        await runPool(existing, async (rec) => {
-          await pb.collection(this._collection).delete(rec.id);
+        const existing = await svc.getFullList({ filter });
+        await runPool(existing, async (rec: any) => {
+          await svc.delete(rec.id);
         });
-        // Return { data, error, count } to match Supabase's delete API
         return { data: null, error: null, count: existing.length };
       }
 
-      // Handle count
+      // ── Count ───────────────────────────────────────────────────────────
       if (this._countOnly) {
-        const filter = this._buildFilter();
-        const result = await pb.collection(this._collection).getList(1, 1, { filter });
-        return { count: result.totalItems, error: null, data: null };
+        const page = await svc.getList(1, 1, { filter: this._buildFilter() });
+        return { count: page.totalItems, error: null, data: null };
       }
 
-      // Handle select / query
+      // ── Select / query ──────────────────────────────────────────────────
       const filter = this._buildFilter();
-      const opts: Record<string, any> = {};
-      if (filter) opts.filter = filter;
-      if (this._sortField) opts.sort = this._sortField;
-      // Pass field selection to PocketBase (comma-separated field names)
-      if (this._selectFields && this._selectFields !== '*') {
-        opts.fields = this._selectFields.split(',')
-          .map((f) => tsCol(f.trim()))
-          .filter(Boolean)
-          .join(',');
-      }
+      const fields = this._selectFields && this._selectFields !== '*' ? this._selectFields : undefined;
+      const baseOpts = { filter, sort: this._sortField || undefined, fields };
 
-      const collection = pb.collection(this._collection);
-
-      // Supabase-style select(fields, { count: 'exact', head: true }): the
-      // caller wants only the matching total — fetch one page's metadata and
-      // return no row bodies. (`head` unset/false with `count` still returns
-      // rows below, with the exact total attached to the result.)
       if (this._headOnly) {
-        const t = await collection.getList(1, 1, { ...opts, perPage: 1, requestKey: null });
-        return { data: [], error: null, count: t.totalItems ?? 0 };
+        const page = await svc.getList(1, 1, baseOpts);
+        return { data: [], error: null, count: page.totalItems ?? 0 };
       }
 
       let result: { data: any; error: any; count?: number };
 
       if (this._single || this._maybeSingle) {
         try {
-          const item = await collection.getFirstListItem(filter, opts);
-          result = { data: item ? tsBackfill(item) : (this._maybeSingle ? null : undefined), error: null };
+          const item = await svc.getFirstListItem(filter, { sort: baseOpts.sort, fields });
+          result = { data: item ? tsBackfill(item) : item, error: null };
         } catch (err: any) {
           if (this._maybeSingle) result = { data: null, error: null };
           else return { data: null, error: err };
         }
       } else if (this._limitN > 0) {
-        // Explicit .limit() — honour it with getList() so we get at most N rows.
-        // PocketBase caps per-page at 500, so larger limits must walk pages.
-        const PER_PAGE_MAX = 500;
-        const collected: any[] = [];
-        let pageNum = 1;
-        while (collected.length < this._limitN) {
-          const perPage = Math.min(PER_PAGE_MAX, this._limitN - collected.length);
-          const page = await collection.getList(pageNum, perPage, opts);
-          const items = page.items ?? [];
-          collected.push(...items.map(tsBackfill));
-          if (items.length < perPage || items.length === 0) break;
-          pageNum += 1;
-        }
-        result = { data: collected.slice(0, this._limitN), error: null };
+        const page = await svc.getList(1, this._limitN, baseOpts);
+        result = { data: (page.items ?? []).map(tsBackfill), error: null };
       } else if (this._rangeTo > this._rangeFrom) {
-        // Explicit .range(from,to) — fetch the single requested window.
-        // PocketBase caps every page at 500 rows regardless of the requested
-        // perPage, so a window wider than 500 must be assembled by walking
-        // consecutive pages; the old one-request math silently returned only
-        // the first page.
-        const PER_PAGE_MAX = 500;
         const start = this._rangeFrom;
         const wanted = this._rangeTo - start + 1;
-        const collected: any[] = [];
-        let pageNum = Math.floor(start / PER_PAGE_MAX) + 1;
-        while (collected.length < wanted) {
-          const page = await collection.getList(pageNum, PER_PAGE_MAX, opts);
-          const items = page.items ?? [];
-          if (items.length === 0) break;
-          // First page may begin mid-window when start is not page-aligned.
-          const sliceFrom = pageNum === Math.floor(start / PER_PAGE_MAX) + 1 ? start % PER_PAGE_MAX : 0;
-          const usable = sliceFrom > 0 ? items.slice(sliceFrom) : items;
-          collected.push(...usable.map(tsBackfill));
-          if (items.length < PER_PAGE_MAX || usable.length === 0) break;
-          pageNum += 1;
-        }
-        result = { data: collected.slice(0, wanted), error: null };
+        const page = Math.floor(start / Math.max(1, wanted)) + 1;
+        const res = await svc.getList(page, wanted, baseOpts);
+        const items = res.items ?? [];
+        const sliceFrom = start % Math.max(1, wanted);
+        const usable = sliceFrom > 0 ? items.slice(sliceFrom) : items;
+        result = { data: usable.slice(0, wanted).map(tsBackfill), error: null };
       } else {
-        // Fetch ALL matching records via getFullList().
-        // PocketBase's getList() is capped by the server's max per-page size
-        // (default 500), so a plain select() would silently truncate. getFullList()
-        // automatically walks every page behind the scenes — exactly what the Smart
-        // Import needs to read every DBF-mirrored record.
-        const all = await collection.getFullList({ ...opts, requestKey: null });
+        const all = await svc.getFullList({ ...baseOpts });
         result = { data: all.map(tsBackfill), error: null };
       }
 
-      // Attach an exact total when the caller asked for count alongside rows
-      // (select(fields, { count: 'exact' }) — Supabase semantics).
       if (this._countExact) {
-        const t = await collection.getList(1, 1, { ...opts, perPage: 1, requestKey: null });
-        result.count = t.totalItems ?? 0;
+        const page = await svc.getList(1, 1, baseOpts);
+        result.count = page.totalItems ?? 0;
       }
       return result;
     } catch (err) {
@@ -654,15 +1047,17 @@ export const supabaseCompat = {
   auth: {
     getSession: async () => {
       try {
-        const token = pb.authStore.token;
-        const model = (pb.authStore as any).model;
-        if (!token || !model) {
-          return { data: { session: null }, error: null };
-        }
+        const token = authStore.token;
+        const model = authStore.model;
+        if (!token || !model) return { data: { session: null }, error: null };
         return {
           data: {
             session: {
-              user: { id: model.id, email: model.email, email_confirmed_at: model.verified ? new Date().toISOString() : null },
+              user: {
+                id: model.id,
+                email: model.email,
+                email_confirmed_at: model.verified ? new Date().toISOString() : null,
+              },
               access_token: token,
             },
           },
@@ -675,7 +1070,7 @@ export const supabaseCompat = {
 
     getUser: async () => {
       try {
-        const model = (pb.authStore as any).model;
+        const model = authStore.model;
         if (!model) return { data: { user: null }, error: null };
         return {
           data: {
@@ -695,7 +1090,7 @@ export const supabaseCompat = {
     signInWithPassword: async ({ email, phone, password }: { email?: string; phone?: string; password: string }) => {
       try {
         const identifier = email ?? phone ?? '';
-        const authData = await pb.collection('profiles').authWithPassword(identifier, password);
+        const authData = await collectionService('profiles').authWithPassword(identifier, password);
         return {
           data: {
             user: {
@@ -714,11 +1109,9 @@ export const supabaseCompat = {
 
     signUp: async ({ email, password, options }: { email: string; password: string; options?: { data?: Record<string, unknown> } }) => {
       try {
-        const data = await pb.collection('profiles').create({
-          email,
-          password,
-          passwordConfirm: password,
-          ...options?.data,
+        const data = await send<{ id: string; email: string }>('/api/register', {
+          method: 'POST',
+          body: { email, password, ...options?.data },
         });
         return { data: { user: { id: data.id, email: data.email } }, error: null };
       } catch (err) {
@@ -727,24 +1120,44 @@ export const supabaseCompat = {
     },
 
     signOut: async () => {
-      pb.authStore.clear();
+      authStore.clear();
     },
 
     onAuthStateChange: (callback: (event: string, session: any) => void) => {
-      const unsubscribe = pb.authStore.onChange(() => {
-        const hasToken = !!pb.authStore.token;
-        callback(hasToken ? 'SIGNED_IN' : 'SIGNED_OUT', hasToken ? (pb.authStore as any).model : null);
+      const unsubscribe = authStore.onChange(() => {
+        const hasToken = !!authStore.token;
+        callback(hasToken ? 'SIGNED_IN' : 'SIGNED_OUT', hasToken ? authStore.model : null);
       });
       return { data: { subscription: { unsubscribe } } };
     },
+
+    // Kept as typed shims so the legacy auth screens compile; the Express
+    // backend does not implement email delivery, so they resolve as no-ops.
+    resend: async (_opts: { type?: string; email: string; options?: { emailRedirectTo?: string } }) => ({
+      data: { user: null },
+      error: null as any,
+    }),
+    resetPasswordForEmail: async (_email: string, _opts?: { redirectTo?: string }) => ({
+      data: { user: null },
+      error: null as any,
+    }),
+    updateUser: async (_data: Record<string, unknown>) => ({ data: { user: null }, error: null as any }),
   },
 };
-
-// ── Main export: drop-in replacement for old supabase object ───────────────
 
 export const supabase = {
   from: fromCollection,
   rpc,
   auth: supabaseCompat.auth,
-  send: pb.send.bind(pb),
+  send: (path: string, options?: SendOptions) => send(path, options),
+  functions: {
+    invoke: async (name: string, opts?: { body?: any }) => {
+      try {
+        const data = await send(`/api/${name}`, { method: 'POST', body: opts?.body ?? {} });
+        return { data: data as any, error: null };
+      } catch (err) {
+        return { data: null, error: err };
+      }
+    },
+  },
 };

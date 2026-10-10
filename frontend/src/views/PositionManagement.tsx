@@ -3,7 +3,7 @@ import {
   Award, Upload, Search, Download, Plus, Pencil, Trash2, X,
   FileUp, FileCheck2, AlertTriangle, CheckCircle2, Database,
   History, ArrowLeft, RefreshCw, FileDown, RotateCcw,
-  GraduationCap, Users, Briefcase, Eye,
+  GraduationCap, Users, Briefcase, Eye, Building2,
 } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import LoadingIndicator from '@/components/LoadingIndicator';
@@ -109,7 +109,7 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
   const [form, setForm] = useState<PositionForm>(emptyForm());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [stats, setStats] = useState({ total: 0, teaching: 0, teachingRelated: 0, nonTeaching: 0, active: 0 });
+  const [stats, setStats] = useState({ total: 0, teaching: 0, teachingRelated: 0, nonTeaching: 0, schoolAdministration: 0, active: 0 });
   const { stepsForGrade, meta: schedMeta } = useSalarySchedule();
 
   const load = useCallback(async () => {
@@ -122,6 +122,7 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
       teaching: rows.filter(r => r.personnel_category === 'Teaching').length,
       teachingRelated: rows.filter(r => r.personnel_category === 'Teaching Related').length,
       nonTeaching: rows.filter(r => r.personnel_category === 'Non-Teaching').length,
+      schoolAdministration: rows.filter(r => r.personnel_category === 'School Administration').length,
       active: rows.filter(r => r.status === 'Active').length,
     });
     setLoading(false);
@@ -226,9 +227,10 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
   return (
     <div className="space-y-4">
       {/* Stats cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         <StatCard label="Total Positions" value={stats.total} icon={Briefcase} tone="slate" />
         <StatCard label="Teaching" value={stats.teaching} icon={GraduationCap} tone="emerald" />
+        <StatCard label="School Administration" value={stats.schoolAdministration} icon={Building2} tone="violet" />
         <StatCard label="Teaching Related" value={stats.teachingRelated} icon={Users} tone="blue" />
         <StatCard label="Non-Teaching" value={stats.nonTeaching} icon={Briefcase} tone="amber" />
         <StatCard label="Active" value={stats.active} icon={CheckCircle2} tone="emerald" />
@@ -249,6 +251,7 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
           <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="px-3 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30">
             <option>All</option>
             <option>Teaching</option>
+            <option>School Administration</option>
             <option>Teaching Related</option>
             <option>Non-Teaching</option>
           </select>
@@ -378,6 +381,7 @@ function PositionsTab({ onGoImport }: { onGoImport: () => void }) {
                 <label className="block text-xs font-medium text-slate-500 mb-1">Personnel Category</label>
                 <select value={form.personnel_category} onChange={e => setForm(f => ({ ...f, personnel_category: e.target.value as PersonnelCategory }))} className={inputCls}>
                   <option>Teaching</option>
+                  <option>School Administration</option>
                   <option>Teaching Related</option>
                   <option>Non-Teaching</option>
                 </select>
@@ -1007,6 +1011,7 @@ function emptyForm(): PositionForm {
 function CategoryBadge({ category }: { category: PersonnelCategory }) {
   const styles: Record<PersonnelCategory, string> = {
     'Teaching': 'bg-emerald-50 text-emerald-700',
+    'School Administration': 'bg-violet-50 text-violet-700',
     'Teaching Related': 'bg-blue-50 text-blue-700',
     'Non-Teaching': 'bg-amber-50 text-amber-700',
   };
@@ -1022,6 +1027,7 @@ function StatCard({ label, value, icon: Icon, tone }: { label: string; value: nu
     slate: 'bg-slate-50 text-slate-600',
     emerald: 'bg-emerald-50 text-emerald-600',
     blue: 'bg-blue-50 text-blue-600',
+    violet: 'bg-violet-50 text-violet-600',
     amber: 'bg-amber-50 text-amber-600',
   };
   return (

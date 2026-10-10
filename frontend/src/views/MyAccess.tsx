@@ -1,10 +1,11 @@
+import { useEffect, useState } from 'react';
 import {
   ShieldCheck, CheckCircle2, XCircle, Building2, Briefcase, Hash,
-  KeyRound, Info, AlertTriangle,
+  KeyRound, Info, AlertTriangle, ShieldOff, Copy, Check, RefreshCw,
 } from 'lucide-react';
-import { useAuth } from '@/lib/auth';
+import { useAuth, type MfaStatus } from '@/lib/auth';
 import { usePermissions } from '@/lib/permissions';
-import { getScopeDescription, isSuperAdminRole } from '@/lib/authz';
+import { getScopeDescription, isSuperAdminRole, isMfaPrivileged } from '@/lib/authz';
 import {
   ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS,
   PERMISSION_GROUPS, PERMISSION_CATALOG,
@@ -116,6 +117,8 @@ export default function MyAccess() {
               </p>
             )}
           </div>
+
+          <TwoFactorCard />
         </div>
 
         {/* Permissions column */}
@@ -166,6 +169,196 @@ export default function MyAccess() {
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The account's own second-factor state, plus the one action a user can safely
+ * take on it: issuing a fresh set of recovery codes (which invalidates the old
+ * set — the previous codes are the most likely thing to have leaked).
+ *
+ * Enrolment itself is not offered here. A privileged account cannot reach this
+ * page without a factor, and a non-privileged one enrolling itself is an
+ * administrative decision rather than a self-service one.
+ */
+function TwoFactorCard() {
+  const { profile, mfaStatus, regenerateRecoveryCodes } = useAuth();
+  const [status, setStatus] = useState<MfaStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [freshCodes, setFreshCodes] = useState<string[] | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { error: err, status: s } = await mfaStatus();
+      if (!active) return;
+      if (err) setError(err);
+      else setStatus(s ?? null);
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [mfaStatus]);
+
+  const regenerate = async () => {
+    setBusy(true);
+    setError(null);
+    const { error: err, recoveryCodes } = await regenerateRecoveryCodes();
+    if (err) {
+      setBusy(false);
+      setError(err);
+      return;
+    }
+    setFreshCodes(recoveryCodes ?? []);
+    setConfirming(false);
+    const { status: s } = await mfaStatus();
+    if (s) setStatus(s);
+    setBusy(false);
+  };
+
+  const copyCodes = async () => {
+    try {
+      await navigator.clipboard.writeText((freshCodes ?? []).join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Your browser blocked clipboard access. Select the codes and copy them manually.');
+    }
+  };
+
+  const required = isMfaPrivileged(profile?.role);
+  const enrolled = status?.enrolled ?? profile?.mfa_enabled ?? false;
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+        <ShieldCheck className={`w-4 h-4 ${enrolled ? 'text-emerald-600' : 'text-slate-400'}`} />
+        <h3 className="text-sm font-semibold text-slate-700">Two-Factor Authentication</h3>
+      </div>
+
+      <div className="px-5 py-4 space-y-3">
+        {loading ? (
+          <p className="text-xs text-slate-400">Reading your security settings…</p>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-slate-600">Status</span>
+              <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold ${
+                enrolled
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-slate-200 bg-slate-50 text-slate-500'
+              }`}>
+                {enrolled ? <><ShieldCheck className="w-3 h-3" /> ENROLLED</> : <><ShieldOff className="w-3 h-3" /> NOT ENROLLED</>}
+              </span>
+            </div>
+
+            {enrolled && (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-slate-600">Recovery codes left</span>
+                <span className="text-sm font-semibold tabular-nums text-slate-800">
+                  {status ? status.recovery_codes_remaining : '—'}
+                  <span className="text-slate-400 font-normal"> / 10</span>
+                </span>
+              </div>
+            )}
+
+            {!enrolled && required && (
+              <p className="text-xs text-amber-600 flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                This role requires a second factor. You would not have reached this page without one —
+                if you are seeing this, contact the System Custodian.
+              </p>
+            )}
+
+            {!enrolled && !required && (
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Your role does not require a second factor. Ask the System Custodian if you would like
+                one enabled for your account.
+              </p>
+            )}
+
+            {enrolled && !required && (
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Your role is exempt from the second factor, so no code is asked at sign-in. The
+                enrolment is kept on record and sign-in remains password-only.
+              </p>
+            )}
+
+            {enrolled && status && status.recovery_codes_remaining <= 3 && (
+              <p className="text-xs text-amber-600 flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                You are running low on recovery codes. Generate a new set before you run out.
+              </p>
+            )}
+
+            {enrolled && !confirming && (
+              <button
+                onClick={() => setConfirming(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-deped-700 bg-deped-50 rounded-lg hover:bg-deped-100"
+              >
+                <RefreshCw className="w-3 h-3" /> New recovery codes
+              </button>
+            )}
+
+            {confirming && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  This replaces all existing recovery codes. Any you have saved will stop working the
+                  moment you continue — make sure you can save the new ones.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setConfirming(false)}
+                    className="px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-white rounded-lg hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void regenerate()}
+                    disabled={busy}
+                    className="px-2.5 py-1.5 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    {busy ? 'Generating…' : 'Generate new codes'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {freshCodes && freshCodes.length > 0 && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
+                  Your new recovery codes
+                </p>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  {freshCodes.map((c) => (
+                    <code key={c} className="font-mono text-xs text-slate-700 select-all">{c}</code>
+                  ))}
+                </div>
+                <button
+                  onClick={() => void copyCodes()}
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-deped-600 hover:text-deped-700"
+                >
+                  {copied ? <><Check className="w-3.5 h-3.5" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy all</>}
+                </button>
+                <p className="mt-1.5 text-[11px] text-amber-700">
+                  These are shown only now. Save them somewhere you can reach without your phone.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {error && (
+          <p className="text-xs text-rose-600 flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );

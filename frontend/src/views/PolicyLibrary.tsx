@@ -514,6 +514,26 @@ const POLICIES: PolicyMemo[] = [
     relevance: 'medium',
     category: 'order',
   },
+  {
+    id: 'deped-005',
+    title: "DepEd Order No. 007, s. 2023: Guidelines on Recruitment, Selection, and Appointment in the Department of Education",
+    agency: 'deped',
+    topics: ['compliance'],
+    date: '2023-03-07',
+    refNumber: 'DO No. 007, s. 2023',
+    summary: "Prescribes the Department's guidelines on recruitment, selection, and appointment of personnel to First and Second level positions, including School Administration (SA), Related-Teaching (RT), and Non-Teaching (NT) positions. Provides the official definition of Teaching, Related-Teaching, Non-Teaching, and School Administration positions and the authorized list of positions per category (Annex A).",
+    keyProvisions: [
+      'Teaching Position: directly engaged in teaching or delivery of instruction in elementary and secondary levels (JHS/SHS), full-time or part-time, in schools and community learning centers (CLCs).',
+      'Related-Teaching (RT) Position: primary duties directly support teaching and delivery of instruction — e.g., standard setting, policy and program formulation, research, sector monitoring and evaluation.',
+      'Non-Teaching (NT) Position: contributes to delivery of basic education services but does not involve or directly support actual conduct of teaching or delivery of instruction.',
+      'School Administration (SA) Position: directly engaged in supervisory, managerial, and/or administrative functions in schools and CLCs (e.g., School Principals, Head Teachers).',
+      'Annex A lists the authorized DepEd positions per category with corresponding salary grades (Teaching: Teacher 1; SA: School Principal I-IV, Assistant School Principal, Head Teacher I-VI, etc.).',
+      'Hiring/promotion point systems per enclosure: Teacher I (Enclosure 2), School Administration (Enclosure 3), Related-Teaching (Enclosure 4), Non-Teaching (Enclosure 5).',
+    ],
+    effectiveDate: '2023-03-07',
+    relevance: 'high',
+    category: 'order',
+  },
 
   // ════════════════════════════ BIR ════════════════════════════
   {

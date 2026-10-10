@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Upload, Download, RefreshCw, AlertCircle, CheckCircle2, Table2, Trash2 } from 'lucide-react';
-import { supabase, fetchAll } from '@/lib/pb';
+import { supabase, fetchAll, formatError } from '@/lib/pb';
 import { currency, downloadFile } from '@/lib/reports';
 import { validateUpload } from '@/lib/uploadSecurity';
 import type { SalaryScheduleEntry } from '@/types/payroll';
@@ -12,6 +12,16 @@ interface UploadRow {
   monthly_salary: number;
   row: number;
   error?: string;
+}
+
+/** Outcome of pushing the salary schedule onto employee records. */
+interface SalarySyncStats {
+  total: number;
+  updated: number;
+  unchanged: number;
+  noGradeStep: number;
+  unmatched: number;
+  failed: number;
 }
 
 function parseSalaryCsv(text: string): UploadRow[] {
@@ -45,6 +55,8 @@ export default function SalarySchedule() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null);
   const [meta, setMeta] = useState<{ tranche: string; circular_no: string; effective_date: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ stats?: SalarySyncStats; error?: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -132,7 +144,9 @@ export default function SalarySchedule() {
       setUploadResult({ success: true, message: `Successfully uploaded ${valid.length} salary entries for ${tranche} (${circularNo}).` });
       setShowUpload(false);
       setUploadRows([]);
-      load();
+      await load();
+      const stats = await updateEmployeesBasicSalaryFromServer();
+      setSyncResult({ stats });
     }
     setUploading(false);
   }
@@ -153,13 +167,109 @@ export default function SalarySchedule() {
   async function resetToDefault() {
     if (!confirm('Reset salary schedule to seeded NBC 601 data? This will delete any uploaded changes.')) return;
     await supabase.from('salary_schedule').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    // Re-trigger the migration seed by reloading — but since we can't re-run migration,
-    // we just reload what's left. The seed only runs once. So we inform the user.
-    load();
+    await load();
+    const stats = await updateEmployeesBasicSalaryFromServer();
+    setSyncResult({ stats });
+  }
+
+  /**
+   * Read the salary schedule and return a `grade-step` → monthly salary map.
+   */
+  async function buildScheduleMap(): Promise<Map<string, number>> {
+    const schedData = await fetchAll<{ grade: number; step: number; monthly_salary: number }>(() =>
+      supabase.from('salary_schedule').select('grade,step,monthly_salary'),
+    );
+    const gradeStepMap = new Map<string, number>();
+    for (const e of schedData) {
+      const salary = Number(e.monthly_salary);
+      if (Number.isFinite(salary)) gradeStepMap.set(`${e.grade}-${e.step}`, salary);
+    }
+    return gradeStepMap;
+  }
+
+  /** Update all employees' basic/basic_salary from the current salary schedule. */
+  async function updateEmployeesBasicSalaryFromServer(): Promise<SalarySyncStats> {
+    return applySalaryToEmployees(await buildScheduleMap());
+  }
+
+  /**
+   * Update every employee record's Basic Salary from a `grade-step` → salary map.
+   *
+   * Each employee is matched by their Grade + Step; those without a grade/step
+   * or with no matching schedule cell are left untouched and reported instead.
+   * Writes go through the adapter's bounded-concurrency batch update so a
+   * division-sized file does not take a serial minute per thousand rows.
+   */
+  async function applySalaryToEmployees(gradeStepMap: Map<string, number>): Promise<SalarySyncStats> {
+    const stats: SalarySyncStats = { total: 0, updated: 0, unchanged: 0, noGradeStep: 0, unmatched: 0, failed: 0 };
+    const employees = await fetchAll<{ id: string; grade: number; step: number; basic: number; basic_salary: number }>(
+      () => supabase.from('employees').select('id,grade,step,basic,basic_salary'),
+    );
+    stats.total = employees.length;
+    if (employees.length === 0) return stats;
+
+    // PocketBase stamps the system `updated` field itself, so the payload is
+    // deliberately limited to the two salary columns.
+    const updates: { id: string; basic: number; basic_salary: number }[] = [];
+
+    for (const emp of employees) {
+      const grade = Number(emp.grade) || 0;
+      const step = Number(emp.step) || 0;
+      if (grade <= 0 || step <= 0) {
+        stats.noGradeStep++;
+        continue;
+      }
+      const salary = gradeStepMap.get(`${grade}-${step}`);
+      if (salary == null) {
+        stats.unmatched++;
+        continue;
+      }
+      if (Number(emp.basic) === salary && Number(emp.basic_salary) === salary) {
+        stats.unchanged++;
+        continue;
+      }
+      updates.push({ id: emp.id, basic: salary, basic_salary: salary });
+    }
+
+    if (updates.length === 0) return stats;
+
+    // Batch the id-bearing rows; the adapter runs them through its 12-way pool.
+    const batchSize = 250;
+    for (let i = 0; i < updates.length; i += batchSize) {
+      const batch = updates.slice(i, i + batchSize);
+      const { data, error } = await supabase.from('employees').upsert(batch);
+      if (error) {
+        stats.failed += batch.length;
+      } else {
+        const written = Array.isArray(data) ? data.length : 0;
+        stats.updated += written;
+        stats.failed += batch.length - written;
+      }
+    }
+    return stats;
+  }
+
+  /** Manual, user-triggered sync of all employee Basic Salaries from the schedule. */
+  async function handleSyncEmployeeSalaries() {
+    const ok = confirm(
+      `Update the Basic Salary of all employee records using the current ${tranche} schedule (${circularNo})?\n\n` +
+      `Employees are matched by Grade & Step. Those without a grade/step or with no matching schedule entry are left unchanged.`,
+    );
+    if (!ok) return;
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const stats = await updateEmployeesBasicSalaryFromServer();
+      setSyncResult({ stats });
+    } catch (err) {
+      setSyncResult({ error: formatError(err) });
+    }
+    setSyncing(false);
   }
 
   const validCount = uploadRows.filter((r) => !r.error).length;
   const errorCount = uploadRows.filter((r) => r.error).length;
+  const syncStats = syncResult?.stats;
 
   return (
     <div className="space-y-5">
@@ -179,7 +289,7 @@ export default function SalarySchedule() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={exportCsv}
               disabled={entries.length === 0}
@@ -189,13 +299,67 @@ export default function SalarySchedule() {
             </button>
             <button
               onClick={() => setShowUpload(true)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
             >
               <Upload className="w-4 h-4" /> Upload New Schedule
+            </button>
+            <button
+              onClick={handleSyncEmployeeSalaries}
+              disabled={syncing || entries.length === 0}
+              title="Apply this schedule to the Basic Salary of every employee record, matched by Grade & Step"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Updating Employees…' : 'Update Employee Salaries'}
             </button>
           </div>
         </div>
       </div>
+
+      {/* Result of applying the schedule to employee records */}
+      {syncResult && (
+        <div
+          className={`flex items-start gap-2 px-4 py-3 rounded-xl border text-sm ${
+            syncResult.error
+              ? 'bg-rose-50 border-rose-200 text-rose-700'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}
+        >
+          {syncResult.error ? (
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <div className="flex-1">
+            {syncResult.error ? (
+              <span>Could not update employee salaries: {syncResult.error}</span>
+            ) : syncStats ? (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-semibold">
+                  {syncStats.updated} employee{syncStats.updated === 1 ? '' : 's'} updated
+                </span>
+                <span className="text-emerald-700">{syncStats.unchanged} already current</span>
+                {syncStats.noGradeStep > 0 && (
+                  <span className="text-amber-700">{syncStats.noGradeStep} skipped — no Grade/Step</span>
+                )}
+                {syncStats.unmatched > 0 && (
+                  <span className="text-amber-700">{syncStats.unmatched} skipped — Grade/Step not in schedule</span>
+                )}
+                {syncStats.failed > 0 && (
+                  <span className="text-rose-700">{syncStats.failed} failed</span>
+                )}
+                <span className="text-emerald-700/70">of {syncStats.total} employee records</span>
+              </div>
+            ) : null}
+          </div>
+          <button
+            onClick={() => setSyncResult(null)}
+            className="text-xs font-medium text-slate-500 hover:text-slate-700 shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Salary grid */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

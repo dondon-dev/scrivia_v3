@@ -2,15 +2,22 @@
 // Department of Education, Division of Calamba City · "Other Payroll" module.
 
 import ExcelJS from 'exceljs';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { supabase, fetchAll } from './pb';
+import { supabase, fetchAll, chunkedIn } from './pb';
 import { generateCsv, downloadFile, currency } from './reports';
 import { normalizeRole } from '@/lib/authz';
+import { caSchoolForEmployee } from '@/lib/assignedSchool';
 import type { UserRole } from '@/types/auth';
 import type { CaPayrollHeader, CaPayrollDetail, CaEmployee, CaStatus } from '@/types/commAllowance';
 
-export const ROWS_PER_PRINT_PAGE = 26;
+/** Register rows on a normal printed page (Calibri 16px on 14.87" × 11" fanfold). */
+export const ROWS_PER_PRINT_PAGE = 20;
+/**
+ * The last printed page also carries the carried page-totals summary, the
+ * GRAND TOTAL and the 3-column certification box, so it holds fewer register
+ * rows. At the official 16px print size that leaves room for ~13 rows before
+ * the block would spill onto a second sheet.
+ */
+export const LAST_PAGE_ROWS = 13;
 export const EXCEL_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // ── Money helpers ────────────────────────────────────────────────────────────
@@ -26,9 +33,9 @@ export function money(n: number): number {
 
 // ── Payroll breakdown ────────────────────────────────────────────────────────
 // New payrolls are categorized by exactly one of these groups:
-//   Division Office     = non-school STACODE
-//   Elementary          = STACODE 001–499
-//   Secondary           = STACODE 500–701
+//   Division Office     = STACODE 095 (and other non-school STACODEs)
+//   Elementary          = STACODE 001–094
+//   Secondary           = STACODE 508–701
 //   LSB & LSA Teachers  = STACODE 702
 //   Utility Workers     = position contains Utility
 //   Without ATM         = no bank account / non-ATM paymode
@@ -46,9 +53,9 @@ export interface CaBreakdownDef {
 }
 
 export const CA_BREAKDOWN_DEFS: CaBreakdownDef[] = [
-  { category: 'Division Office', source: 'Non-school STACODE (excl. 702–705)' },
-  { category: 'Elementary', source: 'STACODE 001–499' },
-  { category: 'Secondary', source: 'STACODE 500–701' },
+  { category: 'Division Office', source: 'STACODE 095 (and other non-school codes)' },
+  { category: 'Elementary', source: 'STACODE 001–094' },
+  { category: 'Secondary', source: 'STACODE 508–701' },
   { category: 'LSB & LSA Teachers', source: 'STACODE 702' },
   { category: 'Utility Workers', source: 'STACODE 703' },
   { category: 'Without ATM', source: 'STACODE 704' },
@@ -67,23 +74,25 @@ export interface CaClassifyInput {
 
 /**
  * Classify a source record into exactly one payroll-breakdown category.
- * Purely STACODE-based: 001–499 Elementary, 500–701 Secondary,
- * 702 LSB & LSA, 703 Utility, 704 Without ATM, 705 Separated,
- * non-school STACODE → Division Office, non-plantilla → Non-Plantilla.
+ * Purely STACODE-based: 001–094 Elementary, 095 Division Office,
+ * 508–701 Secondary, 702 LSB & LSA, 703 Utility, 704 Without ATM,
+ * 705 Separated; any other (or empty) school STACODE → Division Office,
+ * non-plantilla → Non-Plantilla.
  */
 export function caClassifyEmployee(input: CaClassifyInput): CaBreakdownCategory | '' {
   // Purely STACODE-based classification.
   const digits = String(input.stacode ?? '').replace(/\D/g, '');
   if (digits) {
     const n = parseInt(digits, 10);
-    if (n >= 1 && n <= 499) return 'Elementary';
-    if (n >= 500 && n <= 701) return 'Secondary';
+    if (n >= 1 && n <= 94) return 'Elementary';
+    if (n === 95) return 'Division Office';
+    if (n >= 508 && n <= 701) return 'Secondary';
     if (n === 702) return 'LSB & LSA Teachers';
     if (n === 703) return 'Utility Workers';
     if (n === 704) return 'Without ATM';
     if (n === 705) return 'Separated Employees';
   }
-  // Non-school STACODE (incl. empty) → Division Office
+  // Non-school STACODE (incl. empty and the numeric gaps) → Division Office
   if (input.source === 'plantilla') return 'Division Office';
   return 'Non-Plantilla';
 }
@@ -182,19 +191,31 @@ export function caIsMissingTable(msg: string): boolean {
   return /could not find the table|in the schema cache|PGRST205|relation .* does not exist|42P01|does not exist/i.test(msg);
 }
 
-/** Classify a school STACODE into its payroll category: 001–499 → Elementary,
- *  500–701 → Secondary; anything else (or empty) → ''. */
+/** Classify a school STACODE into its payroll category: 001–094 → Elementary,
+ *  095 → Division Office, 508–701 → Secondary; anything else (or empty) → ''. */
 export function caClassifyStacode(stacode: string): CaBreakdownCategory | '' {
   const digits = String(stacode ?? '').replace(/\D/g, '');
   if (!digits) return '';
   const n = parseInt(digits, 10);
-  if (n >= 1 && n <= 499) return 'Elementary';
-  if (n >= 500 && n <= 701) return 'Secondary';
+  if (n >= 1 && n <= 94) return 'Elementary';
+  if (n === 95) return 'Division Office';
+  if (n >= 508 && n <= 701) return 'Secondary';
   if (n === 702) return 'LSB & LSA Teachers';
   if (n === 703) return 'Utility Workers';
   if (n === 704) return 'Without ATM';
   if (n === 705) return 'Separated Employees';
   return '';
+}
+
+/** The breakdown group an employee shows under in the CA payroll School/Group
+ *  dropdown, the masterfile and the breakdown strips. Prioritizes the
+ *  STACODE-based classification (001–094 Elementary, 095 Division Office,
+ *  508–701 Secondary, 702–705 the special groups) so a 095 record always reads
+ *  as Division Office — separate from Elementary and Secondary — even when the
+ *  stored category was stamped under the older rules; anything a STACODE cannot
+ *  decide falls back to the stored category. */
+export function caDisplayGroup(e: { stacode?: string | null; category?: string | null }): string {
+  return caClassifyStacode(String(e.stacode ?? '')) || String(e.category ?? '');
 }
 
 /** Extract the leading STACODE from a school name that carries it as a prefix,
@@ -325,11 +346,45 @@ export async function buildCaSyncPlan(scope?: { regcode: string | null; divcodes
     // create/upload) — never sync another division's records in.
     npQuery = npQuery.eq('regcode', scope.regcode).in('divcode', scope.divcodes ?? []);
   }
-  const [npRows, empRows, existingRows] = await Promise.all([
+  const [npRows, empRows, existingRows, detailedRows, newlyHiredRows] = await Promise.all([
     fetchAll(() => npQuery),
     fetchAll(() => empQuery),
     fetchAll(() => supabase.from('ca_employees').select('*')),
+    // Employee Movement → Detailed requests the Super Admin has APPROVED. A
+    // detailed employee's request school is where they actually report, so it
+    // overrides the station carried on their Employee Record when the CA
+    // masterfile is synced. Pending/Rejected requests are ignored.
+    fetchAll(() => {
+      let q = supabase
+        .from('employee_lists')
+        .select('empno,stacode,status,list_type,regcode,divcode')
+        .eq('list_type', 'detailed')
+        .eq('status', 'Approved');
+      if (scope?.regcode) q = q.eq('regcode', scope.regcode).in('divcode', scope.divcodes ?? []);
+      return q;
+    }),
+    // Newly Hired Employees the Super Admin has APPROVED. These are recorded on
+    // their own list (they are deliberately not linked to Employee Records), so
+    // a brand-new hire lands in the CA masterfile without waiting for the
+    // Division to add them to Employee Records. Pending/Rejected are ignored.
+    fetchAll(() => {
+      let q = supabase
+        .from('newly_hired_employees')
+        .select('*')
+        .eq('status', 'Approved');
+      if (scope?.regcode) q = q.eq('regcode', scope.regcode).in('divcode', scope.divcodes ?? []);
+      return q;
+    }),
   ]);
+
+  // Approved detailed STACODE per EMPNO — EMPNO is the natural key the Employee
+  // Movement lists and Employee Records join on.
+  const detailedStacodeByEmpno = new Map<string, string>();
+  for (const d of (detailedRows ?? []) as Record<string, unknown>[]) {
+    const empno = String(d.empno ?? '').trim();
+    const stacode = String(d.stacode ?? '').trim();
+    if (empno && stacode) detailedStacodeByEmpno.set(empno, stacode);
+  }
 
   const rows: CaSyncRow[] = [];
 
@@ -339,7 +394,7 @@ export async function buildCaSyncPlan(scope?: { regcode: string | null; divcodes
   // searched in the Organization directory when the record has none (the
   // employees.department column holds the school name). The school name is stored
   // with its STACODE prefix ("001 - Banlic Elementary School").
-  for (const r of (empRows ?? []) as Record<string, unknown>[]) {
+  const mapEmployeeRow = (r: Record<string, unknown>): CaSyncRow => {
     const full = parseEmpFullName(String(r.empname ?? ''));
     const last = String(r.last_name || r.lname || full.last || '').trim();
     const first = String(r.first_name || r.fname || full.first || '').trim();
@@ -348,24 +403,102 @@ export async function buildCaSyncPlan(scope?: { regcode: string | null; divcodes
     const rawStacode = String(r.stacode ?? '').trim();
     const stacode = rawStacode || caStacodeFromSchoolName(dept) || (schoolByName.get(normalizeSchoolName(caStripSchoolPrefix(dept))) ?? '');
     const schoolName = schoolByCode.get(stacode) ?? caStripSchoolPrefix(dept) ?? dept;
+    // SHS employees (STACODE 700/701) with an "Assigned School" (set under
+    // Organization → Senior High Schools) report to that school on the special
+    // / "Other Payroll" modules. Their company (school_name + stacode) becomes
+    // the assigned school so CA pay registers and CA reports group/print under
+    // it, while the classification category still follows the 700/701 station
+    // rules (Secondary). The regular monthly payroll is unaffected — it keeps
+    // resolving the STACODE station.
+    const assigned = caSchoolForEmployee(
+      { stacode, assigned_school_code: String(r.assigned_school_code ?? '') },
+      schoolByCode,
+    );
+    // An approved Detailed request wins over both the home station and the SHS
+    // assigned school — that is the school the employee reports to, and the one
+    // the CA payroll groups them under.
+    const detailStacode = detailedStacodeByEmpno.get(String(r.empno ?? '').trim())
+      ?? detailedStacodeByEmpno.get(String(r.employee_number ?? '').trim())
+      ?? '';
+    const effStacode = detailStacode || assigned?.stacode || stacode;
+    const effSchoolName = detailStacode
+      ? (schoolByCode.get(detailStacode) ?? assigned?.schoolName ?? schoolName)
+      : (assigned?.schoolName ?? schoolName);
     const category = caClassifyEmployee({
-      stacode,
+      stacode: detailStacode || stacode,
       position: String(r.position || ''),
       status: String(r.status ?? ''),
       paymode: String(r.paymode ?? ''),
       hasBankAccount: !!String(r.bank_account || r.account || '').trim(),
       source: 'plantilla',
     });
-    rows.push({
+    return {
       account_no: String(r.bank_account || r.account || r.employee_number || '').trim(),
       last_name: last,
       first_name: first,
       middle_initial: caMiddleInitial(middle),
       position_title: caPositionTitle(String(r.position || r.poscode || ''), posByCode),
-      school_name: stacode && schoolName ? `${stacode} - ${schoolName}` : (dept || schoolName),
-      stacode,
+      school_name: effStacode && effSchoolName ? `${effStacode} - ${effSchoolName}` : (dept || effSchoolName),
+      stacode: effStacode,
       category,
       status: caNormalizeStatus(String(r.status ?? '')),
+      updated_at: new Date().toISOString(),
+    };
+  };
+
+  const knownEmpnos = new Set<string>();
+  for (const r of (empRows ?? []) as Record<string, unknown>[]) {
+    const empno = String(r.empno ?? '').trim();
+    const empNum = String(r.employee_number ?? '').trim();
+    if (empno) knownEmpnos.add(empno);
+    if (empNum) knownEmpnos.add(empNum);
+    rows.push(mapEmployeeRow(r));
+  }
+
+  // Detailed employees whose Employee Record sits outside the queried set (e.g.
+  // a different division scope): fetch them by EMPNO so their approved detailed
+  // school still lands in the masterfile.
+  const missingEmpnos = [...detailedStacodeByEmpno.keys()].filter((e) => !knownEmpnos.has(e));
+  if (missingEmpnos.length > 0) {
+    const extra = await chunkedIn<Record<string, unknown>>(
+      'empno',
+      missingEmpnos,
+      (chunk) => supabase.from('employees').select('*').in('empno', chunk),
+    );
+    for (const r of extra) rows.push(mapEmployeeRow(r));
+  }
+
+  // Newly Hired Employees (approved) — add any hire that is not already covered
+  // by an Employee Record row above. The list carries its own EMPNO, Account,
+  // name and position; the school comes from its STACODE via the Organization
+  // directory. They classify as plantilla (Regular/teaching hires).
+  const newlyHiredAdded = new Set<string>();
+  for (const r of (newlyHiredRows ?? []) as Record<string, unknown>[]) {
+    const empno = String(r.empno ?? '').trim();
+    if (empno && (knownEmpnos.has(empno) || newlyHiredAdded.has(empno))) continue;
+    if (empno) newlyHiredAdded.add(empno);
+    const account = String(r.account ?? '').trim();
+    const stacode = String(r.stacode ?? '').trim();
+    const schoolName = schoolByCode.get(stacode) ?? '';
+    const position = String(r.position ?? '');
+    const category = caClassifyEmployee({
+      stacode,
+      position,
+      status: 'Active',
+      paymode: '',
+      hasBankAccount: !!account,
+      source: 'plantilla',
+    });
+    rows.push({
+      account_no: account || empno,
+      last_name: String(r.last_name ?? '').trim(),
+      first_name: String(r.first_name ?? '').trim(),
+      middle_initial: caMiddleInitial(String(r.mi ?? '')),
+      position_title: caPositionTitle(position, posByCode),
+      school_name: stacode && schoolName ? `${stacode} - ${schoolName}` : schoolName,
+      stacode,
+      category,
+      status: 'Active',
       updated_at: new Date().toISOString(),
     });
   }
@@ -377,7 +510,11 @@ export async function buildCaSyncPlan(scope?: { regcode: string | null; divcodes
   // school name is stored with its STACODE prefix when one is found.
   for (const r of (npRows ?? []) as Record<string, unknown>[]) {
     const school = String(r.school || r.school_name || '').trim();
-    const stacode = caStacodeFromSchoolName(school) || (schoolByName.get(normalizeSchoolName(caStripSchoolPrefix(school))) ?? '');
+    // The item's own STACODE wins when the item carries one (auto-assigned when
+    // a school-scoped account filed it); otherwise it is derived from the school
+    // name exactly as before.
+    const storedStacode = String(r.stacode ?? '').trim();
+    const stacode = storedStacode || caStacodeFromSchoolName(school) || (schoolByName.get(normalizeSchoolName(caStripSchoolPrefix(school))) ?? '');
     const plain = caStripSchoolPrefix(school);
     const category = caClassifyEmployee({
       stacode,
@@ -761,7 +898,26 @@ export function buildCaPrintPages(rows: CaPrintRow[], rowsPerPage = ROWS_PER_PRI
   if (pages.length === 0) {
     pages.push({ rows: [], pageNo: 1, totalPages: 1, pageGross: 0, pageDeduction: 0, pageNet: 0 });
   }
-  for (const p of pages) p.totalPages = pages.length;
+  // The final page reserves room for the page-totals summary + certification
+  // block, so any surplus rows spill onto a new trailing page of the same
+  // school rather than pushing the certification box onto its own sheet.
+  const tail = pages[pages.length - 1];
+  if (tail.rows.length > LAST_PAGE_ROWS) {
+    const overflow = tail.rows.splice(LAST_PAGE_ROWS);
+    const t = computeCaTotals(overflow);
+    pages.push({
+      rows: overflow,
+      pageNo: 0, // renumbered below
+      totalPages: 0,
+      pageGross: t.grossAmount,
+      pageDeduction: t.totalDeductions,
+      pageNet: t.netAmount,
+    });
+  }
+  pages.forEach((p, i) => {
+    p.pageNo = i + 1;
+    p.totalPages = pages.length;
+  });
   const grand = computeCaTotals(rows);
   return { pages, gross: grand.grossAmount, deduction: grand.totalDeductions, net: grand.netAmount };
 }
@@ -779,11 +935,25 @@ export function detailsToPrintRows(
   positionMap?: Map<string, string>,
 ): CaPrintRow[] {
   return [...details]
-    // Arrange the register per school: order by STACODE (001 → 701 …), then line no.
+    // Arrange the register per school: order by STACODE (001 → 701 …), with
+    // School Principals first, then Head Teachers, then name order — so the
+    // printed PDF/Excel register reads like the masterfile sheet.
     .sort((a, b) => {
       const ka = caSchoolSortKey(empMap.get(a.employee_id));
       const kb = caSchoolSortKey(empMap.get(b.employee_id));
       if (ka !== kb) return ka < kb ? -1 : 1;
+      const pos = (id: string): string => {
+        const e = empMap.get(id);
+        return positionMap?.get((e?.position_title ?? '').trim().toUpperCase()) ?? e?.position_title ?? '';
+      };
+      const ra = caPositionRank(pos(a.employee_id));
+      const rb = caPositionRank(pos(b.employee_id));
+      if (ra !== rb) return ra - rb;
+      const ea = empMap.get(a.employee_id);
+      const eb = empMap.get(b.employee_id);
+      const na = `${ea?.last_name ?? ''} ${ea?.first_name ?? ''}`;
+      const nb = `${eb?.last_name ?? ''} ${eb?.first_name ?? ''}`;
+      if (na !== nb) return na.localeCompare(nb);
       return a.line_no - b.line_no;
     })
     .map((d) => {
@@ -1020,45 +1190,326 @@ export async function exportCaPayrollExcel(
   });
 }
 
-// ── PDF export (fanfold-size register) ───────────────────────────────────────
-export function exportCaPayrollPdf(
+// ── CA Masterfile Excel — a workbook per STACODE group, a sheet per school ────
+// Elementary = STACODE 001–094, Division Office = 095, High School = 500–701.
+export interface CaMasterfileGroup {
+  key: 'elementary' | 'division_office' | 'highschool';
+  label: string;
+  min: number;
+  max: number;
+}
+
+export const CA_MASTERFILE_GROUPS: CaMasterfileGroup[] = [
+  { key: 'elementary', label: 'Elementary', min: 1, max: 94 },
+  { key: 'division_office', label: 'Division Office', min: 95, max: 95 },
+  { key: 'highschool', label: 'High School', min: 500, max: 701 },
+];
+
+/** Numeric STACODE of a row (leading zeros dropped), or null when unparseable. */
+export function caMasterfileStacodeNum(stacode: string | null | undefined): number | null {
+  const digits = String(stacode ?? '').replace(/\D/g, '');
+  if (!digits) return null;
+  const n = parseInt(digits, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Excel tab name: remove characters Excel forbids, cap at 31 chars, keep unique. */
+function caSafeSheetName(raw: string, used: Set<string>): string {
+  const base = raw.replace(/[\\/?*[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || 'Sheet';
+  let name = base;
+  let i = 2;
+  while (used.has(name.toLowerCase())) {
+    const suffix = ` (${i++})`;
+    name = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+  }
+  used.add(name.toLowerCase());
+  return name;
+}
+
+/** Position rank used to order each school's CA masterfile sheet: for the
+ *  Division Office the Schools Division Superintendent (SDS) comes first, then
+ *  the Assistant Schools Division Superintendent (ASDS); school sheets keep
+ *  School Principals first, then Head Teachers, then everyone else — name order
+ *  within each rank. Recognizes the DepEd titles by their title words, so
+ *  resolved/resolved-title values work too — and tolerates the abbreviated forms
+ *  the employee masterfile actually stores ("SCH DIV SUPERINTENDENT",
+ *  "ASST SCH DIV SUPERINTENDENT", "SDO SUCT"), which otherwise fell through to
+ *  the catch-all rank and pushed the Superintendent out of the first row. */
+export function caPositionRank(position: string): number {
+  const p = String(position ?? '').trim().toUpperCase();
+  if (!p) return 4;
+  const suct = /\bSUPERINTENDENT\b|\bSUCT\b/.test(p);
+  // Assistant Schools Division Superintendent — tested before the SDS rule so
+  // "ASST SCH DIV SUPERINTENDENT" is never read as the Superintendent himself.
+  if (/\bASDS\b/.test(p) || (/\bASSISTANT\b|\bASST\b/.test(p) && suct)) return 1;
+  if (suct || /\bSDS\b/.test(p)) return 0;
+  if (/\bSCHOOL PRINCIPAL\b/.test(p) || /^PRINCIPAL(\s|$)/.test(p)) return 2;
+  if (/\bHEAD TEACHER\b/.test(p)) return 3;
+  return 4;
+}
+
+/**
+ * Export the CA masterfile as three workbooks — Elementary (STACODE 001–094),
+ * Division Office (095) and High School (500–701) — each holding one worksheet
+ * per school so every school's records can be printed/distributed separately.
+ */
+export async function exportCaMasterfileExcelBySchool(
+  employees: CaEmployee[],
+  opts?: { activeOnly?: boolean; resolvePosition?: (stored: string) => string },
+): Promise<void> {
+  const pool = opts?.activeOnly ? employees.filter((e) => e.status === 'Active') : employees;
+  const resolvePosition = opts?.resolvePosition ?? ((v: string) => v);
+
+  for (const group of CA_MASTERFILE_GROUPS) {
+    const inGroup = pool.filter((e) => {
+      const n = caMasterfileStacodeNum(e.stacode);
+      return n !== null && n >= group.min && n <= group.max;
+    });
+    if (inGroup.length === 0) continue;
+
+    // One sheet per school, keyed by normalized STACODE.
+    const bySchool = new Map<number, { name: string; rows: CaEmployee[] }>();
+    for (const e of inGroup) {
+      const n = caMasterfileStacodeNum(e.stacode) as number;
+      const entry = bySchool.get(n) ?? { name: '', rows: [] };
+      entry.rows.push(e);
+      const stripped = caStripSchoolPrefix(e.school_name);
+      if (!entry.name && stripped) entry.name = stripped;
+      bySchool.set(n, entry);
+    }
+
+    const wb = new ExcelJS.Workbook();
+    const used = new Set<string>();
+    const thin = { style: 'thin' as const };
+    const border = { top: thin, left: thin, bottom: thin, right: thin };
+    const headers = ['No.', 'Account No.', 'Last Name', 'First Name', 'M.I.', 'Position', 'STACODE', 'Category', 'Status'];
+    const widths = [5, 16, 20, 20, 5, 26, 10, 16, 10];
+    const nCols = headers.length;
+
+    for (const code of [...bySchool.keys()].sort((a, b) => a - b)) {
+      const { name, rows } = bySchool.get(code)!;
+      const schoolLabel = name || `School ${code}`;
+      const stacodeLabel = String(code).padStart(3, '0');
+      const ws = wb.addWorksheet(caSafeSheetName(`${stacodeLabel} ${schoolLabel}`, used), {
+        pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+      });
+      ws.columns = widths.map((width) => ({ width }));
+
+      const title = (r: number, text: string, size: number, bold = true) => {
+        ws.mergeCells(r, 1, r, nCols);
+        const c = ws.getCell(r, 1);
+        c.value = text;
+        c.font = { bold, size };
+        c.alignment = { horizontal: 'center' };
+      };
+      title(1, 'COMMUNICATION ALLOWANCE — MASTERFILE', 13);
+      title(2, group.label, 11);
+      title(3, `${schoolLabel} (STACODE ${stacodeLabel})`, 11);
+      title(4, `Generated ${new Date().toLocaleDateString('en-PH')} · ${rows.length} record(s)`, 9, false);
+
+      const headRow = 6;
+      headers.forEach((h, i) => {
+        const cell = ws.getCell(headRow, i + 1);
+        cell.value = h;
+        cell.font = { bold: true, size: 10 };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border = border;
+      });
+
+      const sorted = [...rows].sort((a, b) => {
+        const pa = caPositionRank(resolvePosition(a.position_title));
+        const pb = caPositionRank(resolvePosition(b.position_title));
+        if (pa !== pb) return pa - pb;
+        return `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`);
+      });
+      let r = headRow + 1;
+      for (const e of sorted) {
+        const vals: (string | number)[] = [
+          r - headRow, e.account_no, e.last_name, e.first_name, e.middle_initial,
+          resolvePosition(e.position_title), e.stacode, caDisplayGroup(e), e.status,
+        ];
+        vals.forEach((v, i) => {
+          const cell = ws.getCell(r, i + 1);
+          cell.value = v;
+          cell.font = { size: 9 };
+          cell.border = border;
+          if (i === 0 || i === 6 || i === 8) cell.alignment = { horizontal: 'center' };
+        });
+        r++;
+      }
+      ws.autoFilter = { from: { row: headRow, column: 1 }, to: { row: headRow, column: nCols } };
+      ws.views = [{ state: 'frozen', ySplit: headRow }];
+    }
+
+    const buffer = await wb.xlsx.writeBuffer();
+    downloadFile({
+      filename: `CA_MASTERFILE_${group.label.replace(/\s/g, '_').toUpperCase()}.xlsx`,
+      content: new Uint8Array(buffer as ArrayBuffer),
+      mimeType: EXCEL_MIME,
+    });
+  }
+}
+
+// ── Excel export (payroll register) — one worksheet per STACODE/school ───────
+// Mirrors the masterfile "per STACODE per sheet" workbook: each school gets its
+// own worksheet (tab labeled "STACODE School"), with the full letterhead, payroll
+// meta block, register rows and a SUBTOTAL line per sheet.
+export async function exportCaPayrollExcelByStacode(
   header: CaPayrollHeader,
   details: CaPayrollDetail[],
   empMap: Map<string, CaEmployee>,
   positionMap?: Map<string, string>,
-): void {
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [377.8, 279.4] });
+): Promise<void> {
   const rows = detailsToPrintRows(details, empMap, positionMap);
-  const t = computeCaTotals(rows);
 
-  doc.setFontSize(13);
-  doc.setFont('helvetica', 'bold');
-  doc.text('GENERAL PAYROLL', 377.8 / 2, 12, { align: 'center' });
-  doc.setFontSize(11);
-  doc.text(header.agency, 377.8 / 2, 18, { align: 'center' });
-  doc.text(header.division, 377.8 / 2, 24, { align: 'center' });
-  doc.text(header.payroll_type, 377.8 / 2, 30, { align: 'center' });
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.text(`Payroll No.: ${header.payroll_no}    School: ${header.school_name}    Period: ${header.covered_period}    Status: ${header.status}`, 10, 38);
-  doc.text(`ALOBS No.: ${header.alobs_no}    JEV No.: ${header.jev_no}    Date: ${header.date ?? ''}    Ref No.: ${header.payroll_ref_no}`, 10, 43.5);
+  // Group per STACODE / school, preserving the sorted row order.
+  const groups: { stacode: string; schoolName: string; rows: CaPrintRow[] }[] = [];
+  const byKey = new Map<string, { stacode: string; schoolName: string; rows: CaPrintRow[] }>();
+  for (const r of rows) {
+    const key = `${r.schoolName}|${r.stacode}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = { stacode: r.stacode, schoolName: r.schoolName, rows: [] };
+      byKey.set(key, g);
+      groups.push(g);
+    }
+    g.rows.push(r);
+  }
+  if (groups.length === 0) {
+    groups.push({ stacode: '', schoolName: header.school_name ?? '', rows: [] });
+  }
 
-  autoTable(doc, {
-    startY: 47,
-    margin: { left: 8, right: 8 },
-    theme: 'grid',
-    head: [['No.', 'Account No.', 'Last Name', 'First Name', 'M.I.', 'Position', 'Amount', 'Deduction', 'Net Amount Due', 'Signature']],
-    body: rows.map((r) => [r.lineNo, r.accountNo, r.lastName, r.firstName, r.middleInitial, r.position, money(r.amount), money(r.deduction), money(r.net), '']),
-    foot: [['TOTAL', '', '', '', '', '', money(t.grossAmount), money(t.totalDeductions), money(t.netAmount), '']],
-    styles: { fontSize: 7.5, cellPadding: 1.5 },
-    headStyles: { fillColor: [255, 255, 255], textColor: [0, 0, 0], fontStyle: 'bold' },
-    footStyles: { fillColor: [230, 230, 230], textColor: [0, 0, 0], fontStyle: 'bold' },
+  const wb = new ExcelJS.Workbook();
+  const used = new Set<string>();
+  const thin = { style: 'thin' as const };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  const cols = ['No.', 'Account No.', 'Last Name', 'First Name', 'M.I.', 'Position', 'Amount', 'Deduction', 'Net Amount Due', 'Signature of Recipient'];
+  const widths = [5, 15, 19, 19, 5, 27, 13, 13, 14, 22];
+  const nCols = cols.length;
+
+  for (const g of groups) {
+    const digits = String(g.stacode ?? '').replace(/\D/g, '');
+    const stacodeLabel = digits ? digits.padStart(3, '0') : '';
+    const school = caStripSchoolPrefix(g.schoolName) || header.school_name || (stacodeLabel ? `School ${stacodeLabel}` : '');
+    const ws = wb.addWorksheet(caSafeSheetName(stacodeLabel ? `${stacodeLabel} ${school}` : school, used), {
+      pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    });
+    ws.columns = widths.map((width) => ({ width }));
+
+    const printFont = 'Times New Roman';
+    // ── Header — mirrors the PDF print letterhead ─────────────────────────────
+    const center = (r: number, text: string, size: number, bold: boolean, underline = false) => {
+      ws.mergeCells(r, 1, r, nCols);
+      const c = ws.getCell(r, 1);
+      c.value = text;
+      c.font = { name: printFont, bold, size, underline };
+      c.alignment = { horizontal: 'center' };
+    };
+    const leftLine = (r: number, text: string, size: number, bold: boolean) => {
+      ws.mergeCells(r, 1, r, nCols);
+      const c = ws.getCell(r, 1);
+      c.value = text;
+      c.font = { name: printFont, bold, size };
+      c.alignment = { horizontal: 'left' };
+    };
+    center(1, 'GENERAL PAYROLL', 15, true);
+    center(2, header.agency, 12, true);
+    center(3, header.division, 11, true);
+    center(4, header.payroll_type, 11, true, true);
+    center(5, header.covered_period, 10, true);
+    leftLine(6, `Payroll No.: ${header.payroll_no}`, 9, false);
+    leftLine(7, school, 11, true);
+    leftLine(8, 'We acknowledge receipt of cash shown our name as full compensation for services rendered for the period covered.', 8, false);
+
+    let row = 10;
+
+    cols.forEach((c, i) => {
+      const cell = ws.getCell(row, i + 1);
+      cell.value = c;
+      cell.font = { bold: true, size: 10 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = border;
+    });
+    const headRow = row;
+    row++;
+
+    let no = 0;
+    for (const r of g.rows) {
+      no += 1;
+      const vals: (string | number)[] = [
+        no, r.accountNo, r.lastName, r.firstName, r.middleInitial,
+        r.position, money(r.amount), money(r.deduction), money(r.net), '',
+      ];
+      vals.forEach((v, i) => {
+        const cell = ws.getCell(row, i + 1);
+        cell.value = v;
+        cell.font = { size: 9 };
+        cell.border = border;
+        if (i >= 6 && i <= 8) {
+          if (typeof v === 'number') cell.numFmt = '#,##0.00';
+          cell.alignment = { horizontal: 'right' };
+        }
+      });
+      row++;
+    }
+
+    // SUBTOTAL per school — mirrors the print's subtotal row
+    const t = computeCaTotals(g.rows);
+    ws.mergeCells(row, 1, row, 6);
+    const sl = ws.getCell(row, 1);
+    sl.value = `SUBTOTAL — ${school}`;
+    sl.font = { name: printFont, bold: true, size: 9 };
+    sl.alignment = { horizontal: 'left' };
+    sl.border = border;
+    const subAmts = [money(t.grossAmount), money(t.totalDeductions), money(t.netAmount)];
+    subAmts.forEach((v, i) => {
+      const cell = ws.getCell(row, 7 + i);
+      cell.value = v;
+      cell.font = { name: printFont, bold: true, size: 9 };
+      cell.numFmt = '#,##0.00';
+      cell.alignment = { horizontal: 'right' };
+      cell.border = border;
+    });
+    ws.getCell(row, 10).border = border;
+    row++;
+
+    // ── Footer — mirrors the PDF print page footer ────────────────────────────
+    row++;
+    ws.mergeCells(row, 1, row, 6);
+    const fl = ws.getCell(row, 1);
+    fl.value = 'TOTAL FOR PAGE 1';
+    fl.font = { name: printFont, bold: true, size: 9 };
+    fl.alignment = { horizontal: 'right' };
+    ws.mergeCells(row, 7, row, 9);
+    const fn = ws.getCell(row, 7);
+    fn.value = money(t.netAmount);
+    fn.font = { name: printFont, bold: true, size: 9 };
+    fn.numFmt = '#,##0.00';
+    fn.alignment = { horizontal: 'right' };
+    row++;
+    ws.mergeCells(row, 1, row, nCols);
+    const pg = ws.getCell(row, 1);
+    pg.value = 'Page 1 of 1';
+    pg.font = { name: printFont, size: 8 };
+    pg.alignment = { horizontal: 'center' };
+    row++;
+
+    ws.views = [{ state: 'frozen', ySplit: headRow }];
+  }
+
+  const buffer = await wb.xlsx.writeBuffer();
+  downloadFile({
+    filename: `CA_PAYROLL_${header.payroll_no.replace(/[^A-Za-z0-9-]/g, '_')}_PER_STACODE.xlsx`,
+    content: new Uint8Array(buffer as ArrayBuffer),
+    mimeType: EXCEL_MIME,
   });
-
-  doc.save(`CA_PAYROLL_${header.payroll_no.replace(/[^A-Za-z0-9-]/g, '_')}.pdf`);
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────────
+// Bank/upload format: no header row, no grand total. Columns:
+//   1. Account No.
+//   2. Name as "Last Name, First Name MI." (e.g. "Dela Cruz, John A.")
+//   3. Amount in centavos (peso amount with "00" appended, e.g. 7500 → 750000)
 export function exportCaPayrollCsv(
   header: CaPayrollHeader,
   details: CaPayrollDetail[],
@@ -1066,17 +1517,17 @@ export function exportCaPayrollCsv(
   positionMap?: Map<string, string>,
 ): void {
   const rows = detailsToPrintRows(details, empMap, positionMap);
-  const t = computeCaTotals(rows);
-  const csv = generateCsv(
-    ['Line No.', 'Account No.', 'Last Name', 'First Name', 'Middle Initial', 'Position', 'Amount', 'Deduction', 'Net Amount Due'],
-    [
-      ...rows.map((r) => [r.lineNo, r.accountNo, r.lastName, r.firstName, r.middleInitial, r.position, money(r.amount), money(r.deduction), money(r.net)]),
-      ['TOTAL', '', '', '', '', '', money(t.grossAmount), money(t.totalDeductions), money(t.netAmount)],
-    ],
-  );
+  const escape = (v: string | number) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = rows.map((r) => {
+    const name = `${r.lastName}, ${r.firstName}${r.middleInitial ? ` ${r.middleInitial}.` : ''}`;
+    return [r.accountNo, name, Math.round(money(r.amount) * 100)].map(escape).join(',');
+  });
   downloadFile({
     filename: `CA_PAYROLL_${header.payroll_no.replace(/[^A-Za-z0-9-]/g, '_')}.csv`,
-    content: csv,
+    content: new TextEncoder().encode(lines.join('\n')),
     mimeType: 'text/csv',
   });
 }

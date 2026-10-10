@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Building2, ChevronDown, School, GraduationCap, Home, Layers, Check } from 'lucide-react';
+import { Building2, ChevronDown, School, GraduationCap, Layers, Check } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/pb';
 import { CATEGORIES, type PayrollCategory } from '@/lib/categories';
 import type { PayrollGroup } from '@/types/payroll';
@@ -75,9 +75,13 @@ export function resolveGroupFilter(value: GroupFilterValue, groups: PayrollGroup
 
 export default function GroupFilter({ value, onChange, className = '', compact = false }: GroupFilterProps) {
   const [open, setOpen] = useState(false);
-  const groups = useGroupFilterOptions();
 
-  const current = useMemo(() => resolveGroupFilter(value, groups), [value, groups]);
+  // The menu offers the two payroll categories only. The `payroll_groups`
+  // collection is not listed here: in practice its rows mirror the categories
+  // (Elementary 001–499 / High School 500–701), which duplicated every entry
+  // under a second "Specific Groups" heading. Group-scoped filters (`kind:
+  // 'group'`) are still resolved by resolveGroupFilter for callers that set one.
+  const current = useMemo(() => resolveGroupFilter(value, []), [value]);
 
   const CurrentIcon = current.value.kind === 'category'
     ? (current.category === 'elementary' ? School : GraduationCap)
@@ -128,30 +132,6 @@ export default function GroupFilter({ value, onChange, className = '', compact =
               {value.kind === 'category' && value.category === 'highschool' && <Check className="w-4 h-4 ml-auto text-deped-600 dark:text-deped-400" />}
             </button>
 
-            {groups.length > 0 && (
-              <>
-                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-700">
-                  Specific Groups
-                </div>
-                {groups.map((grp) => {
-                  const isActive = value.kind === 'group' && value.groupId === grp.id;
-                  return (
-                    <button
-                      key={grp.id}
-                      onClick={() => { onChange({ kind: 'group', groupId: grp.id, stacodeMin: grp.stacode_min, stacodeMax: grp.stacode_max }); setOpen(false); }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${isActive ? 'bg-deped-50 dark:bg-deped-900/30 text-deped-700 dark:text-deped-300 font-medium' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}
-                    >
-                      <Home className="w-4 h-4 shrink-0" />
-                      <span className="flex-1 text-left truncate">{grp.group_name}</span>
-                      {grp.stacode_min !== null && grp.stacode_max !== null && (
-                        <span className="text-[10px] text-slate-400 tabular">{grp.stacode_min}–{grp.stacode_max}</span>
-                      )}
-                      {isActive && <Check className="w-4 h-4 text-deped-600 dark:text-deped-400" />}
-                    </button>
-                  );
-                })}
-              </>
-            )}
           </div>
         </>
       )}

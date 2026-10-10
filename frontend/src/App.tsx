@@ -16,7 +16,7 @@ import { usePermissions } from '@/lib/permissions';
 import { ROLE_LABELS, ROLE_COLORS, type UserRole } from '@/types/auth';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, codeScope } from '@/lib/org';
-import { canManageUsers, isSuperAdminRole } from '@/lib/authz';
+import { canManageUsers, dashboardKindForRole } from '@/lib/authz';
 import { getLockdown, unlockDatabase, activateLockdown, subscribeLockdown, syncLockdownFromDb } from '@/lib/lockdown';
 import { findNavItem, findNavItemByViewKey, permissionForView, NAV_SECTIONS, type NavItem, type ViewKey } from '@/lib/navConfig';
 import Sidebar from '@/components/Sidebar';
@@ -65,6 +65,14 @@ const W2TaxAnnual = lazyRetry(() => import('@/views/W2TaxAnnual'));
 const GovPayrollCalculator = lazyRetry(() => import('@/views/GovPayrollCalculator'));
 const PolicyLibrary = lazyRetry(() => import('@/views/PolicyLibrary'));
 const PlantillaAllocationList = lazyRetry(() => import('@/views/PlantillaAllocationList'));
+const ServiceRecords = lazyRetry(() => import('@/views/ServiceRecords'));
+const PayrollSheets = lazyRetry(() => import('@/views/PayrollSheets'));
+
+// Employee list screens for the School Payroll Coordinator — EmployeeLists.tsx
+// exposes named exports, so each one is mapped to a default for lazyRetry().
+const EmployeeMovement = lazyRetry(() => import('@/views/EmployeeLists').then(m => ({ default: m.EmployeeMovement })));
+const NewlyHiredEmployees = lazyRetry(() => import('@/views/EmployeeLists').then(m => ({ default: m.NewlyHiredEmployees })));
+const SeparatedEmployees = lazyRetry(() => import('@/views/EmployeeLists').then(m => ({ default: m.SeparatedEmployees })));
 
 // Organization.tsx exposes named exports — map each to a default export for lazyRetry()
 const ElementarySchools = lazyRetry(() => import('@/views/Organization').then(m => ({ default: m.ElementarySchools })));
@@ -77,6 +85,7 @@ import ComingSoon from '@/views/ComingSoon';
 import Login from '@/views/auth/Login';
 import SignUp from '@/views/auth/SignUp';
 import MfaVerify from '@/views/auth/MfaVerify';
+import MfaEnrol from '@/views/auth/MfaEnrol';
 import ForgotPassword from '@/views/auth/ForgotPassword';
 import ResetPassword from '@/views/auth/ResetPassword';
 import EmailVerification from '@/views/auth/EmailVerification';
@@ -135,7 +144,7 @@ function AccessDenied({ label, onGoHome }: { label: string; onGoHome: () => void
 }
 
 export default function App() {
-  const { user, profile, loading, needsMfa, signOut } = useAuth();
+  const { user, profile, loading, needsMfa, needsMfaEnrolment, signOut } = useAuth();
   const { mode, toggle: toggleTheme } = useTheme();
   const { hasPermission: canAccess } = usePermissions();
   const [authView, setAuthView] = useState<AuthView>('login');
@@ -148,6 +157,8 @@ export default function App() {
   const [pendingEmpId, setPendingEmpId] = useState<string | null>(null);  const [paletteOpen, setPaletteOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Full-window mode for views that opt in (PAL) — hides sidebar/header/footer.
+  const [maximizeContent, setMaximizeContent] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [hoveredSection, setHoveredSection] = useState<string | null>(null);
   const [hoveredSectionTop, setHoveredSectionTop] = useState(0);
@@ -208,6 +219,14 @@ export default function App() {
     setMobileOpen(false);
     setUserMenuOpen(false);
   }, [activeView]);
+
+  // Esc exits the PAL full-window mode.
+  useEffect(() => {
+    if (!maximizeContent) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMaximizeContent(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [maximizeContent]);
 
   // Lockdown: subscribe to changes + pull the persisted state on sign-in.
   useEffect(() => subscribeLockdown(() => {
@@ -283,6 +302,13 @@ export default function App() {
     return <MfaVerify onSwitch={setAuthView} />;
   }
 
+  // A privileged account with no second factor gets a real session — the
+  // enrolment endpoints need one — but nothing else. This gate sits before the
+  // signed-in branch so no payroll screen can render until the factor exists.
+  if (needsMfaEnrolment) {
+    return <MfaEnrol />;
+  }
+
   // Show the verify/reset screens even when a session exists: a confirmation
   // link or recovery link creates a session, and the user must still see the
   // "Email Verified!" / password reset screen instead of flashing the app.
@@ -333,6 +359,10 @@ export default function App() {
   // Narrowed alias for use inside nested functions (TS keeps the outer guard's
   // narrowing only in the same scope, not across function boundaries).
   const authedProfile = profile;
+  // Full-window (maximize) mode — only the PAL view opts in. Keeps the view
+  // mounted so on-screen row edits survive the toggle; the chrome below is
+  // simply hidden and the tick marks restore it.
+  const isPalMaximized = viewKey === 'plantilla_allocation' && maximizeContent;
 
   // Render the actual view content. Render-time guard: unauthorized views
   // never mount (defense in depth — the sidebar already hides them).
@@ -342,12 +372,19 @@ export default function App() {
     }
     switch (viewKey) {
       case 'dashboard':
-        // Full operations dashboard for admin roles; a tailored role-specific
-        // dashboard for everyone else (keeps the heavy Dashboard chunk lazy).
-        return isSuperAdminRole(authedProfile.role) || authedProfile.role === 'payroll_admin'
+        // Full operations dashboard for admin roles; the dashboard built for
+        // everyone else. dashboardKindForRole() canonicalizes the role first, so
+        // stored casing/spacing variance cannot select the wrong dashboard.
+        return dashboardKindForRole(authedProfile.role) === 'operations'
           ? <Dashboard onNavigate={(v) => handleNavigate(v, null)} profile={authedProfile} />
           : <RoleDashboard role={authedProfile.role} profile={authedProfile} onNavigate={(v) => handleNavigate(v, null)} />;
       case 'employees': return <Employees highlightEmpId={pendingEmpId} onConsumedHighlight={() => setPendingEmpId(null)} profile={profile} />;
+      // School Payroll Coordinator lists — "Employee Movement" holds the
+      // Inclusion / Exclusion / Detailed lists behind one dropdown; the Newly
+      // Hired and Separated lists are their own entries (and their own tables).
+      case 'emp_movement': return <EmployeeMovement profile={authedProfile} />;
+      case 'emp_newly_hired': return <NewlyHiredEmployees profile={authedProfile} />;
+      case 'emp_separated': return <SeparatedEmployees profile={authedProfile} />;
       case 'salary': return <SalarySchedule />;
       case 'dedmaster': return <DeductionMasterfile />;
       case 'deductions': return <Deductions profile={profile} />;
@@ -376,10 +413,12 @@ export default function App() {
       case 'positionmgmt': return <PositionManagement initialTab="positions" />;
       case 'positionimport': return <PositionManagement initialTab="import" />;
       case 'plantilla': return <PlantillaPositions />;
-      case 'plantilla_allocation': return <PlantillaAllocationList initialTab={viewTab as 'elementary' | 'junior' | 'senior' | undefined} />;
+      case 'plantilla_allocation': return <PlantillaAllocationList initialTab={viewTab as 'elementary' | 'junior' | 'senior' | undefined} maximize={maximizeContent} onMaximizeChange={setMaximizeContent} />;
+      case 'service_records': return <ServiceRecords />;
       case 'nonplantilla': return <NonPlantillaItems />;
       case 'namevalidation': return <NameValidation />;
       case 'ca_dashboard': return <CommAllowance profile={profile} />;
+      case 'payroll_sheets': return <PayrollSheets profile={authedProfile} />;
       case 'my_access': return <MyAccess />;
       case 'ai_center': return <AiCommandCenter onNavigate={(v) => handleNavigate(v, null)} />;
       case 'omnidev_ai': return <OmniDevAi />;
@@ -398,6 +437,7 @@ export default function App() {
   return (
     <div className="h-screen overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex">
       {/* Sidebar */}
+      {!isPalMaximized && (
       <Sidebar
         profile={profile}
         collapsed={sidebarCollapsed}
@@ -412,6 +452,7 @@ export default function App() {
         onSignOut={signOut}
         onHoverSection={handleSectionHover}
       />
+      )}
 
       {/* Flyout submenu — fixed overlay, positioned at parent item's Y */}
       {hoveredSection && (
@@ -434,6 +475,7 @@ export default function App() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
+        {!isPalMaximized && (
         <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 lg:px-8 shrink-0 z-30 shadow-sm">
           <div className="flex items-center gap-4">
             <button
@@ -597,9 +639,10 @@ export default function App() {
             </div>
           </div>
         </header>
+        )}
 
         {/* Emergency lockdown banner */}
-        {lockdown.locked && (
+        {!isPalMaximized && lockdown.locked && (
           <div className="bg-gradient-to-r from-red-700 via-red-600 to-red-700 text-white shadow-md">
             <div className="max-w-7xl mx-auto px-4 lg:px-8 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
               <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -636,12 +679,12 @@ export default function App() {
         )}
 
         {/* Content — page transitions (fade-up 0.4s easeOut on every view change) */}
-        <main className="flex-1 p-4 lg:p-8 overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-[#0B1220] bg-[radial-gradient(ellipse_at_top,rgba(15,76,255,0.045),transparent_55%)]">
-          <div className={`mx-auto ${viewKey === 'creator' || viewKey === 'plantilla_allocation' ? 'max-w-full px-0' : 'max-w-7xl'} ${viewKey === 'plantilla_allocation' ? 'h-full flex flex-col' : ''}`}>
+        <main className={`flex-1 ${isPalMaximized ? 'p-0' : 'p-4 lg:p-8'} overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-[#0B1220] bg-[radial-gradient(ellipse_at_top,rgba(15,76,255,0.045),transparent_55%)]`}>
+          <div className={`mx-auto ${viewKey === 'creator' || viewKey === 'plantilla_allocation' ? 'max-w-full px-0' : 'max-w-7xl'} ${viewKey === 'plantilla_allocation' ? 'min-h-full flex flex-col' : ''}`}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={viewKey}
-                className={viewKey === 'plantilla_allocation' ? 'h-full flex flex-col' : undefined}
+                className={viewKey === 'plantilla_allocation' ? 'min-h-full flex flex-col' : undefined}
                 variants={pageVariants}
                 initial="initial"
                 animate="animate"
@@ -657,7 +700,7 @@ export default function App() {
           </div>
         </main>
 
-        <Footer onShowCreator={() => handleNavigate('creator', null)} />
+        {!isPalMaximized && <Footer onShowCreator={() => handleNavigate('creator', null)} />}
       </div>
 
       {/* Global command palette — ⌘K / Ctrl+K */}

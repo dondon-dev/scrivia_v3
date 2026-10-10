@@ -2,13 +2,15 @@ import { useState, useEffect, useMemo } from 'react';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import {
   Search, Download, Table2, LayoutGrid, Building2, Users,
-  GraduationCap, Briefcase, MapPin, Eye, ChevronRight, X,
+  GraduationCap, Briefcase, MapPin, Eye, ChevronRight, X, UserCog, Pencil,
 } from 'lucide-react';
-import { ScriviaLogo } from '@/components/ScriviaLogo';
 import { supabase } from '@/lib/pb';
 import { useOrg } from '@/lib/org';
+import { useAuth } from '@/lib/auth';
+import { isSchoolScoped } from '@/lib/authz';
 import type { SchoolWithStats, SchoolType } from '@/types/schools';
 import SchoolManagement from '@/components/SchoolManagement';
+import SHSAssignedSchoolsRoster from '@/components/SHSAssignedSchoolsRoster';
 
 export function ElementarySchools() {
   return (
@@ -23,13 +25,43 @@ export function ElementarySchools() {
 }
 
 export function HighSchools() {
+  const [activeTab, setActiveTab] = useState<'Junior High School' | 'Senior High School'>('Junior High School');
+  const tabs: { key: 'Junior High School' | 'Senior High School'; label: string }[] = [
+    { key: 'Junior High School', label: 'Junior High Schools' },
+    { key: 'Senior High School', label: 'Senior High Schools' },
+  ];
   return (
-    <SchoolManagement
-      schoolType="Junior High School"
-      title="High Schools"
-      description="Manage all Junior and Senior High Schools under the Schools Division Office."
-      headerIcon={GraduationCap}
-    />
+    <div>
+      <div className="mb-6 inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1 gap-1">
+        {tabs.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === t.key ? 'bg-deped-700 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {activeTab === 'Junior High School' ? (
+        <SchoolManagement
+          schoolType="Junior High School"
+          title="Junior High Schools"
+          description="Manage all Junior High Schools under the Schools Division Office."
+          headerIcon={GraduationCap}
+        />
+      ) : (
+        <div className="space-y-6">
+          <SHSAssignedSchoolsRoster />
+          <SchoolManagement
+            schoolType="Senior High School"
+            title="Senior High Schools"
+            description="Manage all Senior High Schools under the Schools Division Office."
+            headerIcon={GraduationCap}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -54,10 +86,29 @@ export function SchoolDirectory() {
   const [statusFilter, setStatusFilter] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'card'>('table');
   const [drawerSchool, setDrawerSchool] = useState<SchoolWithStats | null>(null);
+  // School-scoped roles (School Payroll Coordinator / School Head) may edit
+  // the DETAIL fields of their own assigned school: school head, Administrative
+  // Officer II, contact details, address, cluster. Code/type/status stay with
+  // the division (SchoolManagement) — those change what the school IS, not
+  // who to call. Server side, writes are additionally limited to the school
+  // matching the caller's STACODE (schoolDetailWriteGuard in main.go).
+  const { profile } = useAuth();
+  const canEditOwnSchool = isSchoolScoped(profile?.role ?? 'read_only');
+  const [editForm, setEditForm] = useState<Partial<SchoolWithStats> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const { scopedDivisionIds, scopedCodes } = useOrg();
+  // School-scoped roles (School Payroll Coordinator / School Head) see only
+  // their assigned school in the directory. null = not school-scoped.
+  // Mirrors the candidate variants used by the School dashboard.
+  const assignedStacode = isSchoolScoped(profile?.role ?? 'read_only')
+    ? (profile?.assigned_stacode?.trim() ?? '')
+    : null;
 
   useEffect(() => {
+    // No school assigned -> the directory is simply empty for this account.
+    if (assignedStacode !== null && assignedStacode === '') { setLoading(false); return; }
     (async () => {
       setLoading(true);
       const { data } = await supabase.rpc('query_schools_with_stats', {
@@ -66,10 +117,21 @@ export function SchoolDirectory() {
         p_regcode: scopedCodes && scopedCodes.length > 0 ? scopedCodes[0].regcode : null,
         p_divcodes: scopedCodes && scopedCodes.length > 0 ? [...new Set(scopedCodes.map((c) => c.divcode))] : null,
       });
-      setSchools((data as SchoolWithStats[]) ?? []);
+      let rows = (data as SchoolWithStats[]) ?? [];
+      if (assignedStacode) {
+        const candidates = new Set([
+          assignedStacode,
+          assignedStacode.padStart(3, '0'),
+          String(parseInt(assignedStacode, 10) || 0),
+        ].filter(Boolean));
+        rows = rows.filter(s =>
+          candidates.has(String(s.school_code ?? '').trim()) ||
+          candidates.has(String((s as { stacode?: string | null }).stacode ?? '').trim()));
+      }
+      setSchools(rows);
       setLoading(false);
     })();
-  }, [scopedDivisionIds, scopedCodes]);
+  }, [scopedDivisionIds, scopedCodes, assignedStacode]);
 
   const filtered = useMemo(() => {
     let r = schools;
@@ -88,9 +150,36 @@ export function SchoolDirectory() {
 
   const types: SchoolType[] = ['Elementary', 'Junior High School', 'Senior High School', 'Implementing Unit'];
 
+  // Save the editable detail fields of the coordinator's own school. Only the
+  // fields a school may maintain about itself are sent; server-side the write
+  // is additionally clamped to the school matching the caller's STACODE.
+  async function saveSchoolDetails(id: string, patch: Partial<SchoolWithStats>) {
+    setSaving(true);
+    setEditError('');
+    const payload: Record<string, unknown> = {
+      school_head: patch.school_head ?? '',
+      admin_officer_ii: patch.admin_officer_ii ?? '',
+      contact_number: patch.contact_number ?? '',
+      email: patch.email ?? '',
+      address: patch.address ?? '',
+      cluster: patch.cluster ?? '',
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('schools').update(payload).eq('id', id);
+    if (error) {
+      setEditError(error.message);
+      setSaving(false);
+      return;
+    }
+    setSchools(prev => prev.map(s => s.id === id ? { ...s, ...payload } as SchoolWithStats : s));
+    setDrawerSchool(prev => prev && prev.id === id ? { ...prev, ...payload } as SchoolWithStats : prev);
+    setEditForm(null);
+    setSaving(false);
+  }
+
   function exportCsv() {
-    const headers = ['Code', 'Name', 'Type', 'Cluster', 'School Head', 'Employees', 'Teaching', 'Non-Teaching', 'Status'];
-    const body = filtered.map(r => [r.school_code, r.school_name, r.school_type, r.cluster, r.school_head, r.total_employees, r.teaching_personnel, r.non_teaching_personnel, r.status].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+    const headers = ['Code', 'Name', 'Type', 'Cluster', 'School Head', 'Administrative Officer II', 'Employees', 'Teaching', 'Non-Teaching', 'Status'];
+    const body = filtered.map(r => [r.school_code, r.school_name, r.school_type, r.cluster, r.school_head, r.admin_officer_ii ?? '', r.total_employees, r.teaching_personnel, r.non_teaching_personnel, r.status].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
     const csv = [headers.join(','), ...body].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -113,7 +202,11 @@ export function SchoolDirectory() {
             School Directory
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5 ml-13">
-            Unified searchable directory of all schools and implementing units.
+            {assignedStacode !== null
+              ? assignedStacode === ''
+                ? 'No school is assigned to your account yet — contact your system administrator.'
+                : 'Your assigned school.'
+              : 'Unified searchable directory of all schools and implementing units.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -170,6 +263,7 @@ export function SchoolDirectory() {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Type</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Cluster</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">School Head</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Administrative Officer II</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Employees</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
@@ -183,6 +277,7 @@ export function SchoolDirectory() {
                     <td className="px-4 py-3"><TypeBadge type={s.school_type} /></td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.cluster || '—'}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.school_head || '—'}</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.admin_officer_ii || '—'}</td>
                     <td className="px-4 py-3 text-center font-semibold text-slate-700 tabular">{s.total_employees}</td>
                     <td className="px-4 py-3 text-center"><DirStatusBadge status={s.status} /></td>
                     <td className="px-4 py-3 text-right">
@@ -209,6 +304,9 @@ export function SchoolDirectory() {
               <div className="mt-3 space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
                 <p className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5" /> {s.cluster || 'No cluster'}</p>
                 <p className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> School Head: {s.school_head || '—'}</p>
+                {s.admin_officer_ii && (
+                  <p className="flex items-center gap-1.5"><UserCog className="w-3.5 h-3.5" /> Admin Officer II: {s.admin_officer_ii}</p>
+                )}
               </div>
               <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center">
                 <div><p className="text-base font-bold text-slate-700 dark:text-slate-200 tabular">{s.total_employees}</p><p className="text-[10px] text-slate-400">Employees</p></div>
@@ -224,7 +322,18 @@ export function SchoolDirectory() {
         </div>
       )}
 
-      {drawerSchool && <DirectoryDrawer school={drawerSchool} onClose={() => setDrawerSchool(null)} />}
+      {drawerSchool && (
+        <DirectoryDrawer
+          school={drawerSchool}
+          onClose={() => setDrawerSchool(null)}
+          canEdit={canEditOwnSchool && assignedStacode !== null && assignedStacode !== ''}
+          editForm={editForm}
+          setEditForm={setEditForm}
+          onSave={saveSchoolDetails}
+          saving={saving}
+          error={editError}
+        />
+      )}
     </div>
   );
 }
@@ -248,7 +357,27 @@ function DirStatusBadge({ status }: { status: string }) {
   );
 }
 
-function DirectoryDrawer({ school, onClose }: { school: SchoolWithStats; onClose: () => void }) {
+function DirectoryDrawer({
+  school,
+  onClose,
+  canEdit,
+  editForm,
+  setEditForm,
+  onSave,
+  saving,
+  error,
+}: {
+  school: SchoolWithStats;
+  onClose: () => void;
+  canEdit: boolean;
+  editForm: Partial<SchoolWithStats> | null;
+  setEditForm: (v: Partial<SchoolWithStats> | null) => void;
+  onSave: (id: string, patch: Partial<SchoolWithStats>) => Promise<void>;
+  saving: boolean;
+  error: string;
+}) {
+  const f = editForm ?? school;
+  const editing = editForm !== null;
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50 animate-fade-in" onClick={onClose}>
       <div className="bg-white dark:bg-slate-900 w-full max-w-md h-full overflow-y-auto shadow-2xl animate-slide-in-right" onClick={e => e.stopPropagation()}>
@@ -269,14 +398,54 @@ function DirectoryDrawer({ school, onClose }: { school: SchoolWithStats; onClose
         </div>
         <div className="p-6 space-y-6">
           <section>
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">Information</h4>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Information</h4>
+              {canEdit && !editing && (
+                <button
+                  onClick={() => setEditForm({
+                    school_head: school.school_head ?? '',
+                    admin_officer_ii: school.admin_officer_ii ?? '',
+                    contact_number: school.contact_number ?? '',
+                    email: school.email ?? '',
+                    address: school.address ?? '',
+                    cluster: school.cluster ?? '',
+                  })}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-deped-50 dark:bg-deped-900/30 text-deped-700 dark:text-deped-400 hover:bg-deped-100 dark:hover:bg-deped-900/50 transition-colors"
+                >
+                  <Pencil className="w-3 h-3" /> Edit details
+                </button>
+              )}
+            </div>
+            {editing ? (
+              <div className="space-y-3">
+                {error && <p className="text-sm text-rose-600">{error}</p>}
+                <DirectoryField label="School Head" value={f.school_head ?? ''} onChange={v => setEditForm({ ...f, school_head: v })} />
+                <DirectoryField label="Administrative Officer II" value={f.admin_officer_ii ?? ''} onChange={v => setEditForm({ ...f, admin_officer_ii: v })} />
+                <DirectoryField label="Contact Number" value={f.contact_number ?? ''} onChange={v => setEditForm({ ...f, contact_number: v })} />
+                <DirectoryField label="Email" value={f.email ?? ''} onChange={v => setEditForm({ ...f, email: v })} />
+                <DirectoryField label="Address" value={f.address ?? ''} onChange={v => setEditForm({ ...f, address: v })} />
+                <DirectoryField label="Cluster" value={f.cluster ?? ''} onChange={v => setEditForm({ ...f, cluster: v })} />
+                <p className="text-[11px] text-slate-400">School code, type and status are maintained by the Division Office.</p>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button onClick={() => { setEditForm(null); }} className="px-3 py-1.5 rounded-lg text-sm font-medium border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
+                  <button
+                    onClick={() => onSave(school.id, f)}
+                    disabled={saving}
+                    className="px-3 py-1.5 rounded-lg text-sm font-medium bg-deped-700 text-white hover:bg-deped-800 disabled:opacity-60 transition-colors"
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>              </div>
+            ) : (
             <div className="space-y-2.5 text-sm">
               <p className="flex justify-between"><span className="text-slate-500">Cluster</span><span className="text-slate-700 dark:text-slate-200">{school.cluster || '—'}</span></p>
               <p className="flex justify-between"><span className="text-slate-500">Address</span><span className="text-slate-700 dark:text-slate-200">{school.address || '—'}</span></p>
               <p className="flex justify-between"><span className="text-slate-500">School Head</span><span className="text-slate-700 dark:text-slate-200">{school.school_head || '—'}</span></p>
+              <p className="flex justify-between"><span className="text-slate-500">Administrative Officer II</span><span className="text-slate-700 dark:text-slate-200">{school.admin_officer_ii || '—'}</span></p>
               <p className="flex justify-between"><span className="text-slate-500">Contact</span><span className="text-slate-700 dark:text-slate-200">{school.contact_number || '—'}</span></p>
               <p className="flex justify-between"><span className="text-slate-500">Email</span><span className="text-slate-700 dark:text-slate-200">{school.email || '—'}</span></p>
             </div>
+            )}
           </section>
           <section>
             <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">Employee Statistics</h4>
@@ -313,6 +482,20 @@ function StatBox({ label, value, icon: Icon, color }: { label: string; value: nu
       <p className="text-xl font-bold text-slate-800 dark:text-slate-100 tabular">{value}</p>
       <p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p>
     </div>
+  );
+}
+
+function DirectoryField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">{label}</span>
+      <input
+        type="text"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className={inputCls}
+      />
+    </label>
   );
 }
 

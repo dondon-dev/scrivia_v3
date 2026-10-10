@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
+import { isSchoolScoped } from '@/lib/authz';
 import { useOrg, codeScope } from '@/lib/org';
 import { Pagination, usePagination } from '@/components/Pagination';
 import {
@@ -23,6 +24,7 @@ const COLUMNS: { key: keyof NonPlantillaEmployee; label: string; sortable: boole
   { key: 'middle_name', label: 'Middle Name', sortable: false },
   { key: 'complete_name', label: 'Complete Name', sortable: true },
   { key: 'school', label: 'School', sortable: true },
+  { key: 'stacode', label: 'STACODE', sortable: true },
   { key: 'designation', label: 'Designation', sortable: true },
   { key: 'pagibig_number', label: 'PAG-IBIG', sortable: false },
   { key: 'philhealth', label: 'PhilHealth', sortable: false },
@@ -50,6 +52,7 @@ const FORM_FIELDS: FormFieldDef[] = [
   { key: 'first_name', label: 'First Name', type: 'text', required: true, maxLength: 100 },
   { key: 'middle_name', label: 'Middle Name', type: 'text', maxLength: 100 },
   { key: 'school', label: 'School / Office', type: 'text', required: true },
+  { key: 'stacode', label: 'STACODE', type: 'text', maxLength: 10 },
   { key: 'designation', label: 'Designation', type: 'text', required: true },
   { key: 'pagibig_number', label: 'PAG-IBIG Number', type: 'text', maxLength: 50 },
   { key: 'philhealth', label: 'PhilHealth Number', type: 'text', maxLength: 50 },
@@ -89,7 +92,7 @@ function validateForm(form: NonPlantillaForm): string | null {
 }
 
 export default function NonPlantillaItems() {
-  const { logAudit } = useAuth();
+  const { logAudit, profile } = useAuth();
   const { scopedCodes } = useOrg();
   const [records, setRecords] = useState<NonPlantillaEmployee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,6 +138,38 @@ export default function NonPlantillaItems() {
 
   useEffect(() => { load(); }, [load]);
 
+  // ── Assigned school auto-assign ────────────────────────────────────────────
+  // A School Payroll Coordinator (or any school-scoped account) has exactly one
+  // school: their profile's assigned STACODE. New items they add get that
+  // STACODE and the school's directory name auto-filled (and server-stamped by
+  // nonPlantillaScopeGuard in main.go), so the fields are locked on Create.
+  const schoolScoped = isSchoolScoped(profile?.role ?? 'read_only');
+  const assignedStacode = schoolScoped ? (profile?.assigned_stacode ?? '').trim() : '';
+  const [assignedSchoolName, setAssignedSchoolName] = useState('');
+  const autoAssign = schoolScoped && assignedStacode !== '';
+
+  useEffect(() => {
+    if (!assignedStacode) { setAssignedSchoolName(''); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const candidates = new Set([
+          assignedStacode,
+          assignedStacode.padStart(3, '0'),
+          String(parseInt(assignedStacode, 10) || 0),
+        ].filter(Boolean));
+        const data = await fetchAll<{ school_code: string; school_name: string }>(() =>
+          supabase.from('schools').select('school_code, school_name'),
+        );
+        const hit = data.find(s => candidates.has(String(s.school_code ?? '').trim()));
+        if (!cancelled) setAssignedSchoolName(hit ? hit.school_name : '');
+      } catch {
+        if (!cancelled) setAssignedSchoolName('');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [assignedStacode]);
+
   // Build filter option lists from data
   const schoolOptions = useMemo(() => {
     const set = new Set<string>();
@@ -159,6 +194,7 @@ export default function NonPlantillaItems() {
         r.middle_name.toLowerCase().includes(q) ||
         r.complete_name.toLowerCase().includes(q) ||
         r.school.toLowerCase().includes(q) ||
+        (r.stacode ?? '').toLowerCase().includes(q) ||
         r.designation.toLowerCase().includes(q) ||
         (r.tin ?? '').toLowerCase().includes(q) ||
         (r.pagibig_number ?? '').toLowerCase().includes(q) ||
@@ -192,7 +228,12 @@ export default function NonPlantillaItems() {
 
   function openAdd() {
     setEditing(null);
-    setForm(emptyNonPlantillaForm());
+    // School-scoped coords: STACODE + assigned school come from the account.
+    setForm({
+      ...emptyNonPlantillaForm(),
+      stacode: assignedStacode,
+      school: autoAssign ? assignedSchoolName : '',
+    });
     setError('');
     setShowModal(true);
   }
@@ -219,11 +260,16 @@ export default function NonPlantillaItems() {
       ? { regcode: scope.regcode, divcode: scope.divcodes[0] }
       : {};
 
+    // The payload carries the item's STACODE. The field only exists after the
+    // `add non_plantilla stacode` migration runs; until then the insert/update
+    // is retried without it so the screen keeps working (mirrors the ca_employees
+    // optional-column handling).
     const payload = {
       surname: form.surname.trim(),
       first_name: form.first_name.trim(),
       middle_name: form.middle_name.trim(),
       school: form.school.trim(),
+      stacode: (form.stacode ?? '').trim(),
       designation: form.designation.trim(),
       pagibig_number: form.pagibig_number.trim() || null,
       philhealth: form.philhealth.trim() || null,
@@ -237,35 +283,44 @@ export default function NonPlantillaItems() {
       civil_status: form.civil_status,
     };
 
+    // "stacode" is not a column yet (migration pending): retry without it.
+    const missingStacode = (msg: string): boolean =>
+      /unknown (field|column) ['"]?stacode|column .stacode. of relation|'?stacode'? (column|field) does not exist/i.test(msg);
+
+    async function persist(next: Record<string, unknown>) {
+      if (editing) {
+        const { error: first } = await supabase.from('non_plantilla_employees').update(next).eq('id', editing.id);
+        if (first && missingStacode(first.message)) {
+          const without = { ...next };
+          delete without.stacode;
+          return supabase.from('non_plantilla_employees').update(without).eq('id', editing.id);
+        }
+        return { error: first };
+      }
+      const { error: first } = await supabase.from('non_plantilla_employees').insert({ ...next, ...stamp });
+      if (first && missingStacode(first.message)) {
+        const without = { ...next };
+        delete without.stacode;
+        return supabase.from('non_plantilla_employees').insert({ ...without, ...stamp });
+      }
+      return { error: first };
+    }
+
     setSaving(true);
     setError('');
     try {
-      if (editing) {
-        const { error: upErr } = await supabase
-          .from('non_plantilla_employees')
-          .update(payload)
-          .eq('id', editing.id);
-        if (upErr) {
-          if (upErr.code === '23505') {
-            setError('A record with one of the provided unique numbers (TIN, PAG-IBIG, PhilHealth, or Land Bank) already exists.');
-          } else {
-            setError(upErr.message);
-          }
-          return;
+      const { error: saveErr } = await persist(payload);
+      if (saveErr) {
+        if (saveErr.code === '23505') {
+          setError('A record with one of the provided unique numbers (TIN, PAG-IBIG, PhilHealth, or Land Bank) already exists.');
+        } else {
+          setError(saveErr.message);
         }
+        return;
+      }
+      if (editing) {
         await logAudit('update_non_plantilla', 'non_plantilla_employees', editing.id, { surname: payload.surname, first_name: payload.first_name });
       } else {
-        const { error: insErr } = await supabase
-          .from('non_plantilla_employees')
-          .insert({ ...payload, ...stamp });
-        if (insErr) {
-          if (insErr.code === '23505') {
-            setError('A record with one of the provided unique numbers (TIN, PAG-IBIG, PhilHealth, or Land Bank) already exists.');
-          } else {
-            setError(insErr.message);
-          }
-          return;
-        }
         await logAudit('create_non_plantilla', 'non_plantilla_employees', undefined, { surname: payload.surname, first_name: payload.first_name });
       }
       setShowModal(false);
@@ -399,7 +454,7 @@ export default function NonPlantillaItems() {
 
       const headerMap: Record<string, string> = {
         'Surname': 'surname', 'First Name': 'first_name', 'Middle Name': 'middle_name',
-        'School': 'school', 'Designation': 'designation', 'PAG-IBIG': 'pagibig_number',
+        'School': 'school', 'STACODE': 'stacode', 'Designation': 'designation', 'PAG-IBIG': 'pagibig_number',
         'PhilHealth': 'philhealth', 'Land Bank': 'landbank', 'First Day of Service': 'first_day_of_service',
         'Contact Number': 'contact_number', 'Birthday': 'birthday', 'Sex': 'sex',
         'Address': 'address', 'Civil Status': 'civil_status', 'TIN': 'tin',
@@ -458,6 +513,7 @@ export default function NonPlantillaItems() {
           first_name: rowFirstName,
           middle_name: get('middle_name'),
           school: rowSchool,
+          stacode: get('stacode'),
           designation: rowDesignation,
           pagibig_number: get('pagibig_number') || null,
           philhealth: get('philhealth') || null,
@@ -510,6 +566,7 @@ export default function NonPlantillaItems() {
 
   const pageIds = paginated.pagedItems.map(r => r.id);
   const allOnPageSelected = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id));
+  const lockedAssignment = !editing && autoAssign;
 
   return (
     <div className="space-y-4">
@@ -748,9 +805,16 @@ export default function NonPlantillaItems() {
             )}
 
             <div className="overflow-y-auto p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {lockedAssignment && (
+                <p className="sm:col-span-2 lg:col-span-3 text-[11px] text-emerald-700 dark:text-emerald-400 -mt-1">
+                  STACODE and School are auto-assigned to your assigned school ({assignedStacode} — {assignedSchoolName || '...'}).
+                </p>
+              )}
               {FORM_FIELDS.map(field => {
                 const val = form[field.key];
                 const isReq = field.required;
+                const locked = lockedAssignment && (field.key === 'stacode' || field.key === 'school');
+                const lockCls = locked ? ' bg-slate-100 dark:bg-slate-800 cursor-not-allowed' : '';
                 return (
                   <label key={field.key} className={`block ${field.type === 'textarea' ? 'sm:col-span-2 lg:col-span-3' : ''}`}>
                     <span className="block text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">
@@ -760,7 +824,8 @@ export default function NonPlantillaItems() {
                       <select
                         value={String(val ?? '')}
                         onChange={e => setForm({ ...form, [field.key]: e.target.value })}
-                        className={inputCls}
+                        disabled={locked}
+                        className={inputCls + lockCls}
                       >
                         {field.options?.map(o => <option key={o} value={o}>{o || '— Select —'}</option>)}
                       </select>
@@ -769,7 +834,8 @@ export default function NonPlantillaItems() {
                         value={String(val ?? '')}
                         onChange={e => setForm({ ...form, [field.key]: e.target.value })}
                         rows={2}
-                        className={inputCls}
+                        disabled={locked}
+                        className={inputCls + lockCls}
                       />
                     ) : (
                       <input
@@ -777,7 +843,8 @@ export default function NonPlantillaItems() {
                         maxLength={field.maxLength}
                         value={val === null ? '' : String(val ?? '')}
                         onChange={e => setForm({ ...form, [field.key]: e.target.value || null })}
-                        className={inputCls}
+                        disabled={locked}
+                        className={inputCls + lockCls}
                       />
                     )}
                   </label>

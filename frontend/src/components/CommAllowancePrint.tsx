@@ -1,8 +1,8 @@
 // ── Official government payroll print template ───────────────────────────────
 // GENERAL PAYROLL · Department of Education · Division of Calamba City
-// Communication Allowance · US Standard Fanfold 14-7/8" × 11" landscape.
+// Communication Allowance · US STD Fanfold 14.87" × 11" landscape, Calibri 16px.
 // Matches the approved DepEd register layout:
-//   header (payroll no. + school + acknowledgment line) → register table
+//   header (school + acknowledgment line) → register table
 //   (No. | Last | First | M.I. | Acct No. | Position | Amount | Net Due |
 //   Signature | No.) → right-aligned "TOTAL FOR PAGE X" → page number.
 // The last page carries the carried page-totals summary + GRAND TOTAL and the
@@ -103,7 +103,7 @@ export default function CommAllowancePrint({ header, pages, signatories, onClose
           <td colSpan={6} className="ca-print-sub-label">SUBTOTAL — {schoolLabel(groupSchool)}</td>
           <td className="text-right ca-print-sub-amount">{currency(subAmount)}</td>
           <td className="text-right ca-print-sub-amount">{currency(subNet)}</td>
-          <td colSpan={2} />
+          <td />
         </tr>,
       );
     };
@@ -123,15 +123,14 @@ export default function CommAllowancePrint({ header, pages, signatories, onClose
       cells.push(
         <tr key={r.lineNo}>
           <td className="text-center">{no}</td>
+          <td className="text-center">{r.accountNo}</td>
           <td>{r.lastName}</td>
           <td>{r.firstName}</td>
           <td className="text-center">{r.middleInitial}</td>
-          <td className="text-center">{r.accountNo}</td>
           <td>{r.position}</td>
           <td className="text-right">{currency(r.amount)}</td>
           <td className="text-right">{currency(r.net)}</td>
           <td />
-          <td className="text-center">{no}</td>
         </tr>,
       );
     });
@@ -144,7 +143,7 @@ export default function CommAllowancePrint({ header, pages, signatories, onClose
       <div className="ca-print-toolbar">
         <div>
           <p className="font-semibold text-white text-sm">Print Preview — {header.payroll_no}</p>
-          <p className="text-deped-200 text-xs">US Fanfold 14-7/8" × 11" · Landscape · {pages.pages.length} page{pages.pages.length > 1 ? 's' : ''}</p>
+          <p className="text-deped-200 text-xs">US STD Fanfold 14.87" × 11" · Landscape · Calibri 16 · {pages.pages.length} page{pages.pages.length > 1 ? 's' : ''}</p>
         </div>
         <div className="flex gap-2">
           <button onClick={handlePrint} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white text-deped-700 text-sm font-semibold hover:bg-deped-100 transition-colors">
@@ -170,24 +169,24 @@ export default function CommAllowancePrint({ header, pages, signatories, onClose
           const pageSchool = firstRow?.schoolName
             ? schoolLabel(firstRow.schoolName)
             : cleanSchoolName(header.school_name ?? '');
+          const pageSchoolTitle = pageSchool;
           return (
           <section key={page.pageNo} className="ca-print-page">
             <div className="ca-print-content">
-            <CaPageHeader header={header} schoolLabel={pageSchool} />
+            <CaPageHeader header={header} schoolTitle={pageSchoolTitle} />
 
             <table className="ca-print-table">
               <thead>
                 <tr>
-                  <th className="w-8">No.</th>
+                  <th className="w-12">No.</th>
+                  <th className="w-36">Account No.</th>
                   <th>Last Name</th>
                   <th>First Name</th>
-                  <th className="w-8">M.I.</th>
-                  <th className="w-24">Account No.</th>
+                  <th className="w-12">M.I.</th>
                   <th>Position</th>
-                  <th className="w-20">Amount</th>
-                  <th className="w-24">Net Amount<br />Due</th>
-                  <th className="w-24">Signature Recipient</th>
-                  <th className="w-8">No.</th>
+                  <th className="w-24">Amount</th>
+                  <th className="w-28">Net Amount<br />Due</th>
+                  <th className="w-40">Signature of Recipient</th>
                 </tr>
               </thead>
               <tbody>{renderRows(page.rows)}</tbody>
@@ -315,7 +314,7 @@ export default function CommAllowancePrint({ header, pages, signatories, onClose
   );
 }
 
-function CaPageHeader({ header, schoolLabel }: { header: CaPayrollHeader; schoolLabel: string }) {
+function CaPageHeader({ header, schoolTitle }: { header: CaPayrollHeader; schoolTitle: string }) {
   return (
     <header className="ca-print-head">
       <h1>GENERAL PAYROLL</h1>
@@ -325,8 +324,7 @@ function CaPageHeader({ header, schoolLabel }: { header: CaPayrollHeader; school
       <p className="ca-print-head-period">{header.covered_period}</p>
 
       <div className="ca-print-head-info">
-        <span>Payroll No.: <strong>{header.payroll_no}</strong></span>
-        <span>{schoolLabel}</span>
+        <span className="ca-print-head-school">{schoolTitle}</span>
       </div>
 
       <p className="ca-print-ack">

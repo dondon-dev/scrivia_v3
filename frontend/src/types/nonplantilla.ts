@@ -5,6 +5,9 @@ export interface NonPlantillaEmployee {
   middle_name: string;
   complete_name: string;
   school: string;
+  /** School STACODE — auto-assigned from the School Payroll Coordinator's
+   *  account when an item is added by a school-scoped user. */
+  stacode: string;
   designation: string;
   pagibig_number: string;
   philhealth: string;
@@ -26,6 +29,7 @@ export interface NonPlantillaForm {
   first_name: string;
   middle_name: string;
   school: string;
+  stacode: string;
   designation: string;
   pagibig_number: string;
   philhealth: string;
@@ -45,6 +49,7 @@ export function emptyNonPlantillaForm(): NonPlantillaForm {
     first_name: '',
     middle_name: '',
     school: '',
+    stacode: '',
     designation: '',
     pagibig_number: '',
     philhealth: '',
@@ -65,6 +70,7 @@ export function formFromNonPlantilla(e: NonPlantillaEmployee): NonPlantillaForm 
     first_name: e.first_name,
     middle_name: e.middle_name ?? '',
     school: e.school,
+    stacode: e.stacode ?? '',
     designation: e.designation,
     pagibig_number: e.pagibig_number ?? '',
     philhealth: e.philhealth ?? '',

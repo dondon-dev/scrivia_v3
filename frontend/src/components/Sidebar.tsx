@@ -12,7 +12,7 @@ import RegionDivisionSelector from '@/components/RegionDivisionSelector';
 import type { PayrollCategory } from '@/lib/categories';
 import {
   NAV_SECTIONS, type NavSection, type NavItem, type ViewKey,
-  findNavItem,
+  findNavItem, isSectionHiddenForRole, isNavItemHiddenForRole,
 } from '@/lib/navConfig';
 
 const FAV_KEY = 'payrollpro_favorites';
@@ -84,8 +84,12 @@ export default function Sidebar(props: SidebarProps) {
   const filteredSections = useMemo(() => {
     return NAV_SECTIONS
       .filter((section) => section.id !== 'notifications')
+      // Role-based hide (e.g. Remittance for School Payroll Coordinator)
+      // outranks any permission grant.
+      .filter((section) => !isSectionHiddenForRole(section, profile.role))
       .map((section) => {
-        const filterItem = (item: NavItem) => hasPermission(item.permission);
+        const filterItem = (item: NavItem) =>
+          hasPermission(item.permission) && !isNavItemHiddenForRole(item, profile.role);
         if (section.subGroups) {
           return {
             ...section,
@@ -102,7 +106,7 @@ export default function Sidebar(props: SidebarProps) {
         const hasSubItems = (section.subGroups?.length ?? 0) > 0;
         return hasItems || hasSubItems;
       });
-  }, [hasPermission]);
+  }, [hasPermission, profile.role]);
 
   const filteredItems = useMemo(() => {
     return filteredSections.flatMap((s) => s.items ?? []);
@@ -111,8 +115,9 @@ export default function Sidebar(props: SidebarProps) {
   const favoriteItems = useMemo(() => {
     return favorites
       .map((id) => findNavItem(id))
-      .filter((item): item is NavItem => !!item && hasPermission(item.permission));
-  }, [favorites, hasPermission]);
+      .filter((item): item is NavItem =>
+        !!item && hasPermission(item.permission) && !isNavItemHiddenForRole(item, profile.role));
+  }, [favorites, hasPermission, profile.role]);
 
   // Flyout handlers
   const handleSectionEnter = useCallback((sectionId: string) => {

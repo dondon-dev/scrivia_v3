@@ -3,7 +3,7 @@ import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export type PersonnelCategory = 'Teaching' | 'Teaching Related' | 'Non-Teaching';
+export type PersonnelCategory = 'Teaching' | 'Teaching Related' | 'Non-Teaching' | 'School Administration';
 export type ImportMode = 'add_new' | 'update_existing' | 'full_sync';
 
 export interface PositionRecord {
@@ -63,36 +63,52 @@ export const FIELD_MAPPING: Record<string, string> = {
 
 export const DBF_FIELDS = Object.keys(FIELD_MAPPING);
 
-// ── Smart Position Classification ──────────────────────────────────────
+// ── Smart Position Classification (DO 7, s. 2023 Annex A) ─────────────
 
-const TEACHING_KEYWORDS = [
-  'teacher i', 'teacher ii', 'teacher iii', 'teacher iv',
-  'master teacher i', 'master teacher ii', 'master teacher iii', 'master teacher iv',
+const SCHOOL_ADMIN_KEYWORDS = [
   'head teacher i', 'head teacher ii', 'head teacher iii',
   'head teacher iv', 'head teacher v', 'head teacher vi',
+  'school principal i', 'school principal ii', 'school principal iii', 'school principal iv',
   'principal i', 'principal ii', 'principal iii', 'principal iv',
-  'teacher-in-charge',
+  'assistant school principal', 'assistant principal',
+  'special school principal', 'assistant special school principal',
+  'teacher-in-charge', 'school head',
+];
+
+const TEACHING_KEYWORDS = [
+  'teacher i', 'teacher ii', 'teacher iii', 'teacher iv', 'teacher v', 'teacher vi',
+  'master teacher i', 'master teacher ii', 'master teacher iii', 'master teacher iv',
+  'spet', 'special education teacher', 'instructor', 'professor',
+  'shs teacher', 'special science teacher',
 ];
 
 const TEACHING_RELATED_KEYWORDS = [
-  'guidance counselor', 'education program specialist',
-  'education supervisor', 'school librarian', 'librarian',
-  'school head', 'shs teacher', 'special science teacher',
+  'education program specialist', 'education program supervisor',
+  'guidance counselor', 'guidance coordinator',
+  'public schools district supervisor', 'district supervisor', 'psds',
+  'vocational instruction supervisor',
+  'science research specialist', 'science research technician',
+  'school farming coordinator', 'teacher credentials evaluator',
+  'crafts education demonstrator', 'teaching-aids specialist', 'teaching aids specialist',
+  'education research assistant', 'school farm demonstrator',
 ];
 
 export function classifyPosition(title: string, poscode: string): PersonnelCategory {
   const lower = (title || '').toLowerCase().trim();
   const code = (poscode || '').trim();
 
-  // Position codes starting with 1 or 2 are teaching positions (DepEd convention)
-  if (code && /^[12]/.test(code)) return 'Teaching';
-
+  for (const kw of SCHOOL_ADMIN_KEYWORDS) {
+    if (lower.includes(kw)) return 'School Administration';
+  }
   for (const kw of TEACHING_KEYWORDS) {
     if (lower.includes(kw)) return 'Teaching';
   }
   for (const kw of TEACHING_RELATED_KEYWORDS) {
     if (lower.includes(kw)) return 'Teaching Related';
   }
+
+  // Fallback: position codes starting with 1 or 2 are teaching positions (DepEd convention)
+  if (code && /^[12]/.test(code)) return 'Teaching';
   return 'Non-Teaching';
 }
 

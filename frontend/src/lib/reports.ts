@@ -389,7 +389,12 @@ ${r.map((v) => `    <Cell><Data ss:Type="${cellType(v)}">${esc(String(v ?? ''))}
   </Table>
  </Worksheet>
 </Workbook>`;
-  return new TextEncoder().encode(xml);
+  const encoded = new TextEncoder().encode(xml);
+  // The current bundler target trips over Uint8Array<ArrayBufferLike> in a
+  // Blob constructor / download helper, so coerce back to Uint8Array<ArrayBuffer>
+  // explicitly before returning. This keeps generateExcel + the DBF/CSV helpers
+  // compiling without widening the API footprint.
+  return new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength) as Uint8Array;
 }
 
 export function generateMasterfileCsv(employees: Employee[]): Uint8Array {

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { TrendingUp, TrendingDown, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useCountUpValue, fadeUpItem } from '@/lib/motion';
@@ -166,6 +166,9 @@ interface HeroHeaderProps {
   /** Small live badge next to the greeting (e.g. cycle status). */
   liveLabel?: string;
   liveTone?: 'green' | 'amber' | 'blue';
+  /** Scope control pinned to the right of the date/cycle row, e.g. the
+   *  payroll GroupFilter dropdown. */
+  filter?: ReactNode;
 }
 
 const LIVE_TONES = {
@@ -174,7 +177,7 @@ const LIVE_TONES = {
   blue: 'bg-nexora-400',
 };
 
-export function HeroHeader({ greeting, title, date, chips, actions, metric, liveLabel, liveTone = 'green' }: HeroHeaderProps) {
+export function HeroHeader({ greeting, title, date, chips, actions, metric, liveLabel, liveTone = 'green', filter }: HeroHeaderProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -182,25 +185,34 @@ export function HeroHeader({ greeting, title, date, chips, actions, metric, live
       transition={{ duration: 0.4, ease: 'easeOut' }}
       className="nexora-hero rounded-3xl text-white shadow-nexora-lg"
     >
-      {/* drifting aurora blobs */}
-      <div className="hero-blob w-48 h-48 -top-16 -right-10 bg-aurora-500/20" style={{ animationDelay: '0s' }} />
-      <div className="hero-blob w-40 h-40 -bottom-20 -left-8 bg-nexora-400/20" style={{ animationDelay: '-3s' }} />
+      {/* Drifting aurora blobs — clipped to the rounded card in their own layer
+          so the hero itself can stay overflow-visible for dropdown menus. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-3xl">
+        <div className="hero-blob w-48 h-48 -top-16 -right-10 bg-aurora-500/20" style={{ animationDelay: '0s' }} />
+        <div className="hero-blob w-40 h-40 -bottom-20 -left-8 bg-nexora-400/20" style={{ animationDelay: '-3s' }} />
+      </div>
 
       <div className="relative p-3 sm:p-4">
+        {/* Top row — date + cycle badge on the left, the optional scope control
+            (e.g. the payroll GroupFilter) pinned to the right of the same line. */}
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            {date && <p className="text-[13px] font-medium text-white/70">{date}</p>}
+            {liveLabel && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 ring-1 ring-white/20 text-[11px] font-semibold uppercase tracking-wider">
+                <span className="relative flex h-2 w-2">
+                  <span className={`animate-ripple-ping absolute inline-flex h-full w-full rounded-full ${LIVE_TONES[liveTone]}`} />
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${LIVE_TONES[liveTone]}`} />
+                </span>
+                {liveLabel}
+              </span>
+            )}
+          </div>
+          {filter}
+        </div>
+
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              {date && <p className="text-[13px] font-medium text-white/70">{date}</p>}
-              {liveLabel && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 ring-1 ring-white/20 text-[11px] font-semibold uppercase tracking-wider">
-                  <span className="relative flex h-2 w-2">
-                    <span className={`animate-ripple-ping absolute inline-flex h-full w-full rounded-full ${LIVE_TONES[liveTone]}`} />
-                    <span className={`relative inline-flex rounded-full h-2 w-2 ${LIVE_TONES[liveTone]}`} />
-                  </span>
-                  {liveLabel}
-                </span>
-              )}
-            </div>
             <h1 className="text-lg sm:text-xl font-bold mt-1.5 leading-tight tracking-tight">
               {greeting}
               <span className="ml-2 inline-flex items-center gap-1 align-middle">

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import GroupFilter, { type GroupFilterValue, resolveGroupFilter } from '@/components/GroupFilter';
-import { inCategory, type PayrollCategory } from '@/lib/categories';
+import { inCategory, stacodeToNum, type PayrollCategory } from '@/lib/categories';
 import {
   Users, Calculator, TrendingUp, ArrowRight, Wallet, Building2, Landmark,
   BarChart3, School, ShieldCheck, ShieldAlert, Upload, Clock, CheckCircle2,
@@ -53,7 +53,7 @@ interface DashboardData {
   recentEmployees: {
     id: string; empno: string; employee_number: string;
     fname: string; first_name: string; lname: string; last_name: string;
-    poscode: string; position: string; regcode: string;
+    poscode: string; position: string; regcode: string; stacode: string;
     basic: number; basic_salary: number;
   }[];
 }
@@ -175,7 +175,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
           addScope(supabase.from('employees').select('id,status,payroll_status,regcode,divcode,stacode')),
           supabase.from('pay_periods').select('*').order('created_at', { ascending: false }).limit(1),
           supabase.from('payroll_groups').select('*'),
-          addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,divcode,basic,basic_salary').order('created_at', { ascending: false }).limit(5)),
+          addScope(supabase.from('employees').select('id,empno,employee_number,fname,first_name,lname,last_name,poscode,position,regcode,divcode,stacode,basic,basic_salary').order('created_at', { ascending: false }).limit(5)),
           supabase.from('deduction_codes').select('*'),
         ]);
         if (!active) return;
@@ -188,9 +188,34 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
           divcode: string | null;
           stacode: string | null;
         }>;
-        const totalRecords = allEmps.length;
-        const activeEmployees = allEmps.filter((e) => e.status === 'Active' || !e.status).length;
-        const scopedEmpIds = regcode && divcodes ? allEmps.map((e) => e.id) : null;
+        const groups = (groupsRes.data ?? []) as PayrollGroup[];
+
+        // ── Payroll-group scope ───────────────────────────────────────────
+        // The hero's GroupFilter resolves to either a category (the ELEM / JHS+
+        // SHS STACODE band) or one specific payroll group's STACODE range. Every
+        // total below — employees, the current period's payroll, deductions and
+        // recent hires — is narrowed to that band, so the KPI cards, the hero's
+        // "Net Pay This Period", the deduction breakdown and the group panel all
+        // describe the same scope. An unset range means "all groups".
+        const gf = resolveGroupFilter(groupFilter, groups);
+        const inGroupScope = (stacode: unknown): boolean => {
+          if (gf.groupId) {
+            const n = stacodeToNum(stacode as string);
+            return n !== null && n >= (gf.stacodeMin ?? 0) && n <= (gf.stacodeMax ?? 701);
+          }
+          if (gf.category) return inCategory(stacode as string, gf.category);
+          return true;
+        };
+        const scopedEmps = allEmps.filter((e) => inGroupScope(e.stacode));
+        const groupScoped = gf.groupId !== null || gf.category !== null;
+
+        const totalRecords = scopedEmps.length;
+        const activeEmployees = scopedEmps.filter((e) => e.status === 'Active' || !e.status).length;
+        // The payroll tables carry no STACODE of their own, so they are scoped
+        // by the matching employee ids whenever the division or the group filter
+        // needs narrowing.
+        const needEmpIdScope = Boolean(regcode && divcodes) || groupScoped;
+        const scopedEmpIds = needEmpIdScope ? scopedEmps.map((e) => e.id) : null;
         const entriesQuery = () => supabase.from('payroll_entries').select('id,employee_id,pay_period_id,gross_pay,total_deductions,net_pay,status,mandatory_deductions,actual_loan_deductions');
         const dedQuery = () => supabase.from('payroll_deductions').select('id,dedcode,dedamt,agency,type,employee_id');
         const scopedRows = async (mk: () => ReturnType<typeof supabase.from>) => {
@@ -234,18 +259,28 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
         }
         const dedTotalsByCode = [...dedAgg.values()].sort((a, b) => b.total - a.total);
 
-        // Group stats
-        const groups = (groupsRes.data ?? []) as PayrollGroup[];
-        // If scoped, count employees per group from allEmps; otherwise use full employee list
-        const groupStats = groups.map((g) => {
-          const min = g.stacode_min ?? 0;
-          const max = g.stacode_max ?? 701;
-          const count = allEmps.filter((e) => {
-            const stacode = Number(e.stacode ?? 0);
-            return stacode >= min && stacode <= max;
-          }).length;
-          return { ...g, count };
-        });
+        // Group stats — counted from the same group-scoped employee set, and the
+        // list itself narrowed to the selection (the chosen group, or every
+        // group inside the selected category band) so it never contradicts the
+        // scoped KPI totals.
+        const groupStats = groups
+          .filter((g) => {
+            if (gf.groupId) return g.id === gf.groupId;
+            if (gf.category) {
+              return (g.stacode_min ?? 0) >= (gf.stacodeMin ?? 0)
+                && (g.stacode_max ?? 0) <= (gf.stacodeMax ?? 701);
+            }
+            return true;
+          })
+          .map((g) => {
+            const min = g.stacode_min ?? 0;
+            const max = g.stacode_max ?? 701;
+            const count = scopedEmps.filter((e) => {
+              const stacode = Number(e.stacode ?? 0);
+              return stacode >= min && stacode <= max;
+            }).length;
+            return { ...g, count };
+          });
 
         // Active loan accounts: employees with non-zero loan deductions
         const activeLoanAccounts = currentEntries.filter((e) => Number(e.actual_loan_deductions ?? 0) > 0).length;
@@ -266,7 +301,8 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
             unassignedCount: 0,
             activeLoanAccounts,
             dedTotalsByCode,
-            recentEmployees: (recentRes.data ?? []) as DashboardData['recentEmployees'],
+            recentEmployees: ((recentRes.data ?? []) as DashboardData['recentEmployees'])
+              .filter((e) => inGroupScope(e.stacode)),
           },
           error: null,
         };
@@ -331,7 +367,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
       }
     })();
     return () => { active = false; };
-  }, [profile, category, scopedCodes, refreshTick]);
+  }, [profile, category, scopedCodes, refreshTick, groupFilter]);
 
   if (loading) {
     return (
@@ -369,7 +405,7 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
       icon: Users, accent: 'blue' as const, sublabel: `${data.totalRecords} total records`,
       trend: { value: 'Active', direction: 'up' as const },
       spark: data.groupStats.length > 1 ? data.groupStats.map((g) => g.count) : sparkSeries('employees'),
-      hint: `${data.groupStats.length} payroll groups`, onClick: () => onNavigate('employees'),
+      hint: `${data.groupStats.length} payroll group${data.groupStats.length === 1 ? '' : 's'}`, onClick: () => onNavigate('employees'),
     },
     {
       label: 'Monthly Payroll', value: currency(data.totalGross), raw: data.totalGross, format: (n: number) => currency(n),
@@ -432,13 +468,9 @@ export default function Dashboard({ onNavigate, category, profile, groupFilterVa
       )}
 
 
-      {/* Group Filter */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <GroupFilter value={groupFilter} onChange={setGroupFilter} />
-      </div>
-
-      {/* Executive Command Center — hero header */}
+      {/* Executive Command Center — hero header (owns the payroll group filter) */}
       <HeroHeader
+        filter={<GroupFilter value={groupFilter} onChange={setGroupFilter} />}
         greeting={`${greetingForHour()}, ${profile?.first_name || 'Administrator'}`}
         date={new Date().toLocaleDateString('en-PH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
         title={data.currentPeriod

@@ -1,14 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import LoadingIndicator from '@/components/LoadingIndicator';
 import {
-  Plus, Search, Pencil, Trash2, X, Download, Upload, Printer,
+  Plus, Search, Pencil, Trash2, X, Download, Printer,
   Building2, Users, GraduationCap, Briefcase, Wallet, MapPin,
-  Phone, Mail, ChevronRight, Eye, FileBarChart, ArrowUpDown,
-  CheckCircle2, AlertCircle, School as SchoolIcon, Home as UnitIcon,
-  FileUp,
+  Phone, Mail, ChevronRight, FileBarChart, ArrowUpDown,
+  AlertCircle, School as SchoolIcon, FileUp, UserCog,
 } from 'lucide-react';
-import { ScriviaLogo } from '@/components/ScriviaLogo';
-import { supabase, fetchAll } from '@/lib/pb';
+import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { useAuth } from '@/lib/auth';
 import { useOrg } from '@/lib/org';
 import { canImportDbf } from '@/lib/authz';
@@ -22,6 +20,7 @@ interface SchoolForm {
   cluster: string;
   address: string;
   school_head: string;
+  admin_officer_ii: string;
   contact_number: string;
   email: string;
   status: string;
@@ -34,6 +33,7 @@ const emptyForm = (type: SchoolType): SchoolForm => ({
   cluster: '',
   address: '',
   school_head: '',
+  admin_officer_ii: '',
   contact_number: '',
   email: '',
   status: 'Active',
@@ -79,9 +79,9 @@ function StatusBadge({ status }: StatusBadgeProps) {
 }
 
 function exportCsv(rows: SchoolWithStats[], filename: string) {
-  const headers = ['Code', 'Name', 'Type', 'Cluster', 'School Head', 'Total Employees', 'Teaching', 'Non-Teaching', 'Active Payroll', 'Status'];
+  const headers = ['Code', 'Name', 'Type', 'Cluster', 'School Head', 'Administrative Officer II', 'Total Employees', 'Teaching', 'Non-Teaching', 'Active Payroll', 'Status'];
   const body = rows.map(r => [
-    r.school_code, r.school_name, r.school_type, r.cluster, r.school_head,
+    r.school_code, r.school_name, r.school_type, r.cluster, r.school_head, r.admin_officer_ii ?? '',
     r.total_employees, r.teaching_personnel, r.non_teaching_personnel,
     r.active_payroll_employees, r.status,
   ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
@@ -95,8 +95,62 @@ function exportCsv(rows: SchoolWithStats[], filename: string) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Merge back schools that have no division yet.
+ *
+ * The Organization lists are read through `query_schools_with_stats`, which
+ * filters `division_id` by the active org scope. A school saved without a
+ * division_id therefore exists in the database but is invisible from ANY
+ * scoped view — the classic "I added it but it never shows up" report.
+ * The rest of the app already treats rows without a division as shared
+ * (see `matchesScopeOrGlobal`), so unscoped schools are always merged in and
+ * flagged, and can then be assigned in Regions & Divisions.
+ */
+async function mergeUnscopedSchools(rows: SchoolWithStats[], types: SchoolType[]): Promise<SchoolWithStats[]> {
+  let unscoped: SchoolWithStats[] = [];
+  try {
+    unscoped = await fetchAll<SchoolWithStats>('schools', "division_id = ''", 'school_name');
+  } catch { return rows; }
+  const known = new Set(rows.map((s) => s.id));
+  let extra = unscoped.filter((s) => !known.has(s.id));
+  if (types.length > 0) extra = extra.filter((s) => types.includes(s.school_type as SchoolType));
+  if (extra.length === 0) return rows;
+  // Employee counts are keyed by STACODE (= school_code). The stats RPC does the
+  // same GROUP BY server-side, so mirror it for the merged rows.
+  const codes = [...new Set(extra
+    .flatMap((s) => [s.school_code, s.stacode])
+    .map((c) => String(c ?? '').trim())
+    .filter(Boolean))];
+  const counts = new Map<string, number>();
+  try {
+    const emps = codes.length > 0
+      ? await chunkedIn<{ stacode: string }>('stacode', codes, (chunk) =>
+          supabase.from('employees').select('stacode').in('stacode', chunk))
+      : [];
+    for (const e of emps) {
+      const k = String(e.stacode ?? '').trim();
+      if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+  } catch { /* counts are best-effort */ }
+  return [
+    ...rows,
+    ...extra.map((s) => {
+      const total = counts.get(String(s.school_code ?? '').trim()) ?? counts.get(String(s.stacode ?? '').trim()) ?? 0;
+      return {
+        ...s,
+        total_employees: total,
+        teaching_personnel: 0,
+        non_teaching_personnel: total,
+        active_payroll_employees: 0,
+        unscoped: true,
+      };
+    }),
+  ];
+}
+
 interface SchoolManagementProps {
-  schoolType: SchoolType;
+  schoolType?: SchoolType;
+  schoolTypes?: SchoolType[];
   title: string;
   description: string;
   headerIcon: typeof SchoolIcon;
@@ -105,11 +159,13 @@ interface SchoolManagementProps {
 
 export default function SchoolManagement({
   schoolType,
+  schoolTypes,
   title,
   description,
   headerIcon: HeaderIcon,
   kpiExtraActivePayroll = false,
 }: SchoolManagementProps) {
+  const effectiveTypes = useMemo(() => schoolTypes ?? (schoolType ? [schoolType] : []), [schoolTypes, schoolType]);
   const [schools, setSchools] = useState<SchoolWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -120,7 +176,7 @@ export default function SchoolManagement({
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<SchoolWithStats | null>(null);
-  const [form, setForm] = useState<SchoolForm>(emptyForm(schoolType));
+  const [form, setForm] = useState<SchoolForm>(emptyForm(effectiveTypes[0] ?? 'Elementary'));
   const [saving, setSaving] = useState(false);
   const [drawerSchool, setDrawerSchool] = useState<SchoolWithStats | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -129,28 +185,35 @@ export default function SchoolManagement({
 
   const { profile } = useAuth();
   const canImport = canImportDbf(profile?.role ?? 'read_only');
-  const { scopedDivisionIds, scopedCodes } = useOrg();
+  const { scopedDivisionIds, scopedCodes, selectedDivision, selectedRegion } = useOrg();
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
+    // When multiple school types are requested, pass null to the RPC and
+    // filter client-side; for a single type the RPC can do it server-side.
+    const rpcType = effectiveTypes.length === 1 ? effectiveTypes[0] : null;
     const { data, error: rpcError } = await supabase.rpc('query_schools_with_stats', {
-      p_school_type: schoolType,
+      p_school_type: rpcType,
       p_division_ids: scopedDivisionIds,
       p_regcode: scopedCodes && scopedCodes.length > 0 ? scopedCodes[0].regcode : null,
       p_divcodes: scopedCodes && scopedCodes.length > 0 ? [...new Set(scopedCodes.map((c) => c.divcode))] : null,
     });
     if (!rpcError && data) {
-      setSchools((data as SchoolWithStats[]) ?? []);
+      let rows = (data as SchoolWithStats[]) ?? [];
+      if (effectiveTypes.length > 1) rows = rows.filter((s) => effectiveTypes.includes(s.school_type as SchoolType));
+      // The RPC is division-scoped, so schools saved without a division_id would
+      // never show up here — merge them back in (flagged as "No division").
+      rows = await mergeUnscopedSchools(rows, effectiveTypes);
+      setSchools(rows);
     } else {
       // Fallback: read directly from the schools collection when the RPC is unavailable
-      const filter = ['1=1'];
-      if (schoolType) filter.push(`school_type = '${schoolType}'`);
       const rows = await fetchAll<SchoolWithStats>(() =>
         supabase.from('schools').select('*'),
       );
-      let filtered = rows;
-      if (schoolType) filtered = filtered.filter((s) => s.school_type === schoolType);
+      const filtered = effectiveTypes.length > 0
+        ? rows.filter((s) => effectiveTypes.includes(s.school_type as SchoolType))
+        : rows;
       setSchools(filtered.map((s) => ({
         ...s,
         total_employees: 0,
@@ -160,7 +223,7 @@ export default function SchoolManagement({
       })));
     }
     setLoading(false);
-  }, [schoolType, scopedDivisionIds, scopedCodes]);
+  }, [effectiveTypes, scopedDivisionIds, scopedCodes]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -216,7 +279,7 @@ export default function SchoolManagement({
 
   function openAdd() {
     setEditing(null);
-    setForm(emptyForm(schoolType));
+    setForm(emptyForm(effectiveTypes[0] ?? 'Elementary'));
     setShowModal(true);
   }
   function openEdit(s: SchoolWithStats) {
@@ -228,6 +291,7 @@ export default function SchoolManagement({
       cluster: s.cluster,
       address: s.address,
       school_head: s.school_head,
+      admin_officer_ii: s.admin_officer_ii ?? '',
       contact_number: s.contact_number,
       email: s.email,
       status: s.status,
@@ -242,7 +306,28 @@ export default function SchoolManagement({
     }
     setSaving(true);
     setError('');
-    const payload = { ...form, school_code: form.school_code.trim(), school_name: form.school_name.trim() };
+    // Stamp the school into the uploader's division (carrying its region) and
+    // give it a STACODE. The Organization lists come from a DIVISION-scoped RPC
+    // and payroll/PAL match employees by STACODE, so a school saved without
+    // either exists in the database yet never appears in the UI.
+    const division_id = selectedDivision?.id ?? scopedDivisionIds?.[0] ?? editing?.division_id ?? '';
+    const region_id = selectedRegion?.id ?? selectedDivision?.region_id ?? editing?.region_id ?? '';
+    const activeScope = scopedCodes?.length === 1
+      ? scopedCodes[0]
+      : selectedDivision?.division_code && selectedRegion?.region_code
+        ? { regcode: selectedRegion.region_code, divcode: selectedDivision.division_code }
+        : null;
+    const payload = {
+      ...form,
+      school_code: form.school_code.trim(),
+      school_name: form.school_name.trim(),
+      stacode: editing?.stacode || form.school_code.trim(),
+      ...(division_id ? { division_id } : {}),
+      ...(region_id ? { region_id } : {}),
+      // A school added while one division is selected belongs to that same
+      // REGCODE/DIVCODE scope, which keeps it visible to all code-scoped views.
+      ...(activeScope ? { regcode: activeScope.regcode, divcode: activeScope.divcode } : {}),
+    };
     if (editing) {
       const { error: e } = await supabase.from('schools').update(payload).eq('id', editing.id);
       if (e) { setError(e.message); setSaving(false); return; }
@@ -347,6 +432,7 @@ export default function SchoolManagement({
                 <Th label="Name" sortKey="school_name" current={sortKey} dir={sortDir} onSort={toggleSort} />
                 <Th label="Cluster" sortKey="cluster" current={sortKey} dir={sortDir} onSort={toggleSort} />
                 <Th label="School Head" />
+                <Th label="Administrative Officer II" />
                 <Th label="Employees" sortKey="total_employees" current={sortKey} dir={sortDir} onSort={toggleSort} center />
                 <Th label="Teaching" sortKey="teaching_personnel" current={sortKey} dir={sortDir} onSort={toggleSort} center />
                 <Th label="Non-Teach" sortKey="non_teaching_personnel" current={sortKey} dir={sortDir} onSort={toggleSort} center />
@@ -356,14 +442,14 @@ export default function SchoolManagement({
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">
+                <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">
                   <div className="inline-flex items-center gap-2">
                     <LoadingIndicator size={40} />
                     Loading...
                   </div>
                 </td></tr>
               ) : pageRows.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">
+                <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">
                   No {schoolType === 'Implementing Unit' ? 'units' : 'schools'} found.
                 </td></tr>
               ) : pageRows.map(s => (
@@ -373,9 +459,20 @@ export default function SchoolManagement({
                   className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer transition-colors"
                 >
                   <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700 dark:text-slate-300">{s.school_code}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-100">{s.school_name}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-100">
+                    {s.school_name}
+                    {s.unscoped && (
+                      <span
+                        title="Not assigned to a division yet — assign it in Regions & Divisions so it appears in division-scoped views."
+                        className="ml-2 align-middle inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                      >
+                        <AlertCircle className="w-3 h-3" /> No division
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.cluster || '—'}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.school_head || '—'}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{s.admin_officer_ii || '—'}</td>
                   <td className="px-4 py-3 text-center font-semibold text-slate-700 dark:text-slate-300 tabular">{s.total_employees}</td>
                   <td className="px-4 py-3 text-center text-emerald-700 dark:text-emerald-400 tabular">{s.teaching_personnel}</td>
                   <td className="px-4 py-3 text-center text-amber-700 dark:text-amber-400 tabular">{s.non_teaching_personnel}</td>
@@ -444,6 +541,9 @@ export default function SchoolManagement({
                   <input type="text" value={form.contact_number} onChange={e => setForm({ ...form, contact_number: e.target.value })} className={inputCls} placeholder="09xx-xxx-xxxx" />
                 </FormField>
               </div>
+              <FormField label="Administrative Officer II">
+                <input type="text" value={form.admin_officer_ii} onChange={e => setForm({ ...form, admin_officer_ii: e.target.value })} className={inputCls} placeholder="Administrative Officer II name" />
+              </FormField>
               <div className="grid grid-cols-2 gap-4">
                 <FormField label="Email">
                   <input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className={inputCls} placeholder="school@deped.ph" />
@@ -479,7 +579,7 @@ export default function SchoolManagement({
       <SchoolImportModal
         open={showImport}
         onClose={() => setShowImport(false)}
-        schoolType={schoolType}
+        schoolType={effectiveTypes[0] ?? 'Elementary'}
         onImported={load}
       />
     </div>
@@ -607,6 +707,7 @@ function SchoolDrawer({ school, onClose }: { school: SchoolWithStats; onClose: (
               <InfoRow icon={MapPin} label="Cluster" value={school.cluster || '—'} />
               <InfoRow icon={Building2} label="Address" value={school.address || '—'} />
               <InfoRow icon={Users} label="School Head" value={school.school_head || '—'} />
+              <InfoRow icon={UserCog} label="Administrative Officer II" value={school.admin_officer_ii || '—'} />
               <InfoRow icon={Phone} label="Contact" value={school.contact_number || '—'} />
               <InfoRow icon={Mail} label="Email" value={school.email || '—'} />
             </div>

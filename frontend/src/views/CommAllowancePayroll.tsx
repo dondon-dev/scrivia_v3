@@ -19,7 +19,7 @@ import {
   caCapability, caAllowedNext, num, money, computeCaTotals,
   detailsToPrintRows, buildCaPrintPages, parseCaDetailCsv, caErrMsg, caIsMissingTable,
   caUpsertEmployees,
-  exportCaPayrollExcel, exportCaPayrollPdf, exportCaPayrollCsv,
+  exportCaPayrollExcel, exportCaPayrollExcelByStacode, exportCaPayrollCsv,
   caIsEditable, caMiddleInitial,
 } from '@/lib/commAllowance';
 import {
@@ -311,6 +311,12 @@ export default function CommAllowancePayroll({ profile, payrollId, onBack }: Pro
     try { await exportCaPayrollExcel(header, details, empMap); } catch (err) { setError(caErrMsg(err)); }
   };
 
+  const exportPdf = async () => {
+    if (!header) return;
+    setError(null);
+    try { await exportCaPayrollExcelByStacode(header, details, empMap, positionMap); } catch (err) { setError(caErrMsg(err)); }
+  };
+
   if (loading && !header) {
     return (
       <div className="py-24 text-center text-slate-400 flex flex-col items-center gap-2">
@@ -362,7 +368,7 @@ export default function CommAllowancePayroll({ profile, payrollId, onBack }: Pro
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setShowPrint(true)} className="btn-primary"><Printer className="w-4 h-4" /> Print</button>
           <button onClick={() => void exportExcel()} className="btn-secondary"><FileSpreadsheet className="w-4 h-4" /> Excel</button>
-          <button onClick={() => exportCaPayrollPdf(header, details, empMap, positionMap)} className="btn-secondary"><FileText className="w-4 h-4" /> PDF</button>
+          <button onClick={() => void exportPdf()} className="btn-secondary" title="Export Excel workbook — one worksheet per STACODE/school"><FileText className="w-4 h-4" /> PDF</button>
           <button onClick={() => exportCaPayrollCsv(header, details, empMap, positionMap)} className="btn-secondary"><Download className="w-4 h-4" /> CSV</button>
           <button onClick={() => setShowSigs(true)} className="btn-secondary"><Settings2 className="w-4 h-4" /> Signatories</button>
         </div>

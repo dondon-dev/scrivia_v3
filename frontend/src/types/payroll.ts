@@ -25,6 +25,10 @@ export interface Employee {
   regcode: string;
   divcode: string;
   stacode: string;
+  /** School (school_code) an SHS employee reports to for special/other
+   *  payrolls (Comm Allowance, etc.). The regular payroll keeps the
+   *  STACODE station (700/701). Set via Organization → Senior High Schools. */
+  assigned_school_code?: string | null;
   empno: string;
   account: string;
   empname: string;

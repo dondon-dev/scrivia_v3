@@ -1,7 +1,7 @@
 import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { decodeDbf, type DbfRecord } from '@/lib/dbf';
 import { classifyByStacode } from '@/lib/stacodeClassify';
-import { inCategory, type PayrollCategory } from '@/lib/categories';
+import { inCategory, categoryOfStacode, type PayrollCategory } from '@/lib/categories';
 import type { PayrollGroup } from '@/types/payroll';
 
 export interface SyncResult {
@@ -98,8 +98,8 @@ function divisionKeys(regcode: string, divcode: string): string[] {
 interface DivisionDirectory {
   /** "regcode|divcode" (exact + normalized variants) → division id (uuid). */
   byCodes: Map<string, string>;
-  /** division id (uuid) → canonical (regcode, divcode) from the directory. */
-  byId: Map<string, { regcode: string; divcode: string }>;
+  /** division id (uuid) → canonical (regcode, divcode) + owning region from the directory. */
+  byId: Map<string, { regcode: string; divcode: string; region_id: string | null }>;
 }
 
 /**
@@ -110,7 +110,7 @@ interface DivisionDirectory {
  */
 export async function loadDivisionDirectory(): Promise<DivisionDirectory> {
   const byCodes = new Map<string, string>();
-  const byId = new Map<string, { regcode: string; divcode: string }>();
+  const byId = new Map<string, { regcode: string; divcode: string; region_id: string | null }>();
   // Query divisions and regions separately — PocketBase doesn't support
   // Supabase's expand/join syntax (e.g. 'regions(region_code)').
   const divisions = await fetchAll(() =>
@@ -129,7 +129,7 @@ export async function loadDivisionDirectory(): Promise<DivisionDirectory> {
     for (const key of divisionKeys(regionCode, d.division_code)) {
       byCodes.set(key, d.id);
     }
-    byId.set(d.id, { regcode: regionCode, divcode: d.division_code });
+    byId.set(d.id, { regcode: regionCode, divcode: d.division_code, region_id: d.region_id ?? null });
   });
   return { byCodes, byId };
 }
@@ -464,9 +464,16 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
 
   const existingEmps = await fetchAll(() => supabase.from('employees').select('id,empno,employee_number,stacode'));
   const empByNumber = new Map<string, string>();
+  // employee id → the payroll category its own STACODE belongs to. Used to keep
+  // an Elementary DEDFILE import from writing deductions for High School
+  // employees (and vice versa). Employees with a blank/unclassifiable STACODE
+  // are left unclassified and still imported, so a file without station codes
+  // is never silently wiped.
+  const empCategoryById = new Map<string, PayrollCategory | null>();
   (existingEmps as { id: string; empno: string | null; employee_number: string | null; stacode: string | null }[]).forEach((e) => {
     if (e.empno) empByNumber.set(e.empno.trim(), e.id);
     if (e.employee_number) empByNumber.set(e.employee_number.trim(), e.id);
+    empCategoryById.set(e.id, categoryOfStacode(e.stacode));
   });
 
   // DEDFILE is a per-employee masterfile: process every record, regardless of
@@ -568,6 +575,13 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
     if (!empno || !dedcode) { skipped++; continue; }
     const empId = empByNumber.get(empno);
     if (!empId) { skipped++; continue; }
+    // Separate the Elementary and High School saves: skip a record whose
+    // employee is explicitly classified in the OTHER category's STACODE range.
+    // Unclassified employees (blank/non-numeric STACODE) still pass through.
+    if (category) {
+      const empCat = empCategoryById.get(empId);
+      if (empCat && empCat !== category) { skipped++; continue; }
+    }
     const dedamt = parseFloat(r['dedamt'] ?? '0') || 0;
     if (dedamt < 0) { skipped++; continue; }
     const info = codeInfo.get(dedcode);

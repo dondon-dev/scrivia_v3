@@ -66,3 +66,19 @@ litestream.yml
 # Dependencies and build output
 node_modules/
 dist/
+
+# Local diagnostic scratch: one-off probes/debug scripts run against a local
+# PocketBase. They are not app code and must not carry credentials into the repo.
+__pycache__/
+/_*.py
+/_*.txt
+/check_*.py
+/probe_*.py
+/test_*.py
+/test_*.cjs
+/fix_*.py
+/inspect_*.py
+/find_server.py
+/revert_rules.py
+/tmp_add_fields.py
+/pbhelp.txt

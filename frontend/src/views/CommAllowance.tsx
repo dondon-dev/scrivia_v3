@@ -20,7 +20,9 @@ import {
   caCapability, caAllowedNext, nextCaPayrollNo, num, parseCaEmployeeCsv, money,
   caMiddleInitial, caNormalizeStatus, parseEmpFullName, buildCaSyncPlan, caErrMsg, caIsMissingTable,
   caDedupeByAccount, caStacodeFromSchoolName, caUpsertEmployees, caMissingOptionalColumn,
+  caDisplayGroup, caPositionRank, caMasterfileStacodeNum,
   exportCaSyncReportCsv, exportCaSyncReportExcel,
+  exportCaMasterfileExcelBySchool,
   CA_BREAKDOWN_CATEGORIES, CA_BREAKDOWN_DEFS,
   type CaSyncPlan,
 } from '@/lib/commAllowance';
@@ -80,13 +82,14 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
   const { lookup: lookupPosition, positions: positionList } = usePositions();
 
   // Position codes stored on source records are resolved to the official
-  // Position Title from Position Management (position_management).
-  const positionTitle = (code: string): string => {
+  // Position Title from Position Management (position_management). Memoized so
+  // the masterfile sort can depend on it without rebuilding every render.
+  const positionTitle = useCallback((code: string): string => {
     const c = String(code ?? '').trim();
     if (!c) return '';
     const p = lookupPosition(c);
     return p ? (p.position_title || p.position_name || c) : c;
-  };
+  }, [lookupPosition]);
 
   const [tab, setTab] = useState<'overview' | 'employees' | 'activity'>('overview');
   const [headers, setHeaders] = useState<CaPayrollHeader[]>([]);
@@ -105,6 +108,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
 
   // Employees tab
   const [empSearch, setEmpSearch] = useState('');
+  const [empSchoolFilter, setEmpSchoolFilter] = useState('all');
   const [empModal, setEmpModal] = useState<null | { id?: string }>(null);
   const [empForm, setEmpForm] = useState<CaEmployee>(emptyEmp());
   // Organization directory (Elementary / High Schools / Implementing Units) —
@@ -122,7 +126,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
     try {
       const [h, e] = await Promise.all([
         fetchAll(() => supabase.from('ca_payroll_headers').select('*').order('created_date', { ascending: false })),
-        fetchAll(() => supabase.from('ca_employees').select('*').order('last_name', { ascending: true })),
+        fetchAll(() => supabase.from('ca_employees').select('*').order('stacode', { ascending: true }).order('last_name', { ascending: true })),
       ]);
       setHeaders(h as CaPayrollHeader[]);
       setEmployees(e as CaEmployee[]);
@@ -174,11 +178,15 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
   }, [headers, employees]);
 
   // ── Payroll breakdown ──────────────────────────────────────────────────────
+  // Grouped by the STACODE-derived group (caDisplayGroup) so a 095 record is
+  // always counted under Division Office, not Elementary/Secondary — regardless
+  // of the category stamped by an older sync.
   const breakdown = useMemo(() => {
     const b: Record<string, number> = {};
     for (const e of employees) {
       if (e.status !== 'Active') continue;
-      b[e.category] = (b[e.category] ?? 0) + 1;
+      const g = caDisplayGroup(e);
+      b[g] = (b[g] ?? 0) + 1;
     }
     return b;
   }, [employees]);
@@ -187,9 +195,9 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
   // school name under each group (from the CA masterfile) and live employee counts.
   const schoolGroups = useMemo(() => {
     const active = employees.filter((e) => e.status === 'Active');
-    const groups: { category: string; schools: { name: string; count: number }[]; total: number }[] = [];
+    const groups: { category: string; source: string; schools: { name: string; count: number }[]; total: number }[] = [];
     for (const def of CA_BREAKDOWN_DEFS) {
-      const cat = active.filter((e) => e.category === def.category);
+      const cat = active.filter((e) => caDisplayGroup(e) === def.category);
       if (cat.length === 0) continue;
       const bySchool = new Map<string, number>();
       for (const e of cat) {
@@ -198,6 +206,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
       }
       groups.push({
         category: def.category,
+        source: def.source,
         schools: [...bySchool.entries()]
           .map(([name, count]) => ({ name, count }))
           .sort((a, b) => a.name.localeCompare(b.name)),
@@ -212,7 +221,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
     const s = createForm.schoolSelection;
     const active = employees.filter((e) => e.status === 'Active');
     if (s === 'all') return active.length;
-    if (s.startsWith('group:')) return active.filter((e) => e.category === s.slice('group:'.length)).length;
+    if (s.startsWith('group:')) return active.filter((e) => caDisplayGroup(e) === s.slice('group:'.length)).length;
     if (s.startsWith('school:')) return active.filter((e) => e.school_name === s.slice('school:'.length)).length;
     return 0;
   }, [employees, createForm.schoolSelection]);
@@ -270,7 +279,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
         source = employees.filter((e) => e.status === 'Active');
       } else if (sel.startsWith('group:')) {
         headerSchool = sel.slice('group:'.length);
-        source = employees.filter((e) => e.status === 'Active' && e.category === headerSchool);
+        source = employees.filter((e) => e.status === 'Active' && caDisplayGroup(e) === headerSchool);
       } else if (sel.startsWith('school:')) {
         headerSchool = sel.slice('school:'.length);
         source = employees.filter((e) => e.status === 'Active' && e.school_name === headerSchool);
@@ -334,13 +343,40 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
   };
 
   // ── Employees tab ──────────────────────────────────────────────────────────
+  // Every school present in the masterfile (with its employee count) so the
+  // list can be narrowed to a single school.
+  const empSchoolOptions = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const e of employees) {
+      const s = (e.school_name ?? '').trim();
+      map.set(s, (map.get(s) ?? 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [employees]);
+
   const empFiltered = useMemo(() => {
     const q = empSearch.trim().toLowerCase();
-    if (!q) return employees;
-    return employees.filter((e) => [e.account_no, e.last_name, e.first_name, e.position_title, e.school_name, e.stacode, e.category]
-      .some((v) => (v ?? '').toLowerCase().includes(q)));
-  }, [employees, empSearch]);
-  const empPagination = usePagination(empFiltered, 12, empSearch);
+    const school = empSchoolFilter;
+    return employees
+      .filter((e) => {
+        if (school !== 'all' && (e.school_name ?? '').trim() !== school) return false;
+        if (!q) return true;
+        return [e.account_no, e.last_name, e.first_name, e.position_title, e.school_name, e.stacode, e.category]
+          .some((v) => (v ?? '').toLowerCase().includes(q));
+      })
+      // Per-school/STACODE order — School Principals first, then Head Teachers,
+      // then everyone else (name order within each rank).
+      .sort((a, b) => {
+        const ka = caMasterfileStacodeNum(a.stacode) ?? 9999;
+        const kb = caMasterfileStacodeNum(b.stacode) ?? 9999;
+        if (ka !== kb) return ka - kb;
+        const ra = caPositionRank(positionTitle(a.position_title));
+        const rb = caPositionRank(positionTitle(b.position_title));
+        if (ra !== rb) return ra - rb;
+        return `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`);
+      });
+  }, [employees, empSearch, empSchoolFilter, positionTitle]);
+  const empPagination = usePagination(empFiltered, 12, `${empSearch}|${empSchoolFilter}`);
 
   const openEmpModal = (emp?: CaEmployee) => {
     // Position is stored as its Position Management TITLE (codes are resolved
@@ -407,6 +443,15 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
     const { error: err } = await supabase.from('ca_employees').update({ status: next, updated_at: new Date().toISOString() }).eq('id', e.id);
     if (err) { setError(err.message); return; }
     await logAudit(next === 'Active' ? 'ca_employee_activate' : 'ca_employee_deactivate', CA_RECORD_TYPE_EMPLOYEE, e.id, { account_no: e.account_no });
+    await load();
+  };
+
+  const deleteEmp = async (e: CaEmployee) => {
+    const name = `${e.first_name ?? ''} ${e.last_name ?? ''}`.trim() || e.account_no;
+    if (!window.confirm(`Delete ${name} from the CA masterfile? This permanently removes the employee record.`)) return;
+    const { error } = await supabase.from('ca_employees').delete().eq('id', e.id);
+    if (error) { setError(error.message); return; }
+    await logAudit('ca_employee_delete', CA_RECORD_TYPE_EMPLOYEE, e.id, { account_no: e.account_no });
     await load();
   };
 
@@ -485,7 +530,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
     try {
       const plan = await buildCaSyncPlan(caScopeRef.current);
       if (plan.rows.length === 0) {
-        setNotice('Nothing to sync — no Employee Records or Non-Plantilla Items could be mapped.');
+        setNotice('Nothing to sync — no Employee Records, Non-Plantilla Items, approved Employee Movement (Detailed) requests or Newly Hired Employees could be mapped.');
         return;
       }
       await applySyncPlan(plan);
@@ -613,23 +658,33 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
               <h2 className="section-heading">CA Employee Masterfile</h2>
               <p className="text-xs text-slate-500 mt-0.5">{employees.filter((e) => e.status === 'Active').length} active · {employees.length} total</p>
             </div>
-            {cap.canManageEmployees && (
-              <div className="flex flex-wrap items-center gap-2">
-                <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
-                  onChange={(ev) => { const f = ev.target.files?.[0]; if (f) void handleEmpFile(f); }} />
-                <button onClick={() => fileRef.current?.click()} disabled={importing} className="btn-secondary">
-                  <Upload className="w-4 h-4" /> {importing ? 'Importing…' : 'Import CSV'}
-                </button>
-                <button onClick={downloadEmpTemplate} className="btn-secondary"><Download className="w-4 h-4" /> Template</button>
-                <button onClick={() => void previewSync()} disabled={previewing || pulling} className="btn-secondary" title="Dry-run: preview what the sync will change before applying">
-                  <Eye className="w-4 h-4" /> {previewing ? 'Analyzing…' : 'Preview Sync'}
-                </button>
-                <button onClick={() => void runSync()} disabled={pulling || previewing} className="btn-secondary" title="Sync employees from Employee Records (classified by STACODE) and Non-Plantilla Items">
-                  {pulling ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />} {pulling ? 'Syncing…' : 'Auto Employee Sync'}
-                </button>
-                <button onClick={() => openEmpModal()} className="btn-primary"><Plus className="w-4 h-4" /> Add Employee</button>
-              </div>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => void exportCaMasterfileExcelBySchool(employees, { resolvePosition: positionTitle })}
+                disabled={employees.length === 0}
+                className="btn-secondary"
+                title="Download Excel workbooks per school — Elementary (STACODE 001–094), Division Office (095), High School (500–701)"
+              >
+                <FileSpreadsheet className="w-4 h-4" /> Export Excel
+              </button>
+              {cap.canManageEmployees && (
+                <>
+                  <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
+                    onChange={(ev) => { const f = ev.target.files?.[0]; if (f) void handleEmpFile(f); }} />
+                  <button onClick={() => fileRef.current?.click()} disabled={importing} className="btn-secondary">
+                    <Upload className="w-4 h-4" /> {importing ? 'Importing…' : 'Import CSV'}
+                  </button>
+                  <button onClick={downloadEmpTemplate} className="btn-secondary"><Download className="w-4 h-4" /> Template</button>
+                  <button onClick={() => void previewSync()} disabled={previewing || pulling} className="btn-secondary" title="Dry-run: preview what the sync will change before applying">
+                    <Eye className="w-4 h-4" /> {previewing ? 'Analyzing…' : 'Preview Sync'}
+                  </button>
+                  <button onClick={() => void runSync()} disabled={pulling || previewing} className="btn-secondary" title="Sync employees from Employee Records (classified by STACODE), Non-Plantilla Items, approved Employee Movement (Detailed) requests and approved Newly Hired Employees">
+                    {pulling ? <LoadingIndicator size={40} /> : <RefreshCw className="w-4 h-4" />} {pulling ? 'Syncing…' : 'Auto Employee Sync'}
+                  </button>
+                  <button onClick={() => openEmpModal()} className="btn-primary"><Plus className="w-4 h-4" /> Add Employee</button>
+                </>
+              )}
+            </div>
           </div>
           <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1.5 font-semibold text-slate-500 dark:text-slate-400"><Building2 className="w-3.5 h-3.5 text-deped-600" /> Payroll Breakdown</span>
@@ -642,11 +697,33 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium badge bg-slate-100 text-slate-500 border-slate-200">Unclassified · {breakdown['']}</span>
             )}
           </div>
-          <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800">
-            <div className="relative max-w-sm">
+          <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[220px] max-w-sm">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={empSearch} onChange={(e) => setEmpSearch(e.target.value)} placeholder="Search account no, name, position, school, category…" className="input-base pl-9" />
             </div>
+            <div className="relative">
+              <Building2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <select
+                value={empSchoolFilter}
+                onChange={(e) => setEmpSchoolFilter(e.target.value)}
+                className="input-base pl-9 pr-8 max-w-xs"
+                title="Filter by school"
+              >
+                <option value="all">All schools ({employees.length})</option>
+                {empSchoolOptions.map(([name, count]) => (
+                  <option key={name || '(none)'} value={name}>{name || '(No school)'} ({count})</option>
+                ))}
+              </select>
+            </div>
+            {empSchoolFilter !== 'all' && (
+              <button
+                onClick={() => setEmpSchoolFilter('all')}
+                className="text-xs font-medium text-slate-500 hover:text-deped-700 dark:hover:text-deped-300"
+              >
+                Clear filter
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -673,7 +750,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                     <td className="px-4 py-2.5 text-slate-600">{e.position_title ? positionTitle(e.position_title) : <span className="text-slate-300">—</span>}</td>
                     <td className="px-4 py-2.5 text-slate-600">{e.school_name}</td>
                     <td className="px-4 py-2.5">
-                      {e.category ? <span className={`badge ${catTone(e.category)}`}>{e.category}</span> : <span className="text-slate-300">—</span>}
+                      {(() => { const g = caDisplayGroup(e); return g ? <span className={`badge ${catTone(g)}`}>{g}</span> : <span className="text-slate-300">—</span>; })()}
                     </td>
                     <td className="px-4 py-2.5">
                       <span className={`badge ${e.status === 'Active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>{e.status}</span>
@@ -683,6 +760,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                         <div className="flex items-center justify-end gap-1">
                           <button onClick={() => openEmpModal(e)} title="Edit" className="p-1.5 rounded-lg text-slate-400 hover:text-deped-700 hover:bg-deped-50 transition-colors"><Pencil className="w-4 h-4" /></button>
                           <button onClick={() => void toggleEmpStatus(e)} title={e.status === 'Active' ? 'Deactivate' : 'Activate'} className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"><BadgeCheck className="w-4 h-4" /></button>
+                          <button onClick={() => void deleteEmp(e)} title="Delete" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"><Trash2 className="w-4 h-4" /></button>
                         </div>
                       </td>
                     )}
@@ -762,7 +840,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                   >
                     <option value="all">All Active Employees ({selCount})</option>
                     {schoolGroups.map((g) => (
-                      <optgroup key={g.category} label={`${g.category} (${g.total})`}>
+                      <optgroup key={g.category} label={`${g.category} · ${g.source} (${g.total})`}>
                         <option value={`group:${g.category}`}>— All {g.category} ({g.total}) —</option>
                         {g.schools.map((s) => (
                           <option key={`${g.category}|${s.name}`} value={`school:${s.name}`}>
@@ -989,7 +1067,7 @@ export default function CommAllowance({ profile }: { profile: UserProfile | null
                   <option value="">— Unclassified —</option>
                   {CA_BREAKDOWN_CATEGORIES.map((c) => (
                     <option key={c} value={c}>
-                      {c === 'Elementary' ? 'Elementary (STACODE 001–499)' : c === 'Secondary' ? 'Secondary (STACODE 500–701)' : c}
+                      {c === 'Elementary' ? 'Elementary (STACODE 001–094)' : c === 'Secondary' ? 'Secondary (STACODE 508–701)' : c === 'Division Office' ? 'Division Office (STACODE 095)' : c}
                     </option>
                   ))}
                 </select>

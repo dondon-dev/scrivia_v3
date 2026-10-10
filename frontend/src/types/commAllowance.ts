@@ -43,9 +43,9 @@ export interface CaEmployee {
   middle_initial: string;
   position_title: string;
   school_name: string;
-  /** School STACODE — used to derive the category: 001–499 → Elementary, 500–701 → Secondary. */
+  /** School STACODE — used to derive the category: 001–094 → Elementary, 095 → Division Office, 508–701 → Secondary. */
   stacode: string;
-  /** Payroll breakdown: Elementary (STACODE 001–499) · Secondary (STACODE 500–701) · Non-Plantilla. */
+  /** Payroll breakdown: Elementary (STACODE 001–094) · Division Office (095) · Secondary (STACODE 508–701) · Non-Plantilla. */
   category: string;
   status: 'Active' | 'Inactive' | string;
   created_at: string;
