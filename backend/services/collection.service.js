@@ -27,30 +27,18 @@ const RESERVED_KEYS = new Set([
  * Tables keyed by `employees.id`.
  *
  * SQLite foreign keys are deliberately OFF here (PocketBase enforced integrity
- * in application code) and the tables declare no FKs either, so deleting an
- * employee left every row pointing at it behind — the screens then rendered
- * those rows as "Unknown" with a blank REG/DIV/EMPNO. Deleting an employee now
- * removes these rows in the same transaction, which also covers the paths that
- * clear the master file (`employees` deleted by stacode) or use delete-all.
+ * in application code) and the tables declare no FKs either, so these rows are
+ * keyed by hand rather than by the database.
+ *
+ * Used ONLY by the explicit super-admin `maintenance/purge-orphans` repair
+ * endpoint. Employee deletes deliberately do NOT cascade into these tables: a
+ * MASTFILE restore clears just the category's `employees` rows (see
+ * `clearTableDataForCategory` in frontend/src/lib/syncEngine.ts) and expects
+ * the DEDFILE / PAYROLLS restores to clear their own tables, so cascading here
+ * would destroy deduction and payroll history that a master-file re-import
+ * never intended to touch.
  */
 const EMPLOYEE_DEPENDENTS = ['deductions', 'payroll_entries', 'payroll_deductions', 'undeducted_obligations'];
-
-/** Delete every dependent row referencing any of the given employee ids. */
-function deleteDependentRowsForEmployees(ids) {
-  const unique = [...new Set((ids || []).filter(Boolean))];
-  if (unique.length === 0) return;
-  for (const tableName of EMPLOYEE_DEPENDENTS) {
-    const table = getTable(tableName);
-    if (!table || !table.columns.has('employee_id')) continue;
-    for (let i = 0; i < unique.length; i += 500) {
-      const chunk = unique.slice(i, i + 500);
-      const placeholders = chunk.map(() => '?').join(', ');
-      db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent('employee_id')} IN (${placeholders})`).run(
-        ...chunk,
-      );
-    }
-  }
-}
 
 let bcrypt = null;
 function getBcrypt() {
@@ -289,12 +277,8 @@ function deleteById(tableName, id) {
   const table = getTable(tableName);
   if (!table) throw badRequest(`Unknown collection: ${tableName}`);
   const pk = table.pk || 'id';
-  const run = db.transaction(() => {
-    if (tableName === 'employees') deleteDependentRowsForEmployees([id]);
-    const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(pk)} = ?`).run(id);
-    return res.changes;
-  });
-  return run();
+  const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(pk)} = ?`).run(id);
+  return res.changes;
 }
 
 function deleteByFilter(tableName, filter) {
@@ -302,25 +286,16 @@ function deleteByFilter(tableName, filter) {
   if (!table) throw badRequest(`Unknown collection: ${tableName}`);
   const pk = table.pk || 'id';
   const { sql: whereSql, params } = compileFilter(tableName, filter);
-  const run = db.transaction(() => {
-    if (tableName === 'employees') {
-      const ids = db
-        .prepare(`SELECT ${quoteIdent(pk)} AS id FROM ${quoteIdent(tableName)} WHERE ${whereSql}`)
-        .all(...params)
-        .map((r) => r.id);
-      deleteDependentRowsForEmployees(ids);
-    }
-    const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${whereSql}`).run(...params);
-    return res.changes;
-  });
-  return run();
+  const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${whereSql}`).run(...params);
+  return res.changes;
 }
 
 /**
  * Repair pass: delete rows in the employee-keyed tables whose employee_id no
- * longer exists. This is the one-off cleanup for rows orphaned before the
- * cascade above existed (a master-file re-import replaced every employee id
- * while the forwarded rows kept the old ones). Returns per-table counts.
+ * longer exists. Explicit super-admin action only — never run automatically,
+ * because it removes every dependent row whose employee id is missing, which
+ * is destructive if the master file was re-imported with fresh ids. Returns
+ * per-table counts.
  */
 function purgeOrphanedEmployeeRows() {
   const deleted = {};
