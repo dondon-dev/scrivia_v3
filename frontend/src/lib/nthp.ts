@@ -154,6 +154,13 @@ export interface ProcessedDeduction {
   undeducted_amount: number;
   priority: number;
   is_mandatory: boolean;
+  /**
+   * The masterfile row this line was computed from. Carries the identity of the
+   * record — policy number, effectivity, terms — so a per-period deduction line
+   * can name the exact masterfile record instead of guessing by deduction code
+   * (an employee can hold several loans under one code).
+   */
+  source?: PayrollDeduction;
 }
 
 export interface NthpResult {
@@ -272,6 +279,7 @@ export function applyNthpCompliance(
         undeducted_amount: amount,
         priority: getEffectiveDeductionPriority(code?.agency ?? '', code?.type ?? '', d.dedcode, d.priority),
         is_mandatory: false,
+        source: d,
       });
       undeducted.push({
         deduction_code: d.dedcode,
@@ -320,6 +328,7 @@ export function applyNthpCompliance(
         undeducted_amount: 0,
         priority,
         is_mandatory: false,
+        source: d,
       };
       processed.push(rec);
       deductedLog.push(rec);
@@ -333,6 +342,7 @@ export function applyNthpCompliance(
         undeducted_amount: amount,
         priority,
         is_mandatory: false,
+        source: d,
       });
       undeducted.push({
         deduction_code: d.dedcode,

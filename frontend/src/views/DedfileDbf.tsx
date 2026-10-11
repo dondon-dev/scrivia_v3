@@ -133,14 +133,22 @@ interface ServerDedRow extends PayrollDeduction {
 
 function serverRowToDedfileRow(d: ServerDedRow, idx: number, pageOffset: number): DedfileRow {
   const now = new Date();
+  // Restored file values are shown verbatim (FoxPro COPY FILE semantics) —
+  // blanks included. YY anchors the group: its presence means the row came
+  // from a file. Rows without it (manual adds, legacy imports) keep the old
+  // clock-derived display.
+  const kept = d.yy ? {
+    P: d.p ?? '', YY: d.yy ?? '', MM: d.mm ?? '', DD: d.dd ?? '',
+    HR: d.hr ?? '', MIN: d.min ?? '', SEC: d.sec ?? '', ID: d.dbf_id ?? '',
+  } : null;
   return {
-    P: d.status === 'Active' ? 'A' : 'I',
-    YY: String(now.getFullYear()),
-    MM: pad2(now.getMonth() + 1),
-    DD: pad2(now.getDate()),
-    HR: pad2(now.getHours()),
-    MIN: pad2(now.getMinutes()),
-    SEC: String(pageOffset + idx + 1).padStart(8, '0'),
+    P: kept ? kept.P : (d.status === 'Active' ? 'A' : 'I'),
+    YY: kept ? kept.YY : String(now.getFullYear()),
+    MM: kept ? kept.MM : pad2(now.getMonth() + 1),
+    DD: kept ? kept.DD : pad2(now.getDate()),
+    HR: kept ? kept.HR : pad2(now.getHours()),
+    MIN: kept ? kept.MIN : pad2(now.getMinutes()),
+    SEC: kept ? kept.SEC : String(pageOffset + idx + 1).padStart(8, '0'),
     REGCODE: d.regcode ?? '',
     DIVCODE: d.divcode ?? '',
     STACODE: d.stacode ?? '',
@@ -177,7 +185,7 @@ function serverRowToDedfileRow(d: ServerDedRow, idx: number, pageOffset: number)
     BIRTHDATE: d.birthdate ?? null,
     GSIS_BPN: d.gsis_pn ?? '',
     QS: '',
-    ID: String(pageOffset + idx + 1).padStart(3, '0'),
+    ID: kept ? kept.ID : String(pageOffset + idx + 1).padStart(3, '0'),
     _dbId: d.id,
     _employeeId: d.employee_id,
     _dedType: d.type,
@@ -453,6 +461,14 @@ export default function DedfileDbf() {
             hire_date: e.hiredate ?? '',
             birthdate: e.birthdate ?? '',
             gsis_pn: e.gsis_pn || e.gsis_bpn || '',
+            p: r.p ?? '',
+            yy: r.yy ?? '',
+            mm: r.mm ?? '',
+            dd: r.dd ?? '',
+            hr: r.hr ?? '',
+            min: r.min ?? '',
+            sec: r.sec ?? '',
+            dbf_id: r.dbf_id ?? '',
             created_at: r.created_at ?? '',
             updated_at: r.updated_at ?? '',
             created_by: r.created_by ?? '',
@@ -991,11 +1007,12 @@ function UploadModal({ employees, onClose, onImported, logAudit }: UploadProps) 
   const empByNumber = useMemo(() => new Map(employees.map((e) => [e.empno || e.employee_number, e])), [employees]);
 
   const FIELDS_MAP: Record<string, string[]> = {
+    p: ['P'], yy: ['YY'], mm: ['MM'], dd: ['DD'], hr: ['HR'], min: ['MIN'], sec: ['SEC'],
     empno: ['EMPNO'], dedcode: ['DEDCODE'], dedid: ['DEDID'], policyno: ['POLICYNO'],
     effmm: ['EFFMM'], effyy: ['EFFYY'], termm: ['TERMM'], teryy: ['TERYY'],
     dedamt: ['DEDAMT'], principal: ['PRINCIPAL'], interest: ['INTEREST'],
     charges: ['CHARGES'], proceeds: ['PROCEEDS'], agency: ['AGENCY', 'AGENT'],
-    status: ['STATUS'], type: ['TYPE'],
+    status: ['STATUS'], type: ['TYPE'], dbf_id: ['ID'],
   };
 
   function normRow(rec: Record<string, string>): Record<string, string> {
@@ -1093,6 +1110,8 @@ function UploadModal({ employees, onClose, onImported, logAudit }: UploadProps) 
       const status = decodeStatus(r['status'] ?? '');
       rowMap.set(`${empno}|${dedcode}|${r['policyno'] ?? ''}|${status}`, {
         employee_id: emp.id, empno, dedcode, dedid: r['dedid'] ?? '', policyno: r['policyno'] ?? '',
+        p: r['p'] ?? '', yy: r['yy'] ?? '', mm: r['mm'] ?? '', dd: r['dd'] ?? '',
+        hr: r['hr'] ?? '', min: r['min'] ?? '', sec: r['sec'] ?? '', dbf_id: r['dbf_id'] ?? '',
         effmm: parseInt(r['effmm'] ?? '1') || 1, effyy: parseInt(r['effyy'] ?? '25') || 25,
         termm: r['termm'] ? parseInt(r['termm']) || null : null, teryy: r['teryy'] ? parseInt(r['teryy']) || null : null,
         dedamt, principal: parseFloat(r['principal'] ?? '0') || 0, interest: parseFloat(r['interest'] ?? '0') || 0,

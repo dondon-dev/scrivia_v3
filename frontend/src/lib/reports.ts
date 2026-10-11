@@ -139,14 +139,31 @@ export function generateDeductionDbf(
   employees: Employee[],
   deductionCode: string,
 ): Uint8Array {
+  // The dedrecs extract the legacy DEDEXT carried for a code — identity from the
+  // master file, then the DEDFILE record's policy number, effectivity, terms and
+  // loan balances. A Run Payroll line inherits those from the masterfile record
+  // it was computed from, so the export is complete whatever wrote the line.
   const fields: DbfField[] = [
     { name: 'EMPNO', type: 'C', length: 15, decimals: 0 },
     { name: 'LNAME', type: 'C', length: 25, decimals: 0 },
     { name: 'FNAME', type: 'C', length: 25, decimals: 0 },
+    { name: 'MI', type: 'C', length: 3, decimals: 0 },
+    { name: 'REGCODE', type: 'C', length: 3, decimals: 0 },
+    { name: 'DIVCODE', type: 'C', length: 3, decimals: 0 },
+    { name: 'STACODE', type: 'C', length: 3, decimals: 0 },
     { name: 'DEPT', type: 'C', length: 20, decimals: 0 },
     { name: 'DCODE', type: 'C', length: 10, decimals: 0 },
     { name: 'DNAME', type: 'C', length: 30, decimals: 0 },
+    { name: 'POLICYNO', type: 'C', length: 20, decimals: 0 },
+    { name: 'EFFYY', type: 'C', length: 4, decimals: 0 },
+    { name: 'EFFMM', type: 'C', length: 2, decimals: 0 },
+    { name: 'TERYY', type: 'C', length: 4, decimals: 0 },
+    { name: 'TERMM', type: 'C', length: 2, decimals: 0 },
     { name: 'AMOUNT', type: 'N', length: 12, decimals: 2 },
+    { name: 'PRINCIPAL', type: 'N', length: 12, decimals: 2 },
+    { name: 'INTEREST', type: 'N', length: 12, decimals: 2 },
+    { name: 'CHARGES', type: 'N', length: 12, decimals: 2 },
+    { name: 'PROCEEDS', type: 'N', length: 12, decimals: 2 },
     { name: 'REF', type: 'C', length: 20, decimals: 0 },
     { name: 'SOURCE', type: 'C', length: 10, decimals: 0 },
   ];
@@ -159,10 +176,23 @@ export function generateDeductionDbf(
         EMPNO: e?.empno || e?.employee_number || '',
         LNAME: e?.lname || e?.last_name || '',
         FNAME: e?.fname || e?.first_name || '',
+        MI: e?.mi || '',
+        REGCODE: e?.regcode || '',
+        DIVCODE: e?.divcode || '',
+        STACODE: String(d.stacode ?? '').trim() || e?.stacode || '',
         DEPT: e?.department || '',
         DCODE: d.deduction_code,
         DNAME: d.deduction_name,
+        POLICYNO: d.policyno || '',
+        EFFYY: d.effyy || '',
+        EFFMM: d.effmm || '',
+        TERYY: d.teryy || '',
+        TERMM: d.termm || '',
         AMOUNT: d.amount,
+        PRINCIPAL: d.principal || 0,
+        INTEREST: d.interest || 0,
+        CHARGES: d.charges || 0,
+        PROCEEDS: d.proceeds || 0,
         REF: d.reference || '',
         SOURCE: d.source || '',
       };
@@ -293,14 +323,23 @@ export function generateDedfileDbf(
   const pad2 = (n: number) => String(n).padStart(2, '0');
   const records: DbfRecord[] = deductions.map((d, idx) => {
     const e = empMap.get(d.employee_id ?? '');
+    // Restored file values are written back verbatim (FoxPro COPY FILE
+    // semantics) — blanks included. YY anchors the group: every real DEDFILE
+    // record carries one, so its presence means the row came from a file and
+    // even blank siblings must stay blank. Rows without it (manual adds,
+    // legacy rows) keep the old clock-derived behavior.
+    const kept = d.yy ? {
+      P: d.p ?? '', YY: d.yy ?? '', MM: d.mm ?? '', DD: d.dd ?? '',
+      HR: d.hr ?? '', MIN: d.min ?? '', SEC: d.sec ?? '', ID: d.dbf_id ?? '',
+    } : null;
     return {
-      P:          d.status === 'Active' ? 'A' : 'I',
-      YY:         String(now.getFullYear()),
-      MM:         pad2(now.getMonth() + 1),
-      DD:         pad2(now.getDate()),
-      HR:         pad2(now.getHours()),
-      MIN:        pad2(now.getMinutes()),
-      SEC:        pad2(now.getSeconds()),
+      P:          kept ? kept.P : (d.status === 'Active' ? 'A' : 'I'),
+      YY:         kept ? kept.YY : String(now.getFullYear()),
+      MM:         kept ? kept.MM : pad2(now.getMonth() + 1),
+      DD:         kept ? kept.DD : pad2(now.getDate()),
+      HR:         kept ? kept.HR : pad2(now.getHours()),
+      MIN:        kept ? kept.MIN : pad2(now.getMinutes()),
+      SEC:        kept ? kept.SEC : pad2(now.getSeconds()),
       REGCODE:    e?.regcode ?? '',
       DIVCODE:    e?.divcode ?? '',
       STACODE:    e?.stacode ?? '',
@@ -342,7 +381,7 @@ export function generateDedfileDbf(
       BIRTHDATE:  e?.birthdate ?? null,
       GSIS_BPN:   e?.gsis_pn ?? '',
       QS:         '',
-      ID:         String(idx + 1).padStart(3, '0'),
+      ID:         kept ? kept.ID : String(idx + 1).padStart(3, '0'),
     };
   });
   return encodeDbf(DEDFILE_FIELDS, records);

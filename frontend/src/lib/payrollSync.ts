@@ -1,15 +1,57 @@
 import { supabase, fetchAll, chunkedIn } from '@/lib/pb';
 import { computePayrollDeductions } from '@/lib/payroll';
-import { processEmployeeDeductions, separateMandatoryLoans } from '@/lib/nthp';
+import { separateMandatoryLoans, NTHP_THRESHOLD, type NthpResult, type ProcessedDeduction, type UndeductedObligationInput } from '@/lib/nthp';
 import { isDeductionActive } from '@/views/DeductionMasterfile';
 import { inCategory, type PayrollCategory } from '@/lib/categories';
-import type { Employee, PayrollDeduction, DeductionCode, PayrollEntry } from '@/types/payroll';
+import type { Employee, PayrollDeduction, DeductionCode, Deduction, PayrollEntry } from '@/types/payroll';
+
+/**
+ * The masterfile values a per-period deduction line inherits so the extracted
+ * dedrecs file is complete: the policy number, effectivity and terms the DEDFILE
+ * record carries, plus its loan balances. A blank string / zero balance means
+ * "not on file" — Run Payroll's statutory lines (GSIS, tax, PhilHealth,
+ * Pag-IBIG) are computed amounts with no masterfile record behind them.
+ */
+interface MasterRef {
+  policyno: string;
+  effyy: string;
+  effmm: string;
+  teryy: string;
+  termm: string;
+  principal: number;
+  interest: number;
+  charges: number;
+  proceeds: number;
+  stacode: string;
+}
+
+/** Normalize a month to the two digits the DBF stores ('4' -> '04'). */
+function refMonth(v: unknown): string {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  return /^\d+$/.test(s) ? s.padStart(2, '0') : s;
+}
+
+/** Normalize a year to the four digits the DBF stores. */
+function refYear(v: unknown): string {
+  const s = String(v ?? '').trim();
+  return /^\d+$/.test(s) ? s : '';
+}
+
+/** EMPNO + DEDCODE, the key the masterfile record is matched on. */
+function masterKey(code: unknown): string {
+  return String(code ?? '').trim().toUpperCase();
+}
 
 export interface SyncResult {
   periodId: string;
   entriesUpdated: number;
   elementaryCount: number;
   highSchoolCount: number;
+  /** Σ take-home over the run — the legacy "Total Net Amount". */
+  totalNet: number;
+  /** Rows with take-home below ₱5,000 — the PAYRNEG negative-pay list. */
+  negativeCount: number;
   /** Hard failures (reads/writes that errored). The run is incomplete. */
   errors: string[];
   /** Non-fatal issues: records skipped/truncated during the run. Payroll is computed but incomplete. */
@@ -21,6 +63,144 @@ export interface SyncResult {
  * (36 chars) fails the collections' id validation, so entries get silently
  * skipped on write — generate a compliant id instead.
  */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * FoxPro PAYRINCL loan pass, engineered for the Regular Payroll run.
+ *
+ * The legacy pipeline sorts the employee's deduction rows by
+ * empno, p, effyy, effmm, yy, mm, dd, hr, min, dedcode, policyno, then walks
+ * them against the masterfile NETPAY floor: each row is taken only while the
+ * pay left above ₱5,000 still covers it, otherwise it becomes an undeducted
+ * (EXCLUDED) row — and a QS='U' row is always excluded. The running-total
+ * form below is that same rule: a row is deducted exactly when
+ * (net − running − amount) ≥ 5000, i.e. remainingCapacity ≥ amount.
+ *
+ * Sort is code-unit order like the FoxPro machine sort, and every key is read
+ * defensively — V3 rows predate some legacy columns, which simply sort blank.
+ */
+function foxproLoanKey(d: PayrollDeduction, key: string): string {
+  const v = (d as unknown as Record<string, unknown>)[key];
+  return String(v ?? '');
+}
+
+function foxproCmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function foxproLoanSort(a: PayrollDeduction, b: PayrollDeduction): number {
+  for (const k of ['p', 'effyy', 'effmm', 'yy', 'mm', 'dd', 'hr', 'min'] as const) {
+    const c = foxproCmp(foxproLoanKey(a, k), foxproLoanKey(b, k));
+    if (c !== 0) return c;
+  }
+  return foxproCmp(a.dedcode ?? '', b.dedcode ?? '') || foxproCmp(a.policyno ?? '', b.policyno ?? '');
+}
+
+function isUnprioritized(d: PayrollDeduction): boolean {
+  return String((d as unknown as Record<string, unknown>).qs ?? '').toUpperCase() === 'U';
+}
+
+function applyFoxproFloor(
+  netPayBeforeLoans: number,
+  loanDeductions: PayrollDeduction[],
+  dedCodeMap: Map<string, DeductionCode>,
+  stationCode = '',
+  mandatoryLoanDeductions = 0,
+): NthpResult {
+  const availableBalance = netPayBeforeLoans;
+  const loanDeductionCapacity = availableBalance - NTHP_THRESHOLD;
+  const processed: ProcessedDeduction[] = [];
+  const undeducted: UndeductedObligationInput[] = [];
+  const deductedLog: ProcessedDeduction[] = [];
+  const describe = (d: PayrollDeduction) => dedCodeMap.get(d.dedcode)?.dedname ?? d.dedcode;
+
+  // QS='U' rows never reach the floor walk — always excluded, like PAYRINCL.
+  const queued = [...loanDeductions].sort(foxproLoanSort);
+  let seq = 0;
+  const markUndeducted = (d: PayrollDeduction, amount: number, reason: string) => {
+    seq += 1;
+    processed.push({
+      deduction_code: d.dedcode, deduction_description: describe(d),
+      scheduled_amount: amount, deducted_amount: 0, undeducted_amount: amount,
+      priority: seq, is_mandatory: false, source: d,
+    });
+    undeducted.push({
+      deduction_code: d.dedcode, deduction_description: describe(d),
+      scheduled_amount: amount, undeducted_amount: amount,
+      station_code: stationCode, reason,
+    });
+  };
+  const rest = queued.filter((d) => {
+    const amount = Number(d.dedamt) || 0;
+    if (amount <= 0) return false;
+    if (isUnprioritized(d)) { markUndeducted(d, amount, 'Excluded by priority (QS=U)'); return false; }
+    return true;
+  });
+
+  if (loanDeductionCapacity <= 0) {
+    for (const d of rest) markUndeducted(d, Number(d.dedamt) || 0, 'NTHP Threshold Reached');
+    const finalNetPay = availableBalance;
+    return {
+      actualLoanDeductions: 0, mandatoryLoanDeductions,
+      undeductedObligations: undeducted, processedDeductions: processed,
+      nthpStatus: finalNetPay >= NTHP_THRESHOLD ? 'PASS' : 'FAIL',
+      finalNetPay, availableBalance, loanDeductionCapacity,
+    };
+  }
+
+  let remainingCapacity = loanDeductionCapacity;
+  let actualLoanDeductions = 0;
+  for (const d of rest) {
+    const amount = Number(d.dedamt) || 0;
+    if (remainingCapacity >= amount) {
+      remainingCapacity -= amount;
+      actualLoanDeductions += amount;
+      seq += 1;
+      const rec: ProcessedDeduction = {
+        deduction_code: d.dedcode, deduction_description: describe(d),
+        scheduled_amount: amount, deducted_amount: amount, undeducted_amount: 0,
+        priority: seq, is_mandatory: false, source: d,
+      };
+      processed.push(rec);
+      deductedLog.push(rec);
+    } else {
+      markUndeducted(d, amount, 'NTHP Threshold Reached');
+    }
+  }
+
+  // Safety net: never close below the floor — unwind the last rows taken.
+  let netPay = availableBalance - actualLoanDeductions;
+  while (netPay < NTHP_THRESHOLD && deductedLog.length > 0) {
+    const last = deductedLog.pop()!;
+    actualLoanDeductions -= last.deducted_amount;
+    last.deducted_amount = 0;
+    last.undeducted_amount = last.scheduled_amount;
+    undeducted.push({
+      deduction_code: last.deduction_code, deduction_description: last.deduction_description,
+      scheduled_amount: last.scheduled_amount, undeducted_amount: last.scheduled_amount,
+      station_code: stationCode, reason: 'NTHP Threshold Reached',
+    });
+    const pIdx = processed.findIndex(
+      (p) => p.deduction_code === last.deduction_code && p.deducted_amount > 0,
+    );
+    if (pIdx >= 0) {
+      processed[pIdx].deducted_amount = 0;
+      processed[pIdx].undeducted_amount = last.scheduled_amount;
+    }
+    netPay = availableBalance - actualLoanDeductions;
+  }
+
+  const finalNetPay = netPay;
+  return {
+    actualLoanDeductions, mandatoryLoanDeductions,
+    undeductedObligations: undeducted, processedDeductions: processed,
+    nthpStatus: finalNetPay >= NTHP_THRESHOLD ? 'PASS' : 'FAIL',
+    finalNetPay, availableBalance, loanDeductionCapacity,
+  };
+}
+
 export function newPBId(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let s = '';
@@ -45,7 +225,7 @@ export async function syncPayrollForEmployees(
   const errors: string[] = [];
   const warnings: string[] = [];
   if (employeeIds.length === 0) {
-    return { periodId: payPeriodId, entriesUpdated: 0, elementaryCount: 0, highSchoolCount: 0, errors, warnings };
+    return { periodId: payPeriodId, entriesUpdated: 0, elementaryCount: 0, highSchoolCount: 0, totalNet: 0, negativeCount: 0, errors, warnings };
   }
 
   const uniqueIds = [...new Set(employeeIds)];
@@ -54,7 +234,7 @@ export async function syncPayrollForEmployees(
   const empsRes = await chunkedIn('id', uniqueIds, (chunk) => supabase.from('employees').select('*').in('id', chunk));
   const employees = (empsRes as Employee[]).filter((e) => e.status === 'Active');
   if (employees.length === 0) {
-    return { periodId: payPeriodId, entriesUpdated: 0, elementaryCount: 0, highSchoolCount: 0, errors, warnings };
+    return { periodId: payPeriodId, entriesUpdated: 0, elementaryCount: 0, highSchoolCount: 0, totalNet: 0, negativeCount: 0, errors, warnings };
   }
 
   // Load ALL payroll deductions. Read through the adapter's full-list path — a
@@ -134,9 +314,43 @@ export async function syncPayrollForEmployees(
   // Itemized deduction lines for this run — statutory mandatory lines, mandatory
   // loans, then the APDS loans actually deducted (FIFO stored order). These feed
   // the FOXPRO Payroll Register / Payslip and the period Deductions view.
-  const allDedLines: { employee_id: string; pay_period_id: string; deduction_code: string; deduction_name: string; category: string; amount: number; source: string; reference: string; created_at: string }[] = [];
+  const allDedLines: Array<{
+    employee_id: string; pay_period_id: string; deduction_code: string; deduction_name: string;
+    category: string; amount: number; source: string; reference: string; created_at: string;
+  } & Partial<MasterRef>> = [];
 
+  // The DEDFILE import carried each masterfile record's policy number,
+  // effectivity, terms and loan balances. Run Payroll's per-period lines are
+  // computed amounts only, so without reading those records back the Deductions
+  // screen — and the dedrecs export built from it — shows a blank Policy / Eff /
+  // Ter on every line the run produced.
+  //
+  // An employee can hold several loans under one deduction code, so a record is
+  // matched on its policy number first and only falls back to the code when the
+  // line's masterfile row carries no policy.
+  const dedFileByCode = new Map<string, Deduction>();
+  const dedFileByPolicy = new Map<string, Deduction>();
+  {
+    const rows = await chunkedIn<Deduction>('employee_id', uniqueIds, (chunk) =>
+      supabase.from('deductions').select('*').eq('source', 'DEDFILE').in('employee_id', chunk),
+    );
+    rows.forEach((r) => {
+      const codePart = `${r.employee_id}|${masterKey(r.deduction_code)}`;
+      if (!dedFileByCode.has(codePart)) dedFileByCode.set(codePart, r);
+      const policy = String(r.policyno ?? '').trim().toUpperCase();
+      if (policy) dedFileByPolicy.set(`${codePart}|${policy}`, r);
+    });
+  }
+
+  let skippedNotPresent = 0;
+  let totalNet = 0;
+  let negativeCount = 0;
   const updates = employees.map((e) => {
+    // FoxPro PAYRMRG reads only attend='A' masterfile rows into the run.
+    // Rows that never carried an ATTEND value (blank) still run — only an
+    // explicit non-'A' mark skips the employee.
+    const attend = String((e as unknown as Record<string, unknown>).attend ?? '').toUpperCase();
+    if (attend !== '' && attend !== 'A') { skippedNotPresent += 1; return null; }
     const empNo = (e.empno ?? e.employee_number ?? '').trim();
     const empDedsAll = activeDedsByEmp.get(e.id) ?? [];
     // EXCLUDED employees (EXCLUDED.DBF / Smart Import definition): NONE of their
@@ -154,18 +368,38 @@ export async function syncPayrollForEmployees(
       e.rata ?? 0,
       e.ontop ?? 0,
       e.long ?? 0,
-      0,        // loanDeductions — handled separately by NTHP
+      0,        // loanDeductions — handled separately by the floor pass
       0,        // mandatoryLoanDeductions — handled separately
       e.hazard_pay ?? 0,
       e.salary_differential ?? 0,
       e.other_compensation ?? 0,
       e.other_earnings ?? 0,
     );
-    const nthp = processEmployeeDeductions(
-      computed.netBeforeLoans, empDeds, dedCodeMap, e.stacode ?? '',
-    );
+    // ── FoxPro PAYRMRG core ─────────────────────────────────────────────
+    // gross = basic + trans + pera + aca — and nothing else. The statutory
+    // shares are READ from the masterfile row, never recomputed; the
+    // recomputed values above survive only as a fallback for blank cells.
+    const num = (v: unknown) => Number(v) || 0;
+    const mf = (v: unknown, fb: number) => (v === null || v === undefined ? fb : num(v));
+    const basic = num(e.basic ?? e.basic_salary);
+    const gross = round2(basic + num(e.trans) + num(e.pera) + num(e.aca));
+    const dedlnr = mf(e.dedlnr, computed.dedlnr);
+    const dedmed = mf(e.dedmed, computed.dedmed);
+    const dedpag = mf(e.dedpag, computed.dedpag);
+    const dedtax = mf(e.dedtax, computed.dedtax);
+    const govtlnr = mf(e.govtlnr, computed.govtlnr);
+    const govtecc = mf(e.govtecc, computed.govtecc);
+    const govtmed = mf(e.govtmed, computed.govtmed);
+    const govtpag = mf(e.govtpag, computed.govtpag);
+    const mandatoryDeductions = round2(dedlnr + dedmed + dedpag + dedtax);
+    const netBeforeLoans = round2(gross - mandatoryDeductions);
+    const { mandatoryLoans, apdsDeductions } = separateMandatoryLoans(empDeds, dedCodeMap);
+    const mandatoryTotal = mandatoryLoans.reduce((s, m) => s + (Number(m.dedamt) || 0), 0);
+    const fox = applyFoxproFloor(netBeforeLoans - mandatoryTotal, apdsDeductions, dedCodeMap, e.stacode ?? '', mandatoryTotal);
+    totalNet = round2(totalNet + fox.finalNetPay);
+    if (fox.finalNetPay < NTHP_THRESHOLD) negativeCount += 1;
 
-    const actualLoansTotal = nthp.actualLoanDeductions + nthp.mandatoryLoanDeductions;
+    const actualLoansTotal = fox.actualLoanDeductions + fox.mandatoryLoanDeductions;
     const existing = existingByEmp.get(e.id);
     const entryId = existing?.id ?? newPBId();
 
@@ -186,8 +420,8 @@ export async function syncPayrollForEmployees(
       });
     };
 
-    // NTHP shortfall obligations (existing behavior)
-    nthp.undeductedObligations.forEach((u) => {
+    // Floor shortfall obligations
+    fox.undeductedObligations.forEach((u) => {
       pushUndeducted(u.deduction_code, u.deduction_description, u.scheduled_amount, u.undeducted_amount, u.reason);
     });
     // EXCLUDED definition obligations — never deducted this period
@@ -203,13 +437,40 @@ export async function syncPayrollForEmployees(
     });
 
     // Itemized deduction lines (same shape the server engine writes)
-    const { mandatoryLoans } = separateMandatoryLoans(empDeds, dedCodeMap);
-    const deductedLoans = nthp.processedDeductions.filter((p) => p.deducted_amount > 0);
+    const deductedLoans = fox.processedDeductions.filter((p) => p.deducted_amount > 0);
+    // The record a line names: the masterfile row the engine deducted from, with
+    // the DEDFILE record supplying the terms and balances that row does not hold
+    // (payroll_deductions has no TERMM/TERYY/CHARGES/PROCEEDS columns).
+    const refFor = (src: PayrollDeduction | undefined, code: string): MasterRef | null => {
+      const codePart = `${e.id}|${masterKey(code)}`;
+      const policy = String(src?.policyno ?? '').trim().toUpperCase();
+      const file = (policy ? dedFileByPolicy.get(`${codePart}|${policy}`) : undefined)
+        ?? dedFileByCode.get(codePart)
+        ?? null;
+      if (!src && !file) return null;
+      return {
+        policyno: String(src?.policyno ?? '').trim() || String(file?.policyno ?? '').trim(),
+        effyy: refYear(src?.effyy) || refYear(file?.effyy),
+        effmm: refMonth(src?.effmm) || refMonth(file?.effmm),
+        teryy: refYear(file?.teryy) || '',
+        termm: refMonth(file?.termm) || '',
+        principal: Number(src?.principal) || Number(file?.principal) || 0,
+        interest: Number(src?.interest) || Number(file?.interest) || 0,
+        charges: Number(file?.charges) || 0,
+        proceeds: Number(file?.proceeds) || 0,
+        stacode: String(file?.stacode ?? '').trim() || String(src?.stacode ?? '').trim() || String(e.stacode ?? '').trim(),
+      };
+    };
+
     const baseTs = Date.now();
     let ord = 0;
-    const pushDedLine = (code: string, name: string, category: string, amount: number) => {
+    const pushDedLine = (
+      code: string, name: string, category: string, amount: number,
+      src?: PayrollDeduction,
+    ) => {
       if (amount <= 0) return;
       ord += 1;
+      const ref = refFor(src, code);
       allDedLines.push({
         employee_id: e.id,
         pay_period_id: payPeriodId,
@@ -220,44 +481,49 @@ export async function syncPayrollForEmployees(
         source: 'Payroll Run',
         reference: entryId,
         created_at: new Date(baseTs + ord).toISOString(),
+        ...(ref ? { ...ref } : {}),
       });
     };
-    pushDedLine('0003', 'GSIS PERSONAL SHARE', 'Mandatory', computed.dedlnr);
-    pushDedLine('0036', 'WITHHOLDING TAX', 'Mandatory', computed.dedtax);
-    pushDedLine('0111', 'PHILHEALTH', 'Mandatory', computed.dedmed);
-    pushDedLine('0222', 'PAGIBIG FUND', 'Mandatory', computed.dedpag);
+    pushDedLine('0003', 'GSIS PERSONAL SHARE', 'Mandatory', dedlnr);
+    pushDedLine('0036', 'WITHHOLDING TAX', 'Mandatory', dedtax);
+    pushDedLine('0111', 'PHILHEALTH', 'Mandatory', dedmed);
+    pushDedLine('0222', 'PAGIBIG FUND', 'Mandatory', dedpag);
     mandatoryLoans.forEach((m) =>
-      pushDedLine(m.dedcode, dedCodeMap.get(m.dedcode)?.dedname ?? m.dedcode, 'Loan', Number(m.dedamt) || 0));
+      pushDedLine(m.dedcode, dedCodeMap.get(m.dedcode)?.dedname ?? m.dedcode, 'Loan', Number(m.dedamt) || 0, m));
     deductedLoans.forEach((d) =>
-      pushDedLine(d.deduction_code, d.deduction_description, 'Loan', d.deducted_amount));
+      pushDedLine(d.deduction_code, d.deduction_description, 'Loan', d.deducted_amount, d.source));
 
     return {
       id: entryId,
       employee_id: e.id,
       pay_period_id: payPeriodId,
-      gross_pay: computed.gross,
-      total_deductions: computed.mandatoryDeductions + actualLoansTotal,
-      net_pay: nthp.finalNetPay,
+      gross_pay: gross,
+      total_deductions: mandatoryDeductions + actualLoansTotal,
+      net_pay: fox.finalNetPay,
       other_deductions: actualLoansTotal,
       actual_loan_deductions: actualLoansTotal,
-      undeducted_amount: nthp.undeductedObligations.reduce((s, u) => s + u.undeducted_amount, 0)
+      undeducted_amount: fox.undeductedObligations.reduce((s, u) => s + u.undeducted_amount, 0)
         + excludedRows.reduce((s, d) => s + (Number(d.dedamt) || 0), 0),
-      nthp_status: nthp.nthpStatus,
+      nthp_status: fox.nthpStatus,
       status: (existing?.status === 'Posted' ? 'Posted' : 'Computed') as 'Computed' | 'Posted',
       processed_at: new Date().toISOString(),
-      dedlnr: computed.dedlnr,
-      dedmed: computed.dedmed,
-      dedpag: computed.dedpag,
-      dedtax: computed.dedtax,
-      govtlnr: computed.govtlnr,
-      govtecc: computed.govtecc,
-      govtmed: computed.govtmed,
-      govtpag: computed.govtpag,
-      mandatory_deductions: computed.mandatoryDeductions,
-      available_balance: nthp.availableBalance,
-      loan_deduction_capacity: nthp.loanDeductionCapacity,
+      dedlnr,
+      dedmed,
+      dedpag,
+      dedtax,
+      govtlnr,
+      govtecc,
+      govtmed,
+      govtpag,
+      mandatory_deductions: mandatoryDeductions,
+      available_balance: netBeforeLoans,
+      loan_deduction_capacity: fox.loanDeductionCapacity,
     };
-  });
+  }).filter((u): u is NonNullable<typeof u> => u !== null);
+
+  if (skippedNotPresent > 0) {
+    warnings.push(`${skippedNotPresent} employee(s) skipped: not marked present (ATTEND is not 'A').`);
+  }
 
   // Skip re-writing entries whose computed values are unchanged from the last
   // run — re-runs (e.g. after a deduction sync) then only touch rows that
@@ -382,6 +648,8 @@ export async function syncPayrollForEmployees(
     entriesUpdated: updates.length,
     elementaryCount,
     highSchoolCount,
+    totalNet,
+    negativeCount,
     errors,
     warnings,
   };

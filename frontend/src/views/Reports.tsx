@@ -103,7 +103,7 @@ export default function Reports({ category, profile, initialTab }: { category?: 
     if (!PD_TABS.includes(tab)) return;
     if (payrollDeds.length > 0 && pdFetchedTick.current === refreshTick) return;
     pdFetchedTick.current = refreshTick;
-    const pdCols = 'id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds,stacode,created_by,created_at,updated_by,updated_at';
+    const pdCols = 'id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds,stacode,p,yy,mm,dd,hr,min,sec,dbf_id,created_by,created_at,updated_by,updated_at';
     (async () => {
       const pd = await fetchAll(() => supabase.from('payroll_deductions').select(pdCols).order('empno'));
       setPayrollDeds(pd as PayrollDeduction[]);

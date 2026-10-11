@@ -14,6 +14,7 @@ const { db } = require('../config/db');
 const { getTable } = require('../config/schema');
 const { compileFilter, compileSort, resolveColumn } = require('../lib/filter');
 const { newId, nowIso } = require('../lib/ids');
+const crypto = require('crypto');
 const { badRequest, notFound } = require('../lib/http');
 
 const AUTH_TABLES = new Set(['profiles', 'users']);
@@ -21,6 +22,35 @@ const AUTH_TABLES = new Set(['profiles', 'users']);
 const RESERVED_KEYS = new Set([
   'expand', 'collectionId', 'collectionName', 'passwordConfirm', '@collectionId', '@collectionName',
 ]);
+
+/**
+ * Tables keyed by `employees.id`.
+ *
+ * SQLite foreign keys are deliberately OFF here (PocketBase enforced integrity
+ * in application code) and the tables declare no FKs either, so deleting an
+ * employee left every row pointing at it behind — the screens then rendered
+ * those rows as "Unknown" with a blank REG/DIV/EMPNO. Deleting an employee now
+ * removes these rows in the same transaction, which also covers the paths that
+ * clear the master file (`employees` deleted by stacode) or use delete-all.
+ */
+const EMPLOYEE_DEPENDENTS = ['deductions', 'payroll_entries', 'payroll_deductions', 'undeducted_obligations'];
+
+/** Delete every dependent row referencing any of the given employee ids. */
+function deleteDependentRowsForEmployees(ids) {
+  const unique = [...new Set((ids || []).filter(Boolean))];
+  if (unique.length === 0) return;
+  for (const tableName of EMPLOYEE_DEPENDENTS) {
+    const table = getTable(tableName);
+    if (!table || !table.columns.has('employee_id')) continue;
+    for (let i = 0; i < unique.length; i += 500) {
+      const chunk = unique.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(', ');
+      db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent('employee_id')} IN (${placeholders})`).run(
+        ...chunk,
+      );
+    }
+  }
+}
 
 let bcrypt = null;
 function getBcrypt() {
@@ -113,10 +143,29 @@ function preparePayload(tableName, input, { isInsert }) {
     data[k] = coerceForColumn(table, k, encodeValue(v));
   }
 
+  if (AUTH_TABLES.has(tableName) && isInsert) {
+    // Auth collections carry NOT NULL columns (tokenKey, username) whose DB
+    // defaults are NULL, so PocketBase fills them on create and so must we.
+    if (table.columns.has('tokenKey') && !data.tokenKey) {
+      data.tokenKey = randomTokenKey();
+    }
+    if (table.columns.has('username') && !data.username) {
+      data.username = genUsername(tableName);
+    }
+  }
+
   if (AUTH_TABLES.has(tableName) && typeof data.password === 'string' && data.password && !isBcryptHash(data.password)) {
     data.password = getBcrypt().hashSync(data.password, 10);
   }
   return data;
+}
+
+function randomTokenKey() {
+  return crypto.randomBytes(45).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 60);
+}
+
+function genUsername(tableName) {
+  return `${tableName}${Math.floor(1000 + Math.random() * 90000)}`;
 }
 
 function selectRows(tableName, opts = {}) {
@@ -240,16 +289,60 @@ function deleteById(tableName, id) {
   const table = getTable(tableName);
   if (!table) throw badRequest(`Unknown collection: ${tableName}`);
   const pk = table.pk || 'id';
-  const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(pk)} = ?`).run(id);
-  return res.changes;
+  const run = db.transaction(() => {
+    if (tableName === 'employees') deleteDependentRowsForEmployees([id]);
+    const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(pk)} = ?`).run(id);
+    return res.changes;
+  });
+  return run();
 }
 
 function deleteByFilter(tableName, filter) {
   const table = getTable(tableName);
   if (!table) throw badRequest(`Unknown collection: ${tableName}`);
+  const pk = table.pk || 'id';
   const { sql: whereSql, params } = compileFilter(tableName, filter);
-  const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${whereSql}`).run(...params);
-  return res.changes;
+  const run = db.transaction(() => {
+    if (tableName === 'employees') {
+      const ids = db
+        .prepare(`SELECT ${quoteIdent(pk)} AS id FROM ${quoteIdent(tableName)} WHERE ${whereSql}`)
+        .all(...params)
+        .map((r) => r.id);
+      deleteDependentRowsForEmployees(ids);
+    }
+    const res = db.prepare(`DELETE FROM ${quoteIdent(tableName)} WHERE ${whereSql}`).run(...params);
+    return res.changes;
+  });
+  return run();
+}
+
+/**
+ * Repair pass: delete rows in the employee-keyed tables whose employee_id no
+ * longer exists. This is the one-off cleanup for rows orphaned before the
+ * cascade above existed (a master-file re-import replaced every employee id
+ * while the forwarded rows kept the old ones). Returns per-table counts.
+ */
+function purgeOrphanedEmployeeRows() {
+  const deleted = {};
+  const run = db.transaction(() => {
+    for (const tableName of EMPLOYEE_DEPENDENTS) {
+      const table = getTable(tableName);
+      if (!table || !table.columns.has('employee_id')) continue;
+      const res = db
+        .prepare(
+          `DELETE FROM ${quoteIdent(tableName)}
+            WHERE COALESCE(${quoteIdent('employee_id')}, '') <> ''
+              AND NOT EXISTS (
+                SELECT 1 FROM ${quoteIdent('employees')} e
+                 WHERE e.id = ${quoteIdent(tableName)}.${quoteIdent('employee_id')}
+              )`,
+        )
+        .run();
+      deleted[tableName] = res.changes;
+    }
+  });
+  run();
+  return deleted;
 }
 
 module.exports = {
@@ -262,6 +355,8 @@ module.exports = {
   upsertOne,
   deleteById,
   deleteByFilter,
+  purgeOrphanedEmployeeRows,
+  EMPLOYEE_DEPENDENTS,
   normalizeRow,
   quoteIdent,
   isBcryptHash,

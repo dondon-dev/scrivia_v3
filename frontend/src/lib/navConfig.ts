@@ -10,7 +10,7 @@ import{
   Megaphone, Bell, ListTodo, AlertTriangle, ScrollText, LogIn,
   Shield, Eye, UserCog, KeyRound, Settings, Cog, BookOpen,
   ListTree, HelpCircle, Mail, ShieldAlert, ShieldCheck,
-  Cpu, Wallet, FileSpreadsheet, FileCheck2, FileBarChart2, AlertCircle, Building,
+  Cpu, Wallet, FileSpreadsheet, FileCheck2, FileBarChart2, FileSearch, AlertCircle, Building,
   Table2, Sparkles, Brain, BrainCircuit,
   type LucideIcon,
 } from 'lucide-react';
@@ -31,7 +31,7 @@ export type ViewKey =
   | 'notifications' | 'help'
   | 'govt_gsis' | 'govt_w2' | 'govt_calculator'
   | 'policy_library'
-  | 'emp_movement' | 'emp_newly_hired' | 'emp_separated';
+  | 'emp_movement' | 'emp_newly_hired' | 'emp_separated' | 'inquiry';
 
 export interface NavItem {
   id: string;
@@ -148,6 +148,7 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: Users,
     items: [
       { id: 'emp_records', label: 'Employee Records', icon: Contact, permission: 'employees', viewKey: 'employees' },
+      { id: 'emp_inquiry', label: 'Inquiry', icon: FileSearch, permission: 'employees', viewKey: 'inquiry' },
       // The three entry lists belong to the School Payroll Coordinator (who files
       // them for their own school) and are readable by the Super Admin across
       // ALL schools — hence the two-role `onlyRoles`.

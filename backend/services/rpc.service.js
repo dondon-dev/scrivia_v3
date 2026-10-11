@@ -12,6 +12,7 @@ const { badRequest, notFound, forbidden, unauthorized, HttpError } = require('..
 const col = require('./collection.service');
 const mfa = require('./mfa.service');
 const authSvc = require('./auth.service');
+const billing = require('./deductionBilling.service');
 
 // ── small value helpers (mirror Go's GetString/GetFloat semantics) ──────────
 const str = (v) => (v === null || v === undefined ? '' : String(v));
@@ -839,6 +840,47 @@ const schoolHandlers = {
 };
 
 // ── Misc ────────────────────────────────────────────────────────────────────
+// ── Deduction file — the billing working set (PAYFMEN2 steps 5–7) ────────────
+// The reformatted billing file, the error file and the invalid-BP file are kept
+// server-side per user + pay period, so the Upload / Print / Download steps
+// survive a reload and the post can run in one transaction.
+const billingHandlers = {
+  'deduction-billing/session': ({ req, body }) => {
+    const caller = requireProfile(req);
+    const periodId = str(firstNonEmpty(body.periodId, body.pay_period_id));
+    const session = billing.loadSession(caller.id, periodId);
+    return { session, userId: caller.id, periodId };
+  },
+
+  'deduction-billing/session/save': ({ req, body }) => {
+    const caller = requireProfile(req);
+    const periodId = str(firstNonEmpty(body.periodId, body.pay_period_id));
+    const doc = body.session || body.doc;
+    const session = billing.saveSession({ userId: caller.id, periodId, doc });
+    return { session };
+  },
+
+  'deduction-billing/session/clear': ({ req, body }) => {
+    const caller = requireProfile(req);
+    const periodId = str(firstNonEmpty(body.periodId, body.pay_period_id));
+    return { cleared: billing.clearSession(caller.id, periodId) };
+  },
+
+  'deduction-billing/post': ({ req, body }) => {
+    const caller = requireProfile(req);
+    const periodId = str(firstNonEmpty(body.periodId, body.pay_period_id));
+    const editor = str(firstNonEmpty(body.editor, caller.email, 'SYSTEM'));
+    const result = billing.postSession({ userId: caller.id, periodId, editor });
+    logAudit(caller.id, caller.email, 'deduction_billing_posted', 'deductions', periodId, {
+      leg: str((result.session || {}).leg), posted: result.posted,
+      inserted: result.inserted, updated: result.updated, deleted: result.deleted,
+      skipped: result.skipped,
+      fileName: str((result.session || {}).fileName),
+    });
+    return result;
+  },
+};
+
 const miscHandlers = {
   'audit/log': ({ req, body }) => {
     const profile = getProfile(req);
@@ -858,6 +900,19 @@ const miscHandlers = {
     setSetting('lockdown', { locked: false });
     logAudit(caller.id, caller.email, 'lockdown_deactivated', 'system_settings', 'lockdown', null);
     return { success: true };
+  },
+
+  /**
+   * Delete rows whose employee_id no longer exists (rows left behind by a
+   * master-file re-import before employee deletion cascaded). Repeatable — the
+   * delete is a no-op once the tables are clean.
+   */
+  'maintenance/purge-orphans': ({ req }) => {
+    const caller = requireSuper(req);
+    const deleted = col.purgeOrphanedEmployeeRows();
+    const total = Object.values(deleted).reduce((n, v) => n + (Number(v) || 0), 0);
+    logAudit(caller.id, caller.email, 'employee_orphans_purged', 'employees', null, { deleted, total });
+    return { deleted, total };
   },
 
   'audit/logs': ({ req }) => {
@@ -914,6 +969,7 @@ const allHandlers = {
   ...employeeHandlers,
   ...dbfHandlers,
   ...schoolHandlers,
+  ...billingHandlers,
   ...miscHandlers,
 };
 

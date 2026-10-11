@@ -225,6 +225,14 @@ export interface Deduction {
   qs?: string;
   paydate?: string;
   editor?: string;
+  p?: string;
+  yy?: string;
+  mm?: string;
+  dd?: string;
+  hr?: string;
+  min?: string;
+  sec?: string;
+  dbf_id?: string;
 }
 
 export interface PayrollEntry {
@@ -288,6 +296,18 @@ export interface PayrollDeduction {
   interest: number;
   charges: number;
   proceeds: number;
+  /** Station code carried by the DEDFILE record (column added by the import). */
+  stacode?: string;
+  /** Original FoxPro system/timestamp columns — restored verbatim from the
+   * uploaded DEDFILE, never re-stamped (COPY FILE semantics). */
+  p?: string;
+  yy?: string;
+  mm?: string;
+  dd?: string;
+  hr?: string;
+  min?: string;
+  sec?: string;
+  dbf_id?: string;
   agency: string;
   status: 'Active' | 'Suspended' | 'Terminated';
   type: 'Loan' | 'Insurance' | 'Membership' | 'Savings' | 'Other';

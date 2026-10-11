@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { Plus, Trash2, Calculator, CheckCircle2, X, Play, RefreshCw, Download, AlertCircle, Eye, ShieldAlert, Lock, Search, RefreshCcw, FileDown, Landmark } from 'lucide-react';
 import { ScriviaLogo } from '@/components/ScriviaLogo';
 import { supabase, fetchAll, formatError } from '@/lib/pb';
 import { generatePayrollDbf, generatePayrollCsv, generatePyentDbf, downloadFile, currency, type PyentExportResult } from '@/lib/reports';
 import { computePyentSplit } from '@/lib/payroll';
+import { computeDisbursement } from '@/lib/disbursement';
 import { syncPayrollForEmployees } from '@/lib/payrollSync';
 import { NTHP_THRESHOLD } from '@/lib/nthp';
 import { classifyByStacode } from '@/lib/stacodeClassify';
@@ -74,6 +75,10 @@ export default function Payroll({ profile }: PayrollProps) {
   const [pyentHalf, setPyentHalf] = useState<1 | 2>(1);
   const [pyentBranch, setPyentBranch] = useState('001');
   const [pyentBatch, setPyentBatch] = useState('00001');
+  const [showDisb, setShowDisb] = useState(false);
+  const [stationNames, setStationNames] = useState<Map<string, string>>(new Map());
+  const [stationsLoaded, setStationsLoaded] = useState(false);
+  const [expandedSta, setExpandedSta] = useState<string | null>(null);
 
   function handleCardNavigate(emp: Employee) {
     setCardEmployee(emp);
@@ -85,7 +90,7 @@ export default function Payroll({ profile }: PayrollProps) {
       try {
         const pf = profile ?? authProfile;
         const scopeFilter = pf ? getEmployeeFilter(pf) : null;
-        const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,pera,aca,rata,ontop,long,payroll_group_id,dedlnr,dedmed,dedpag,dedtax,netpay,status';
+        const empCols = 'id,empno,employee_number,lname,last_name,fname,first_name,mi,stacode,regcode,divcode,division_id,basic,basic_salary,trans,pera,aca,rata,ontop,long,payroll_group_id,dedlnr,dedmed,dedpag,dedtax,netpay,status';
         const [{ data: per }, emp, grp] = await Promise.all([
           supabase.from('pay_periods').select('*').order('year', { ascending: false }).order('month', { ascending: false }).order('created_at', { ascending: false }),
           fetchAll(() => {
@@ -164,6 +169,53 @@ export default function Payroll({ profile }: PayrollProps) {
   const scopedEntries = useMemo(() => {
     return entries.filter((e) => scopedEmpIds.has(e.employee_id));
   }, [entries, scopedEmpIds]);
+
+  // ── Hidden-entry diagnosis ──
+  // When the period holds entries but none survive the filters, find out WHY
+  // so the empty state can name the real blocker instead of always blaming
+  // the Region/Division scope: the payroll-group filter (stacode range) can
+  // hide in-scope employees, and entries whose employees went inactive (or
+  // were deleted) are invisible under EVERY scope — no selector switch can
+  // reveal those. The probe runs only in that empty-state case.
+  const [hiddenProbe, setHiddenProbe] = useState<{
+    byGroup: number; byScope: number; inactive: number; deleted: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!(entries.length > 0 && scopedEntries.length === 0)) { setHiddenProbe(null); return; }
+    let cancelled = false;
+    (async () => {
+      const empIds = new Set(employees.map((e) => e.id));
+      let byGroup = 0;
+      const missing: string[] = [];
+      for (const en of entries) {
+        if (scopedEmpIds.has(en.employee_id)) continue;
+        if (empIds.has(en.employee_id)) byGroup++;
+        else if (en.employee_id && !missing.includes(en.employee_id)) missing.push(en.employee_id);
+      }
+      let byScope = 0;
+      let inactive = 0;
+      let deleted = 0;
+      if (missing.length > 0) {
+        // No status filter here on purpose: we need to see inactive rows too.
+        const { data } = await supabase
+          .from('employees')
+          .select('id,status,stacode,regcode,divcode,division_id')
+          .in('id', missing);
+        const found = new Map(((data as { id: string; status: string | null; stacode: string | null; regcode: string | null; divcode: string | null; division_id: string | null }[] | null) ?? []).map((r) => [r.id, r]));
+        for (const id of missing) {
+          const count = entries.filter((en) => en.employee_id === id).length;
+          const rec = found.get(id);
+          if (!rec) deleted += count;
+          else if ((rec.status ?? '') !== 'Active') inactive += count;
+          else if (!matchesOrgScope(rec, { scopedDivisionIds, scopedCodes })) byScope += count;
+          else byGroup += count; // active + in scope: only the group filter can exclude it
+        }
+      }
+      if (!cancelled) setHiddenProbe({ byGroup, byScope, inactive, deleted });
+    })();
+    return () => { cancelled = true; };
+  }, [entries, scopedEntries.length, employees, scopedEmpIds, scopedDivisionIds, scopedCodes]);
 
   // Whether this division's payroll for the selected period is already posted.
   // Divisions post independently within the shared period, so this is derived
@@ -263,6 +315,59 @@ export default function Payroll({ profile }: PayrollProps) {
     });
   }, [payent, empMap]);
 
+  // ── Disbursement Report (FoxPro SUMREP → SUMSTN/SUMREP2, Regular only) ──
+  // Ports the register semantics onto the stored run. Per station (PAYSUM1):
+  // payees, basic+trans, PERA, ACA, total compensation, total deductions, net
+  // pay, and the four government shares; per-dedcode station detail (ITEMDED
+  // damt = PAYDCON recorded mandatory shares 0003/0036/0111/0222 plus PAYDED1
+  // INCLUDED lines — in V3 both already live in the run's itemized deduction
+  // lines, so the breakdown reads them directly); division grand totals
+  // (PAYDIV1) with division per-dedcode totals (PAYDIV2). Station names
+  // resolve via dbf_stntable (STNTABLE). Deliberate deviations: no bank filter
+  // (xbank LBP/PVB lives in the PYENT export above) and no per-station picker
+  // (SUMSTN) — the report covers the current scope grouped by station.
+  useEffect(() => {
+    if (!showDisb || stationsLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const stn = await fetchAll(() => supabase.from('dbf_stntable').select('stacode,staname'));
+        if (cancelled) return;
+        const m = new Map<string, string>();
+        ((stn as { stacode: string; staname: string }[] | null) ?? []).forEach((s) => {
+          if (s.stacode) m.set(String(s.stacode).trim(), s.staname ?? '');
+        });
+        setStationNames(m);
+      } catch {
+        // Names stay blank — stacodes still print.
+      } finally {
+        if (!cancelled) setStationsLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showDisb, stationsLoaded]);
+
+  const disb = useMemo(() => computeDisbursement(rows, deductions, empMap), [rows, deductions, empMap]);
+
+  function exportDisbCsv() {
+    if (!currentPeriod || disb.list.length === 0) return;
+    const q = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+    const lines = [
+      'STACODE,STATION,PAYEES,BASIC_TRANS,PERA,ACA,TOTAL_COMP,TOTAL_DED,NET,GOVT_LNR,GOVT_MED,GOVT_PAG,GOVT_ECC',
+      ...disb.list.map((t) => [
+        q(t.stacode), q(stationNames.get(t.stacode) ?? ''), t.payees,
+        t.basicTrans.toFixed(2), t.pera.toFixed(2), t.aca.toFixed(2), t.comp.toFixed(2),
+        t.ded.toFixed(2), t.net.toFixed(2),
+        t.glnr.toFixed(2), t.gmed.toFixed(2), t.gpag.toFixed(2), t.gecc.toFixed(2),
+      ].join(',')),
+      ['DIVISION TOTAL', '', disb.div.payees, disb.div.basicTrans.toFixed(2), disb.div.pera.toFixed(2), disb.div.aca.toFixed(2), disb.div.comp.toFixed(2), disb.div.ded.toFixed(2), disb.div.net.toFixed(2), disb.div.glnr.toFixed(2), disb.div.gmed.toFixed(2), disb.div.gpag.toFixed(2), disb.div.gecc.toFixed(2)].map(q).join(','),
+      '',
+      'DEDCODE,DEDNAME,DIVISION_AMOUNT',
+      ...disb.divCodes.map(([code, v]) => [q(code), q(v.name), v.amt.toFixed(2)].join(',')),
+    ];
+    downloadFile({ filename: `DISBURSEMENT_${currentPeriod.period_name?.replace(/\s/g, '_')}.csv`, content: new TextEncoder().encode(lines.join('\n')), mimeType: 'text/csv' });
+  }
+
   // STACODE validation: find employees with invalid/unassignable STACODE
   const unassignedEmployees = useMemo(() =>
     scopedEmployees.filter((e) => !classifyByStacode(e.stacode, groups)),
@@ -318,7 +423,8 @@ export default function Payroll({ profile }: PayrollProps) {
         const isError = result.errors.length > 0;
         setRunSummary(
           `${isError ? 'Payroll run completed with ERRORS' : 'Payroll run completed with WARNINGS'}: ` +
-          `${result.entriesUpdated} entries in ${seconds}s, undeducted obligations: ${currency(undeductedTotal)}. ` +
+          `${result.entriesUpdated} entries in ${seconds}s, undeducted obligations: ${currency(undeductedTotal)}, ` +
+          `total net: ${currency(result.totalNet)}${result.negativeCount > 0 ? `, ${result.negativeCount} below ₱5,000` : ''}. ` +
           `${issues.length} record issue${issues.length === 1 ? '' : 's'}: ${issues.slice(0, 3).join(' • ')}` +
           (issues.length > 3 ? ` (+${issues.length - 3} more)` : '')
         );
@@ -326,7 +432,8 @@ export default function Payroll({ profile }: PayrollProps) {
         setRunSummary(
           `Payroll computed: ${result.entriesUpdated} entries in ${seconds}s, ` +
           `${result.elementaryCount} elementary, ${result.highSchoolCount} high school, ` +
-          `undeducted obligations: ${currency(undeductedTotal)}.`
+          `undeducted obligations: ${currency(undeductedTotal)}, ` +
+          `total net: ${currency(result.totalNet)}${result.negativeCount > 0 ? `, ${result.negativeCount} below ₱5,000` : ''}.`
         );
       }
     } catch (err) {
@@ -809,6 +916,154 @@ export default function Payroll({ profile }: PayrollProps) {
         </div>
       )}
 
+      {/* Disbursement Report — FoxPro SUMREP/SUMSTN (Regular Payroll register) */}
+      {!loading && rows.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <button onClick={() => setShowDisb((v) => !v)} className="w-full px-5 py-4 flex items-center gap-3 text-left hover:bg-slate-50">
+            <div className="w-9 h-9 rounded-lg bg-emerald-50 flex items-center justify-center">
+              <FileDown className="w-4 h-4 text-emerald-600" />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-sm font-bold text-slate-800">Disbursement Report — Regular Payroll Register</h2>
+              <p className="text-xs text-slate-500">
+                DEPARTMENT OF EDUCATION · PAYROLL REGISTER · REGULAR SALARY · {currentPeriod?.period_name ?? 'this period'}
+                {currentPeriod?.end_date ? ` · Period ending ${currentPeriod.end_date}` : ''}
+                {currentPeriod?.pay_date ? ` · Issued ${currentPeriod.pay_date}` : ''}
+              </p>
+            </div>
+            <span className="text-xs font-semibold text-emerald-700">{showDisb ? 'Hide' : 'Show'}</span>
+          </button>
+          {showDisb && (
+            <div className="border-t border-slate-100">
+              <div className="px-5 py-3 flex items-center gap-2 flex-wrap border-b border-slate-100">
+                <span className="text-xs text-slate-500 mr-auto">{disb.list.length} station{disb.list.length === 1 ? '' : 's'} · click a station row for its per-deduction breakdown</span>
+                <button onClick={exportDisbCsv} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50">
+                  <Download className="w-3.5 h-3.5" /> Export CSV
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                      <th className="text-left px-4 py-3 font-medium">Station</th>
+                      <th className="text-right px-4 py-3 font-medium">Payees</th>
+                      <th className="text-right px-4 py-3 font-medium">Basic + Trans</th>
+                      <th className="text-right px-4 py-3 font-medium">PERA</th>
+                      <th className="text-right px-4 py-3 font-medium">ACA</th>
+                      <th className="text-right px-4 py-3 font-medium">Total Comp</th>
+                      <th className="text-right px-4 py-3 font-medium">Total Ded</th>
+                      <th className="text-right px-4 py-3 font-medium">Net Salary</th>
+                      <th className="text-right px-4 py-3 font-medium">GSIS L&R (Govt)</th>
+                      <th className="text-right px-4 py-3 font-medium">Medicare (Govt)</th>
+                      <th className="text-right px-4 py-3 font-medium">Pag-IBIG (Govt)</th>
+                      <th className="text-right px-4 py-3 font-medium">ECC (Govt)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {disb.list.map((t) => (
+                      <Fragment key={t.stacode}>
+                        <tr onClick={() => setExpandedSta((s) => s === t.stacode ? null : t.stacode)} className="hover:bg-slate-50 cursor-pointer">
+                          <td className="px-4 py-2.5 font-medium text-slate-800">
+                            <span className="font-mono text-xs text-slate-500 mr-2">{t.stacode}</span>
+                            {stationNames.get(t.stacode) || <span className="text-slate-400 italic">—</span>}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-slate-600">{t.payees}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-600">{currency(t.basicTrans)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-600">{currency(t.pera)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-600">{currency(t.aca)}</td>
+                          <td className="px-4 py-2.5 text-right font-medium text-slate-800">{currency(t.comp)}</td>
+                          <td className="px-4 py-2.5 text-right text-rose-600">{currency(t.ded)}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-emerald-700">{currency(t.net)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-500">{currency(t.glnr)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-500">{currency(t.gmed)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-500">{currency(t.gpag)}</td>
+                          <td className="px-4 py-2.5 text-right text-slate-500">{currency(t.gecc)}</td>
+                        </tr>
+                        {expandedSta === t.stacode && (
+                          <tr className="bg-slate-50/60">
+                            <td colSpan={12} className="px-8 py-3">
+                              {t.byCode.size === 0 ? (
+                                <p className="text-xs text-slate-400">No itemized deduction lines for this station.</p>
+                              ) : (
+                                <table className="w-full text-xs max-w-2xl">
+                                  <thead>
+                                    <tr className="text-slate-400 uppercase tracking-wider">
+                                      <th className="text-left py-1 font-medium">Dedcode</th>
+                                      <th className="text-left py-1 font-medium">Deduction</th>
+                                      <th className="text-right py-1 font-medium">Amount</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {Array.from(t.byCode.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([code, v]) => (
+                                      <tr key={code}>
+                                        <td className="py-1 font-mono text-slate-500">{code}</td>
+                                        <td className="py-1 text-slate-700">{v.name}</td>
+                                        <td className="py-1 text-right tabular-nums text-slate-700">{currency(v.amt)}</td>
+                                      </tr>
+                                    ))}
+                                    <tr className="font-semibold text-slate-800">
+                                      <td colSpan={2} className="py-1">Station deduction total</td>
+                                      <td className="py-1 text-right tabular-nums">{currency(Array.from(t.byCode.values()).reduce((s, v) => s + v.amt, 0))}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 font-semibold text-slate-700 border-t-2 border-slate-200">
+                      <td className="px-4 py-2.5">DIVISION TOTAL</td>
+                      <td className="px-4 py-2.5 text-right">{disb.div.payees}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.basicTrans)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.pera)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.aca)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.comp)}</td>
+                      <td className="px-4 py-2.5 text-right text-rose-600">{currency(disb.div.ded)}</td>
+                      <td className="px-4 py-2.5 text-right text-emerald-700">{currency(disb.div.net)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.glnr)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.gmed)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.gpag)}</td>
+                      <td className="px-4 py-2.5 text-right">{currency(disb.div.gecc)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              {disb.divCodes.length > 0 && (
+                <div className="px-5 py-4 border-t border-slate-100">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Division totals by deduction</h3>
+                  <table className="w-full text-xs max-w-3xl">
+                    <thead>
+                      <tr className="text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                        <th className="text-left py-1.5 font-medium">Dedcode</th>
+                        <th className="text-left py-1.5 font-medium">Deduction</th>
+                        <th className="text-right py-1.5 font-medium">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {disb.divCodes.map(([code, v]) => (
+                        <tr key={code}>
+                          <td className="py-1.5 font-mono text-slate-500">{code}</td>
+                          <td className="py-1.5 text-slate-700">{v.name}</td>
+                          <td className="py-1.5 text-right tabular-nums text-slate-700">{currency(v.amt)}</td>
+                        </tr>
+                      ))}
+                      <tr className="font-semibold text-slate-800">
+                        <td colSpan={2} className="py-1.5">Total itemized deductions</td>
+                        <td className="py-1.5 text-right tabular-nums">{currency(disb.divCodes.reduce((s, [, v]) => s + v.amt, 0))}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Search + Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
@@ -826,14 +1081,43 @@ export default function Payroll({ profile }: PayrollProps) {
             {entries.length > 0 ? (
               <>
                 <p className="text-sm text-slate-500 mb-1">
-                  This period has <span className="font-medium text-slate-700">{entries.length}</span> payroll {entries.length === 1 ? 'entry' : 'entries'} in the database, but none belong to the currently selected Region/Division scope.
+                  This period has <span className="font-medium text-slate-700">{entries.length}</span> payroll {entries.length === 1 ? 'entry' : 'entries'} in the database, but none are visible under the current filters.
                 </p>
-                <p className="text-xs text-slate-400 max-w-md mx-auto">
-                  {currentPeriod?.regcode && currentPeriod?.divcode && (
-                    <>The period belongs to division <span className="font-medium text-slate-500">{currentPeriod.regcode}/{currentPeriod.divcode}</span>. </>
+                <div className="text-xs text-slate-400 max-w-md mx-auto space-y-1.5">
+                  {!hiddenProbe ? (
+                    <p>Analyzing which filter hides them…</p>
+                  ) : (
+                    <>
+                      {hiddenProbe.byGroup > 0 && (
+                        <p>
+                          <span className="font-medium text-slate-500">{hiddenProbe.byGroup}</span> {hiddenProbe.byGroup === 1 ? 'entry belongs' : 'entries belong'} to employees outside the selected payroll group (stacode range).
+                          <button onClick={() => setGroupFilter({ kind: 'all' })} className="ml-1.5 px-2 py-0.5 rounded-md bg-slate-800 text-white font-medium hover:bg-slate-900 transition-colors">
+                            Show all payroll groups
+                          </button>
+                        </p>
+                      )}
+                      {(hiddenProbe.byScope > 0 || (hiddenProbe.byGroup === 0 && hiddenProbe.inactive === 0 && hiddenProbe.deleted === 0)) && (
+                        <p>
+                          {hiddenProbe.byScope > 0 && (<><span className="font-medium text-slate-500">{hiddenProbe.byScope}</span> {hiddenProbe.byScope === 1 ? 'entry belongs' : 'entries belong'} to another division. </>)}
+                          {currentPeriod?.regcode && currentPeriod?.divcode && (
+                            <>The period belongs to division <span className="font-medium text-slate-500">{currentPeriod.regcode}/{currentPeriod.divcode}</span>. </>
+                          )}
+                          Switch the Region/Division selector in the top bar to that division — or All Divisions — to view, post or reverse them.
+                        </p>
+                      )}
+                      {hiddenProbe.inactive > 0 && (
+                        <p>
+                          <span className="font-medium text-slate-500">{hiddenProbe.inactive}</span> {hiddenProbe.inactive === 1 ? 'entry references' : 'entries reference'} an employee who is no longer Active. Re-activate the employee in Employee Records to view, post or reverse {hiddenProbe.inactive === 1 ? 'it' : 'them'}.
+                        </p>
+                      )}
+                      {hiddenProbe.deleted > 0 && (
+                        <p>
+                          <span className="font-medium text-slate-500">{hiddenProbe.deleted}</span> {hiddenProbe.deleted === 1 ? 'entry references' : 'entries reference'} an employee record that no longer exists. {hiddenProbe.deleted === 1 ? 'It cannot' : 'They cannot'} be posted until the employee is restored.
+                        </p>
+                      )}
+                    </>
                   )}
-                  Switch the Region/Division selector in the top bar to that division — or All Divisions — to view, post or reverse them.
-                </p>
+                </div>
               </>
             ) : (
               <p className="text-sm text-slate-500 mb-1">

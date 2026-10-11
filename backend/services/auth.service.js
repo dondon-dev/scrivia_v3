@@ -60,6 +60,13 @@ function findAuthRecord(collection, identity, { byId = false } = {}) {
     clauses.push('LOWER(empno) = LOWER(?)');
     params.push(id);
   }
+  if (hasColumn(table, 'mobile_number')) {
+    clauses.push('LOWER(mobile_number) = LOWER(?)');
+    params.push(id);
+    // Also accept the phone with formatting differences (spaces, dashes, +).
+    clauses.push("REPLACE(REPLACE(REPLACE(mobile_number, ' ', ''), '-', ''), '+', '') = REPLACE(REPLACE(REPLACE(?, ' ', ''), '-', ''), '+', '')");
+    params.push(id);
+  }
   if (clauses.length === 0) return null;
 
   const sql = `SELECT * FROM ${quoteIdent(collection)} WHERE ${clauses.join(' OR ')} LIMIT 1`;

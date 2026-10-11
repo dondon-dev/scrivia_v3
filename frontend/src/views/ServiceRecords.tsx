@@ -341,7 +341,7 @@ export default function ServiceRecords() {
           setRecords(loadStored());
           setMessage({
             tone: 'err',
-            text: `Could not load service records from PocketBase — showing this browser's copy. ${formatError(e)}`,
+            text: `Could not load service records from the app database — showing this browser's copy. ${formatError(e)}`,
           });
         }
       } finally {
@@ -455,7 +455,7 @@ export default function ServiceRecords() {
     update(records.map((r) => replaced.get(r.id) ?? r));
     setBusy(false);
     const parts: string[] = [];
-    if (replaced.size) parts.push(`${replaced.size} record${replaced.size === 1 ? '' : 's'} uploaded to PocketBase`);
+    if (replaced.size) parts.push(`${replaced.size} record${replaced.size === 1 ? '' : 's'} uploaded to the app database`);
     if (errors.length) parts.push(errors.join(' · '));
     setMessage({ tone: errors.length ? 'err' : 'ok', text: parts.join(' — ') || 'Nothing to upload.' });
   }
@@ -645,7 +645,7 @@ export default function ServiceRecords() {
           <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Service Records</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Upload GSIS-format service record workbooks — the first sheet is parsed and recorded in the
-            PocketBase service_records collection. Identical content is skipped regardless of file name or
+            service_records table in the app database. Identical content is skipped regardless of file name or
             extension.
           </p>
         </div>
@@ -707,7 +707,7 @@ export default function ServiceRecords() {
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span className="flex-1">
             {unsyncedCount} service record{unsyncedCount === 1 ? '' : 's'} in this browser {unsyncedCount === 1 ? 'is' : 'are'} not
-            in PocketBase yet.
+            in the app database yet.
           </span>
           <button
             onClick={() => void uploadLocalRecords()}
@@ -715,7 +715,7 @@ export default function ServiceRecords() {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 disabled:opacity-50 transition-colors"
           >
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-            Save to PocketBase
+            Save to app database
           </button>
         </div>
       )}

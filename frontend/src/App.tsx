@@ -27,6 +27,7 @@ import Footer from '@/components/Footer';
 // pdfjs-dist, jszip) are only fetched when the screen that needs them opens.
 const Dashboard = lazyRetry(() => import('@/views/Dashboard'));
 const Employees = lazyRetry(() => import('@/views/Employees'));
+const Inquiry = lazyRetry(() => import('@/views/Inquiry'));
 const Payroll = lazyRetry(() => import('@/views/Payroll'));
 const Reports = lazyRetry(() => import('@/views/Reports'));
 const SalarySchedule = lazyRetry(() => import('@/views/SalarySchedule'));
@@ -379,6 +380,7 @@ export default function App() {
           ? <Dashboard onNavigate={(v) => handleNavigate(v, null)} profile={authedProfile} />
           : <RoleDashboard role={authedProfile.role} profile={authedProfile} onNavigate={(v) => handleNavigate(v, null)} />;
       case 'employees': return <Employees highlightEmpId={pendingEmpId} onConsumedHighlight={() => setPendingEmpId(null)} profile={profile} />;
+      case 'inquiry': return <Inquiry />;
       // School Payroll Coordinator lists — "Employee Movement" holds the
       // Inclusion / Exclusion / Detailed lists behind one dropdown; the Newly
       // Hired and Separated lists are their own entries (and their own tables).

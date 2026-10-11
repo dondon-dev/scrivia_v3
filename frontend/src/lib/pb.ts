@@ -1,6 +1,5 @@
 /**
- * Native API client adapter — drop-in replacement for the PocketBase SDK and
- * for the old Supabase client.
+ * Native API client adapter for the Express backend (backend/).
  *
  * Architecture:
  *   React frontend  →  Express API (backend/)  →  SQLite (app.db)
@@ -9,38 +8,31 @@
  * file imports `pb`, `supabase`, `fetchAll`, `chunkedIn`, `formatError` or
  * `rpc` from here, so the transport can change without touching call sites.
  *
- * Exports (preserved from the PocketBase-adapter era):
- *   pb               — PocketBase-shaped client (authStore / collection / send)
- *   supabase         — Supabase-shaped facade (from / rpc / auth / functions)
+ * Exports:
+ *   pb               — client (authStore / collection / send)
+ *   supabase         — chainable query facade (from / rpc / auth / functions)
  *   from             — alias of supabase.from
  *   supabaseCompat   — the auth sub-object
  *   fetchAll         — read-everything helper (string name OR arrow fn)
  *   chunkedIn        — batched `col IN (...)` helper
  *   rpc              — named-RPC helper
  *   formatError      — error → human string
- *   SUPABASE_URL, SUPABASE_ANON_KEY, PB_API_URL — legacy constants
+ *   SUPABASE_URL, SUPABASE_ANON_KEY — legacy constants
  */
 
 // ── API URL resolution ──────────────────────────────────────────────────────
-// Prefer VITE_API_URL (the new Express backend); fall back to VITE_PB_URL for
-// deployments where Express simply replaced PocketBase on the same host. With
-// neither set, '' means same-origin (SPA + API served together).
+// Uses VITE_API_URL when set; otherwise '' means same-origin (SPA + API served
+// together, with Vite proxying /api to the Express backend).
 const API_URL =
-  (
-    (import.meta.env.VITE_API_URL as string | undefined) ??
-    (import.meta.env.VITE_PB_URL as string | undefined) ??
-    ''
-  )
+  ((import.meta.env.VITE_API_URL as string | undefined) ?? '')
     .trim()
     .replace(/\/+$/, '') || '';
 
 export const SUPABASE_URL = API_URL;
 export const SUPABASE_ANON_KEY = '';
-export const PB_API_URL = API_URL;
 
 // ── Error shape ─────────────────────────────────────────────────────────────
-// Mirrors PocketBase's ClientResponseError closely enough for the app
-// (`.status`, `.message`, `.data`, `.isAbort`).
+// Carries `.status`, `.message`, `.data`, `.isAbort` for the app.
 export class ClientResponseError extends Error {
   status: number;
   data: any;
@@ -55,8 +47,8 @@ export class ClientResponseError extends Error {
   }
 }
 
-// ── Auth store (localStorage, PocketBase-compatible key/shape) ──────────────
-const AUTH_STORAGE_KEY = 'pb_auth';
+// ── Auth store (localStorage) ───────────────────────────────────────────────
+const AUTH_STORAGE_KEY = 'scrivia_auth';
 
 function decodeJwtExp(token: string): number | null {
   try {
@@ -162,7 +154,7 @@ interface SendOptions {
   body?: any;
   headers?: Record<string, string>;
   query?: Record<string, unknown>;
-  // Accepted for PocketBase signature compatibility; the Express backend has no
+  // Accepted for signature compatibility; the Express backend has no
   // per-request cancellation, so it is ignored.
   requestKey?: string | null;
   signal?: AbortSignal;
@@ -227,7 +219,7 @@ async function send<T = any>(path: string, options: SendOptions = {}): Promise<T
   return parsed as T;
 }
 
-// ── Native PocketBase-shaped client ─────────────────────────────────────────
+// ── Native client ───────────────────────────────────────────────────────────
 
 interface ListOptions {
   filter?: any;
@@ -243,7 +235,7 @@ function toFilterArg(filter: any): any {
   if (typeof filter === 'string') {
     const trimmed = filter.trim();
     if (!trimmed) return undefined;
-    return parsePocketBaseFilter(trimmed);
+    return parseFilter(trimmed);
   }
   return undefined;
 }
@@ -275,7 +267,7 @@ function collectionService(name: string) {
       const sort = opts.sort || '-created';
       const fields = toFieldsArg(opts.fields);
       const filter = toFilterArg(opts.filter);
-      // The old PocketBase server capped every page at 500 rows, so getFullList
+      // The legacy server capped every page at 500 rows, so getFullList
       // walked pages behind the scenes. Keep walking so the SQLite backend is
       // never handed an unbounded query.
       const batch = Math.min(opts.batch ?? 1000, 2000);
@@ -512,6 +504,10 @@ const RPC_MAP: Record<string, string> = {
   get_deduction_engine_stats: 'payroll/deduction-engine',
   get_school_stats: 'schools/stats',
   query_schools_with_stats: 'query-schools-with-stats',
+  get_deduction_billing_session: 'deduction-billing/session',
+  save_deduction_billing_session: 'deduction-billing/session/save',
+  clear_deduction_billing_session: 'deduction-billing/session/clear',
+  post_deduction_billing: 'deduction-billing/post',
 };
 
 export async function rpc(
@@ -607,10 +603,10 @@ function parsePostgrestNode(expr: string): any {
   return postgrestLeaf(col, opRaw, value);
 }
 
-// ── Minimal PocketBase filter-string → tree (legacy fetchAll string path) ───
-// Only the shapes the old adapter emitted are supported: leaves joined by
+// ── Minimal filter-string → tree (legacy fetchAll string path) ──────────────
+// Only the shapes the legacy adapter emitted are supported: leaves joined by
 // `&&` / `||`, with `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, and `null`.
-function parsePocketBaseFilter(input: string): any {
+function parseFilter(input: string): any {
   function splitBy(str: string, separator: string): string[] {
     const out: string[] = [];
     let depth = 0;

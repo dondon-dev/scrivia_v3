@@ -150,7 +150,7 @@ export default function DeductionMasterfile() {
   useEffect(() => {
     if (activeReport && !allDedsForReport && employees.length > 0) {
       (async () => {
-        const all = await fetchAll(() => supabase.from('payroll_deductions').select('id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds').order('empno'));
+        const all = await fetchAll(() => supabase.from('payroll_deductions').select('id,employee_id,empno,dedcode,dedid,policyno,agency,type,status,effmm,effyy,termm,teryy,dedamt,principal,interest,charges,proceeds,p,yy,mm,dd,hr,min,sec,dbf_id').order('empno'));
         const empIds = new Set(employees.map((e) => e.id));
         const empNos = new Set(employees.map((e) => (e.empno ?? e.employee_number ?? '').trim()));
         setAllDedsForReport((all as PayrollDeduction[]).filter(

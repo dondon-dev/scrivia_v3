@@ -40,6 +40,34 @@ function loginAttempt(profile, email, success) {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Compare a submitted password against the stored bcrypt hash.
+ *
+ * A verifier that cannot run (bcrypt missing, native binding unusable) or a
+ * stored value that is not a valid bcrypt hash is an infrastructure/data fault,
+ * NOT a wrong password. Reporting it as a wrong password hides the outage behind
+ * a generic 401 *and* charges a failed-login strike on every attempt, which is
+ * how accounts silently locked themselves out. Throw a 500 instead: the caller
+ * never reaches the failed-attempt bookkeeping below, so no strike is recorded.
+ */
+function verifyPassword(password, stored) {
+  let bcrypt;
+  try {
+    // eslint-disable-next-line global-require
+    bcrypt = require('bcrypt');
+  } catch {
+    throw new HttpError(500, 'Password verification is unavailable on the server (the bcrypt module could not be loaded).');
+  }
+  // Normalize first: bcrypt throws on non-string input, and a malformed request
+  // body must not be reported as a server fault.
+  const candidate = typeof password === 'string' ? password : String(password ?? '');
+  try {
+    return bcrypt.compareSync(candidate, stored);
+  } catch {
+    throw new HttpError(500, 'Stored password could not be verified: it is not a usable bcrypt hash.');
+  }
+}
+
 /** Shared credential + lockout + MFA gate logic. Returns { token, record }. */
 function authenticateIdentity(identity, password, otp) {
   const table = getTable('profiles');
@@ -47,17 +75,10 @@ function authenticateIdentity(identity, password, otp) {
 
   const profile = authSvc.findAuthRecord('profiles', identity);
   // Verify the password first so a caller who does not know it learns nothing
-  // about whether the account exists or is enrolled (matches the hook).
-  let passwordOk = false;
-  if (profile && profile.password) {
-    try {
-      // eslint-disable-next-line global-require
-      const bcrypt = require('bcrypt');
-      passwordOk = bcrypt.compareSync(password, profile.password);
-    } catch {
-      passwordOk = false;
-    }
-  }
+  // about whether the account exists or is enrolled (matches the hook). Only an
+  // account that exists reaches the verifier, so an unknown identity still
+  // fails exactly as a wrong password would.
+  const passwordOk = profile && profile.password ? verifyPassword(password, profile.password) : false;
 
   if (passwordOk && profile.locked_until) {
     const lockTime = new Date(profile.locked_until).getTime();

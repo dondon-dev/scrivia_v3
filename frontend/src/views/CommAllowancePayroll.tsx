@@ -379,7 +379,7 @@ export default function CommAllowancePayroll({ profile, payrollId, onBack }: Pro
           <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0" />
           <div className="flex-1">
             <p className="font-semibold">Database setup incomplete.</p>
-            <p className="mt-0.5">Apply the <strong>PocketBase CA migration</strong> (<code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">pb_migrations/</code>) to create all 4 CA collections plus the <strong>category</strong> and <strong>stacode</strong> fields — or run the consolidated setup script in your PocketBase Admin SQL console:</p>
+            <p className="mt-0.5">Run the <strong>CA setup script</strong> (<code className="font-mono text-[11px] bg-amber-100 px-1.5 py-0.5 rounded">src/sql/ca_setup.sql</code>) against the app database (app.db) to create all 4 CA collections plus the <strong>category</strong> and <strong>stacode</strong> fields — or copy the SQL below:</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => {

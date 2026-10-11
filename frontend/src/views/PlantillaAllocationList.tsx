@@ -2046,7 +2046,7 @@ const [level, setLevel] = useState<PalLevel | null>(initialTab ?? 'elementary');
         <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
-            No filled PSIPOP positions are loaded in this PocketBase (<code className="font-mono">plantilla_positions</code> is empty). Employee name, SG/step &amp; monthly rate will still auto-fill from Employee Records; <strong>Item No. (1)</strong> appears once you import the latest PSIPOP (Plantilla Intelligence Center) and re-open this page.
+            No filled PSIPOP positions are loaded in the app database (<code className="font-mono">plantilla_positions</code> is empty). Employee name, SG/step &amp; monthly rate will still auto-fill from Employee Records; <strong>Item No. (1)</strong> appears once you import the latest PSIPOP (Plantilla Intelligence Center) and re-open this page.
           </div>
         </div>
       ) : null}
@@ -2187,7 +2187,7 @@ const [level, setLevel] = useState<PalLevel | null>(initialTab ?? 'elementary');
                 <ListTree className="w-6 h-6 text-slate-300 dark:text-slate-600" />
               </div>
               <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No rows yet</p>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Search a name or type an EMPNO above (or click Add Row) to start encoding. Rows autosave to this division's list in PocketBase.</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Search a name or type an EMPNO above (or click Add Row) to start encoding. Rows autosave to this division's list in the app database.</p>
             </div>
           </div>
         ) : filteredRows.length === 0 ? (
@@ -2211,7 +2211,7 @@ const [level, setLevel] = useState<PalLevel | null>(initialTab ?? 'elementary');
               {rowFilter ? (
                 <>{filteredRows.length} of {rows.length} row{rows.length === 1 ? '' : 's'} match &ldquo;{rowFilter}&rdquo;</>
               ) : (
-                <><strong className="text-slate-700 dark:text-slate-200">{rows.length}</strong> encoded row{rows.length === 1 ? '' : 's'} · autosaved to PocketBase ({palCategory} · {level ? PAL_LEVELS[level].label : ''})</>
+                <><strong className="text-slate-700 dark:text-slate-200">{rows.length}</strong> encoded row{rows.length === 1 ? '' : 's'} · autosaved to the app database ({palCategory} · {level ? PAL_LEVELS[level].label : ''})</>
               )}
             </p>
             <div className="relative w-full sm:w-72">

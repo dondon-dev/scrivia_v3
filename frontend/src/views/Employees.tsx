@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Pagination } from '@/components/Pagination';
 import { useServerPagination } from '@/lib/useServerPagination';
-import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical, Eye } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, X, Download, Building2, AlertCircle, ChevronDown, ChevronRight, CheckCircle2, Upload, FileUp, MoreVertical, Eye, Printer } from 'lucide-react';
 import { supabase, fetchAll } from '@/lib/pb';
 import { useOrg, matchesOrgScope } from '@/lib/org';
 import { generateMasterfileDbf, downloadFile, currency } from '@/lib/reports';
@@ -294,6 +294,408 @@ function empClientFilter(
   return true;
 }
 
+// ── Legacy masterfile prints — PAYFORM7, PAYPVP4, PAYPVP1 ───────────────────
+// The three report verbs off PAYFMEN1 are character-cell forms: every value was
+// printed at a fixed `@row,col`, off MASTFILE sorted to STACODE/EMPNO, with
+// POSTFILE supplying the position title and the station table the station name.
+// The port keeps that geometry — a page is a 62 × 133 character buffer filled in
+// the same order as the original and rendered 1:1 in Courier — so the printed
+// sheet is the same sheet, now driven by the masterfile rows instead of the DBF
+// copies. Nothing here is a new form: PAYFORM7 → Print Form 7, PAYPVP4 → Print
+// PVP Rep, PAYPVP1 → Print FDOS Rep.
+
+type LegacyReportKind = 'form7' | 'pvp' | 'fdos';
+
+const LEGACY_REPORT_TITLES: Record<LegacyReportKind, string> = {
+  form7: 'Print Form 7 — Monthly Payroll Worksheet & Report of Service',
+  pvp: 'Print PVP Rep — Proportional Vacation Pay Report',
+  fdos: 'Print FDOS Rep — First Day of Service Report',
+};
+
+const LEGACY_PAGE_ROWS = 62;
+const LEGACY_PAGE_COLS = 133;
+
+interface LegacyPage {
+  cells: string[][];
+}
+
+function legacyPage(): LegacyPage {
+  return { cells: Array.from({ length: LEGACY_PAGE_ROWS }, () => new Array<string>(LEGACY_PAGE_COLS).fill(' ')) };
+}
+
+/** `@row,col say text` — the original's 0-based coordinates, keep them as they are. */
+function legacySay(pg: LegacyPage, row: number, col: number, text: string): void {
+  if (row < 0 || row >= LEGACY_PAGE_ROWS) return;
+  for (let i = 0; i < text.length; i++) {
+    const c = col + i;
+    if (c >= 0 && c < LEGACY_PAGE_COLS) pg.cells[row][c] = text[i];
+  }
+}
+
+function legacyCenter(pg: LegacyPage, row: number, text: string): void {
+  legacySay(pg, row, Math.max(0, Math.round((LEGACY_PAGE_COLS - text.length) / 2)), text);
+}
+
+function legacyRule(pg: LegacyPage, row: number, col: number, width: number): void {
+  legacySay(pg, row, col, '-'.repeat(width));
+}
+
+function legacyPageText(pg: LegacyPage): string[] {
+  return pg.cells.map((r) => r.join('').replace(/\s+$/, ''));
+}
+
+/**
+ * `pict '99999'` — right-aligned integer. FoxPro fills the field with `*` when
+ * the number will not fit, so an amount too wide for the form stays visible
+ * instead of being silently cut: the port keeps that behaviour.
+ */
+function legacyPict(value: number, width: number): string {
+  const digits = String(Math.round(Math.abs(Number(value) || 0)));
+  if (digits.length > width) return '*'.repeat(width);
+  return digits.padStart(width, ' ');
+}
+
+/** `pict '9,999'` — the page-number picture. */
+function legacyPictPage(value: number): string {
+  const s = Math.round(value).toLocaleString('en-US');
+  return s.length > 5 ? '*'.repeat(5) : s.padStart(5, ' ');
+}
+
+const legacyPad2 = (n: number) => String(n).padStart(2, '0');
+
+/** `say date()` with SET DATE TO AMERICAN — mm/dd/yyyy. */
+function legacyDate(d: Date): string {
+  return `${legacyPad2(d.getMonth() + 1)}/${legacyPad2(d.getDate())}/${d.getFullYear()}`;
+}
+
+/** `say time()` — 24-hour hh:mm:ss. */
+function legacyTime(d: Date): string {
+  return `${legacyPad2(d.getHours())}:${legacyPad2(d.getMinutes())}:${legacyPad2(d.getSeconds())}`;
+}
+
+/**
+ * `regionx` from the original's DO CASE. A region with a name on file prints
+ * its name (this division is `04A` → CALABARZON, a code the original's table
+ * never carried); a bare numeric region falls back to the original's label.
+ */
+const LEGACY_REGION_LABELS: Record<string, string> = {
+  '01': 'REGION I', '02': 'REGION II', '03': 'REGION III', '04': 'REGION IV',
+  '05': 'REGION V', '06': 'REGION VI', '07': 'REGION VII', '08': 'REGION VIII',
+  '09': 'REGION IX', '10': 'REGION X', '11': 'REGION XI', '12': 'REGION XII',
+  '13': 'REGION XIII', CAR: 'DepEd CAR', NCR: 'DepEd NCR',
+};
+
+function legacyRegionLabel(regcode: string, regionName: string): string {
+  const named = (regionName ?? '').trim();
+  if (named) return named.toUpperCase();
+  const code = (regcode ?? '').trim().toUpperCase();
+  if (LEGACY_REGION_LABELS[code]) return LEGACY_REGION_LABELS[code];
+  const twoDigit = code.match(/^\d{2}/);
+  return (twoDigit && LEGACY_REGION_LABELS[twoDigit[0]]) || '';
+}
+
+interface LegacyEmployeeRow {
+  empno: string;
+  fname: string;
+  mi: string;
+  lname: string;
+  appel: string;
+  poscode: string;
+  stacode: string;
+  divcode: string;
+  status: string;
+  attend: string;
+  basic: number;
+  trans: number;
+  pera: number;
+  aca: number;
+}
+
+/** Only the masterfile columns the three forms actually print. */
+const LEGACY_EMPLOYEE_COLUMNS = 'empno,employee_number,fname,first_name,mi,lname,last_name,appel,poscode,position,stacode,divcode,regcode,division_id,status,attend,basic,basic_salary,trans,pera,aca';
+
+function toLegacyRow(e: Partial<Employee> & Record<string, unknown>): LegacyEmployeeRow {
+  const num = (v: unknown) => Number(v) || 0;
+  const str = (v: unknown) => String(v ?? '').trim();
+  return {
+    empno: str(e.empno) || str(e.employee_number),
+    fname: str(e.fname) || str(e.first_name),
+    mi: str(e.mi),
+    lname: str(e.lname) || str(e.last_name),
+    appel: str(e.appel),
+    poscode: str(e.poscode) || str(e.position),
+    stacode: str(e.stacode).slice(0, 3),
+    divcode: str(e.divcode),
+    status: str(e.status),
+    attend: str(e.attend).toUpperCase(),
+    basic: num(e.basic) || num(e.basic_salary),
+    trans: num(e.trans),
+    pera: num(e.pera),
+    aca: num(e.aca),
+  };
+}
+
+// The original wrote `if mi <> ' '` against a space-padded C20 field, whose
+// blank value is twenty spaces — so a blank middle initial printed an empty
+// gap. The port reads the trimmed value and drops the initial when there is
+// none, which is what the operator saw on the paper.
+function legacyName(r: LegacyEmployeeRow, withAppel: boolean): string {
+  const first = r.mi ? `${r.fname} ${r.mi.slice(0, 1)} ${r.lname}` : `${r.fname} ${r.lname}`;
+  return withAppel && r.appel ? `${first} ${r.appel}` : first;
+}
+
+interface LegacyReportContext {
+  rows: LegacyEmployeeRow[];
+  /** '' = ALL STATIONS, exactly the blank station code the original accepted. */
+  stationCode: string;
+  stationName: string;
+  stationNameFor: (stacode: string) => string;
+  posTitle: (poscode: string) => string;
+  reportDate: Date;
+  generatedAt: Date;
+  regionLabel: string;
+  divisionName: string;
+  depthead: string;
+}
+
+/**
+ * `sort to worksort on stacode,empno` — the station is the page break, so the
+ * rows are grouped by it. A requested station is printed whether or not it has
+ * rows, which is what `LOCATE ... DO WHILE MV_STACODE = STACODE` did.
+ */
+function legacyStationGroups(
+  rows: LegacyEmployeeRow[],
+  stationCode: string,
+): { stacode: string; rows: LegacyEmployeeRow[] }[] {
+  const wanted = stationCode.trim();
+  const sorted = [...rows].sort(
+    (a, b) => a.stacode.localeCompare(b.stacode) || a.empno.localeCompare(b.empno),
+  );
+  if (wanted) return [{ stacode: wanted, rows: sorted.filter((r) => r.stacode === wanted) }];
+  const groups: { stacode: string; rows: LegacyEmployeeRow[] }[] = [];
+  for (const r of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && last.stacode === r.stacode) last.rows.push(r);
+    else groups.push({ stacode: r.stacode, rows: [r] });
+  }
+  return groups.length > 0 ? groups : [{ stacode: '', rows: [] }];
+}
+
+function legacyLetterhead(pg: LegacyPage, page: number, ctx: LegacyReportContext): void {
+  legacySay(pg, 1, 2, legacyDate(ctx.generatedAt));
+  if (ctx.depthead) legacyCenter(pg, 1, ctx.depthead);
+  legacySay(pg, 1, 120, 'Page - ');
+  legacySay(pg, 1, 127, legacyPictPage(page));
+  legacySay(pg, 2, 2, legacyTime(ctx.generatedAt));
+}
+
+/** FORM7HED / PVPHED of PAYPVPX — the Form 7 and FDOS letterhead. */
+function legacyWorksheetHeader(
+  pg: LegacyPage,
+  page: number,
+  stacode: string,
+  stationName: string,
+  ctx: LegacyReportContext,
+  firstDayColumn: boolean,
+): void {
+  legacyLetterhead(pg, page, ctx);
+  legacyCenter(pg, 2, `${ctx.regionLabel} - Division of ${ctx.divisionName}`);
+  legacyCenter(pg, 3, 'Implementation of Programs for Basic Education');
+  legacyCenter(pg, 4, 'Monthly Payroll Worksheet & Report of Service');
+  legacyCenter(pg, 5, `For the Month of ${ctx.reportDate.toLocaleDateString('en-US', { month: 'long' })}, ${ctx.reportDate.getFullYear()}`);
+  legacySay(pg, 7, 2, 'Station  : ');
+  legacySay(pg, 7, 14, stacode);
+  if (stationName) legacySay(pg, 7, 18, stationName);
+  legacyRule(pg, 8, 2, 44);
+  legacyRule(pg, 8, 46, 44);
+  legacyRule(pg, 8, 90, 46);
+  legacySay(pg, 9, 2, '|     |');
+  legacySay(pg, 9, 32, '|');
+  legacySay(pg, 9, 61, '| |');
+  legacySay(pg, 9, 69, firstDayColumn ? '|PERA|  First  |' : '|PERA| Absences/Undertimes |       |        |            |        |');
+  if (firstDayColumn) legacySay(pg, 9, 114, '                     |');
+  legacySay(pg, 10, 2, '|Empno|');
+  legacySay(pg, 10, 9, '   Employee Name        ');
+  legacySay(pg, 10, 32, '| Position Title  ');
+  legacySay(pg, 10, 61, '|S|');
+  legacySay(pg, 10, 64, 'Basic');
+  legacySay(pg, 10, 69, firstDayColumn ? '|/ACA| Day of  |                R E M A R K S' : '|/ACA| Inclusive  |Dy/Hr/Mi| Cause |');
+  legacySay(pg, 10, firstDayColumn ? 114 : 105, firstDayColumn ? '                     |' : 'Division| Deductions |Remarks |');
+  legacySay(pg, 11, 2, '|     |');
+  legacySay(pg, 11, 32, '|');
+  legacySay(pg, 11, 61, '| |');
+  legacySay(pg, 11, 69, firstDayColumn ? '|    | Service |' : '|    |   dates    |        |       |');
+  if (firstDayColumn) {
+    legacySay(pg, 11, 114, '                     |');
+  } else {
+    legacySay(pg, 11, 105, ' Action |Basic | P/A |        |');
+  }
+  legacyRule(pg, 12, 2, 44);
+  legacyRule(pg, 12, 46, 44);
+  legacyRule(pg, 12, 90, 46);
+}
+
+/** PVPHED of PAYPVPW — the PVP report's letterhead. */
+function legacyPvpHeader(pg: LegacyPage, page: number, stationName: string, ctx: LegacyReportContext): void {
+  legacyLetterhead(pg, page, ctx);
+  legacyCenter(pg, 2, `${ctx.regionLabel} - DIVISION of ${ctx.divisionName}`);
+  legacyCenter(pg, 3, stationName);
+  legacyCenter(pg, 4, 'PROPORTIONAL VACATION PAY REPORT');
+  legacySay(pg, 6, 5, 'THE SECRETARY OF EDUCATION');
+  legacySay(pg, 7, 5, `THRU THE DIRECTOR, ${ctx.regionLabel}`);
+  legacySay(pg, 9, 5, 'SIR:');
+  legacySay(pg, 10, 10, 'The following teachers are entitled to payment of long vacation salary:');
+  legacyRule(pg, 12, 1, 130);
+  legacySay(pg, 13, 1, ' Div  Sta  Emp No.  Employee Name');
+  legacySay(pg, 13, 50, '| Basic + | Inclusive Period | Absence W/O Pay |');
+  legacySay(pg, 13, 98, ' Long Vac. Salary Due | Total');
+  legacySay(pg, 14, 50, '|PERA/ACA |    Of Service    |  During the SY  |');
+  legacySay(pg, 14, 98, '   Inclusive Period   |  Days');
+  legacyRule(pg, 15, 1, 130);
+}
+
+function legacyForm7Footer(pg: LegacyPage): void {
+  legacyRule(pg, 53, 2, 44);
+  legacyRule(pg, 53, 46, 44);
+  legacyRule(pg, 53, 90, 46);
+  legacySay(pg, 55, 40, '           CERTIFIED CORRECT:              ');
+  legacySay(pg, 55, 95, '   APPROVED BY: ');
+  legacySay(pg, 58, 40, '         -----------------------');
+  legacySay(pg, 58, 95, '--------------------');
+  legacySay(pg, 59, 40, '         Principal/Head of School');
+  legacySay(pg, 59, 95, '   Superintendent   ');
+}
+
+/** PVPFOT of PAYPVPX — the FDOS report's footer. */
+function legacyFdosFooter(pg: LegacyPage): void {
+  legacyRule(pg, 55, 2, 44);
+  legacyRule(pg, 55, 46, 44);
+  legacyRule(pg, 55, 90, 46);
+  legacySay(pg, 57, 40, '           CERTIFIED CORRECT:              ');
+  legacySay(pg, 57, 95, '   APPROVED BY: ');
+  legacySay(pg, 60, 40, '         -----------------------');
+  legacySay(pg, 60, 95, '--------------------');
+  legacySay(pg, 61, 40, '         Principal/Head of School');
+  legacySay(pg, 61, 95, '   Superintendent   ');
+}
+
+/** PVPFOT of PAYPVPW — the PVP report's footer. */
+function legacyPvpFooter(pg: LegacyPage): void {
+  legacySay(pg, 55, 12, 'I HEREBY CERTIFY THAT TEACHERS LISTED ABOVE HAVE BEEN CLEARED OF ALL MONEY AND PROPERTY RESPONSIBILITIES AND ARE ENTITLED');
+  legacySay(pg, 56, 7, 'TO PAYMENT OF LONG VACATION SALARY');
+  legacyRule(pg, 60, 12, 30);
+  legacyRule(pg, 60, 50, 30);
+  legacyRule(pg, 60, 93, 30);
+}
+
+/** The masterfile detail line PAYFORMS (Form 7) and PAYPVP3 (FDOS) share. */
+function legacyMasterDetail(pg: LegacyPage, line: number, r: LegacyEmployeeRow, ctx: LegacyReportContext): void {
+  const title = ctx.posTitle(r.poscode);
+  legacySay(pg, line, 1, r.empno);
+  legacySay(pg, line, 9, legacyName(r, true));
+  if (title) {
+    legacySay(pg, line, 35, title);
+    legacySay(pg, line, 62, r.status.slice(0, 1));
+    legacySay(pg, line, 64, legacyPict(r.basic, 5));
+    legacySay(pg, line, 70, legacyPict(r.pera + r.aca, 4));
+  } else {
+    legacySay(pg, line, 33, 'position code not found');
+  }
+}
+
+/** The detail line PAYPVP6 (PVP report) prints. */
+function legacyPvpDetail(pg: LegacyPage, line: number, r: LegacyEmployeeRow): void {
+  legacySay(pg, line, 2, r.divcode);
+  legacySay(pg, line, 7, r.stacode);
+  legacySay(pg, line, 12, r.empno);
+  legacySay(pg, line, 21, legacyName(r, false));
+  legacySay(pg, line, 52, legacyPict(r.basic + r.trans + r.pera + r.aca, 5));
+}
+
+/**
+ * PAYFORM7 — a page break every 20 detail lines (`if line > 51`), each station
+ * opening its own letterhead, and the certification block closing every page.
+ */
+function buildForm7Report(ctx: LegacyReportContext): string[][] {
+  const pages: string[][] = [];
+  for (const group of legacyStationGroups(ctx.rows, ctx.stationCode)) {
+    let page = pages.length + 1;
+    let pg = legacyPage();
+    const stationName = ctx.stationCode ? ctx.stationName : ctx.stationNameFor(group.stacode);
+    legacyWorksheetHeader(pg, page, group.stacode, stationName, ctx, false);
+    let line = 12;
+    for (const r of group.rows) {
+      if (line > 51) {
+        legacyForm7Footer(pg);
+        pages.push(legacyPageText(pg));
+        page += 1;
+        pg = legacyPage();
+        legacyWorksheetHeader(pg, page, group.stacode, stationName, ctx, false);
+        line = 12;
+      }
+      line += 2;
+      legacyMasterDetail(pg, line, r, ctx);
+    }
+    legacyForm7Footer(pg);
+    pages.push(legacyPageText(pg));
+  }
+  return pages;
+}
+
+/** PAYPVP1 — the First Day of Service report (FDOS Rep). */
+function buildFdosReport(ctx: LegacyReportContext): string[][] {
+  const pages: string[][] = [];
+  for (const group of legacyStationGroups(ctx.rows, ctx.stationCode)) {
+    let page = pages.length + 1;
+    let pg = legacyPage();
+    const stationName = ctx.stationCode ? ctx.stationName : ctx.stationNameFor(group.stacode);
+    legacyWorksheetHeader(pg, page, group.stacode, stationName, ctx, true);
+    let line = 12;
+    for (const r of group.rows) {
+      if (line > 51) {
+        legacyFdosFooter(pg);
+        pages.push(legacyPageText(pg));
+        page += 1;
+        pg = legacyPage();
+        legacyWorksheetHeader(pg, page, group.stacode, stationName, ctx, true);
+        line = 12;
+      }
+      line += 2;
+      legacyMasterDetail(pg, line, r, ctx);
+    }
+    legacyFdosFooter(pg);
+    pages.push(legacyPageText(pg));
+  }
+  return pages;
+}
+
+/** PAYPVP4 — the PVP report, whose detail band starts one row lower (line 15). */
+function buildPvpReport(ctx: LegacyReportContext): string[][] {
+  const pages: string[][] = [];
+  for (const group of legacyStationGroups(ctx.rows, ctx.stationCode)) {
+    let page = pages.length + 1;
+    let pg = legacyPage();
+    const stationName = ctx.stationCode ? ctx.stationName : ctx.stationNameFor(group.stacode);
+    legacyPvpHeader(pg, page, stationName, ctx);
+    let line = 15;
+    for (const r of group.rows) {
+      if (line > 51) {
+        legacyPvpFooter(pg);
+        pages.push(legacyPageText(pg));
+        page += 1;
+        pg = legacyPage();
+        legacyPvpHeader(pg, page, stationName, ctx);
+        line = 15;
+      }
+      line += 2;
+      legacyPvpDetail(pg, line, r);
+    }
+    legacyPvpFooter(pg);
+    pages.push(legacyPageText(pg));
+  }
+  return pages;
+}
+
 export default function Employees({ highlightEmpId, onConsumedHighlight, profile }: { highlightEmpId?: string | null; onConsumedHighlight?: () => void; profile?: UserProfile | null }) {
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState<GroupFilterValue>({ kind: 'all' });
@@ -380,6 +782,18 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
   const load = useCallback(async () => {
     const { data: grp } = await supabase.from('payroll_groups').select('id,group_code,group_name,stacode_min,stacode_max,status').order('group_code');
     setPayrollGroups((grp as unknown as { id: string; group_code: string; group_name: string; stacode_min: number | null; stacode_max: number | null; status: string }[]) ?? []);
+    // Division profile — the legacy report letterheads name the division, the
+    // region and the department head above every page.
+    const { data: office } = await supabase
+      .from('division_office')
+      .select('division_id,division_code,division_name,region,sds_name');
+    setDivisionOffice((office as unknown as {
+      division_id: string | null;
+      division_code: string;
+      division_name: string;
+      region: string;
+      sds_name: string;
+    }[]) ?? []);
   }, []);
 
   useEffect(() => { load(); refreshFn.current(); }, [load]);
@@ -451,6 +865,111 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
   }, [salaryMap]);
 
   const lookedUpSalary = form.grade > 0 && form.step > 0 ? salaryMap.get(`${form.grade}-${form.step}`) : undefined;
+
+  // ── Legacy masterfile prints (PAYFMEN1 → PAYFORM7, PAYPVP4, PAYPVP1) ──────
+  const [printMenuOpen, setPrintMenuOpen] = useState(false);
+  const [legacyPrompt, setLegacyPrompt] = useState<{ kind: LegacyReportKind; station: string; date: string } | null>(null);
+  const [legacyReport, setLegacyReport] = useState<{ kind: LegacyReportKind; pages: string[][]; rows: number; station: string } | null>(null);
+  const [legacyBusy, setLegacyBusy] = useState(false);
+  const [legacyPrintError, setLegacyPrintError] = useState('');
+  const [divisionOffice, setDivisionOffice] = useState<{
+    division_id: string | null;
+    division_code: string;
+    division_name: string;
+    region: string;
+    sds_name: string;
+  }[]>([]);
+
+  // The station table the original sought (`seek mv_divcode+mv_stacode`).
+  const stationNameByCode = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of schools) if (s.school_code && !m.has(s.school_code)) m.set(s.school_code, s.school_name);
+    return m;
+  }, [schools]);
+
+  const legacyPosTitle = useCallback(
+    (poscode: string) => {
+      const p = lookupPosition(poscode);
+      return String(p?.position_title || p?.position_name || '').trim();
+    },
+    [lookupPosition],
+  );
+
+  // Letterhead parts: the division and region names the org tables already
+  // hold, plus the department head the original printed on line 1 (the
+  // division profile's superintendent).
+  const legacyOfficeRow = useMemo(() => {
+    const divcode = scopeDivcodes && scopeDivcodes.length === 1 ? scopeDivcodes[0] : null;
+    return divisionOffice.find((d) => d.division_id && scopedDivisionIds?.includes(d.division_id))
+      ?? divisionOffice.find((d) => divcode && d.division_code === divcode)
+      ?? divisionOffice[0];
+  }, [divisionOffice, scopedDivisionIds, scopeDivcodes]);
+
+  const legacyDivisionName = useMemo(() => {
+    const divcode = scopeDivcodes && scopeDivcodes.length === 1 ? scopeDivcodes[0] : null;
+    const fromOrg = orgDivisions.find((d) => (divcode && d.division_code === divcode) || scopedDivisionIds?.includes(d.id));
+    return String(legacyOfficeRow?.division_name || fromOrg?.division_name || divcode || '').trim();
+  }, [legacyOfficeRow, orgDivisions, scopedDivisionIds, scopeDivcodes]);
+
+  const legacyRegionName = useMemo(() => {
+    const found = orgRegions.find((r) => r.region_code === scopeRegcode);
+    return String(found?.region_name || legacyOfficeRow?.region || '').trim();
+  }, [orgRegions, scopeRegcode, legacyOfficeRow]);
+
+  const legacyDepthead = useMemo(() => String(legacyOfficeRow?.sds_name || '').trim(), [legacyOfficeRow]);
+
+  function openLegacyPrint(kind: LegacyReportKind) {
+    setPrintMenuOpen(false);
+    setLegacyPrintError('');
+    setLegacyPrompt({ kind, station: '', date: new Date().toISOString().slice(0, 10) });
+  }
+
+  /**
+   * Build the requested legacy report. The original read the whole masterfile
+   * (`use mastfile` → `sort to worksort on stacode,empno`), not the page on
+   * screen, so this reads every employee in the division and prints them in the
+   * same station/empno order.
+   */
+  async function runLegacyReport() {
+    if (!legacyPrompt) return;
+    const { kind, station, date } = legacyPrompt;
+    setLegacyBusy(true);
+    setLegacyPrintError('');
+    try {
+      const all = await fetchAll(() => supabase.from('employees').select(LEGACY_EMPLOYEE_COLUMNS));
+      let rows = all
+        .filter((row) => matchesOrgScope(
+          row as { division_id?: string | null; regcode?: string | null; divcode?: string | null },
+          { scopedDivisionIds, scopedCodes },
+        ))
+        .map((row) => toLegacyRow(row as Partial<Employee> & Record<string, unknown>));
+      // PAYFORM7 narrows the sort with `set filt to attend = 'A'`; the PVP and
+      // FDOS reports take the file as it stands.
+      if (kind === 'form7') rows = rows.filter((r) => r.attend === 'A');
+      const parsed = new Date(`${date}T00:00:00`);
+      const ctx: LegacyReportContext = {
+        rows,
+        stationCode: station,
+        stationName: stationNameByCode.get(station) ?? '',
+        stationNameFor: (code) => stationNameByCode.get(code) ?? '',
+        posTitle: legacyPosTitle,
+        reportDate: Number.isNaN(parsed.getTime()) ? new Date() : parsed,
+        generatedAt: new Date(),
+        regionLabel: legacyRegionLabel(scopeRegcode ?? '', legacyRegionName),
+        divisionName: legacyDivisionName,
+        depthead: legacyDepthead,
+      };
+      const pages = kind === 'form7'
+        ? buildForm7Report(ctx)
+        : kind === 'pvp' ? buildPvpReport(ctx) : buildFdosReport(ctx);
+      setLegacyReport({ kind, pages, rows: rows.length, station });
+      setLegacyPrompt(null);
+    } catch (err) {
+      setLegacyPrintError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLegacyBusy(false);
+    }
+  }
 
   function openAdd() {
     setEditing(null);
@@ -1040,6 +1559,44 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
               </button>
             </>
           )}
+          {/* The three report verbs off the legacy masterfile menu. A report is a
+              read, so it is offered to view-only roles too — PAYFORM7 (Form 7),
+              PAYPVP4 (PVP Rep) and PAYPVP1 (FDOS Rep). */}
+          <div className="relative">
+            <button
+              onClick={() => setPrintMenuOpen(!printMenuOpen)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              title="Legacy masterfile prints"
+            >
+              <Printer className="w-4 h-4" /> Legacy Prints
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+            {printMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setPrintMenuOpen(false)} />
+                <div className="absolute right-0 mt-2 w-72 bg-white rounded-lg shadow-xl border border-slate-200 z-20 py-1">
+                  {(['form7', 'pvp', 'fdos'] as LegacyReportKind[]).map((kind) => (
+                    <button
+                      key={kind}
+                      onClick={() => openLegacyPrint(kind)}
+                      className="w-full text-left px-4 py-2.5 hover:bg-slate-50 transition-colors"
+                    >
+                      <span className="block text-sm text-slate-700">
+                        {kind === 'form7' ? 'Print Form 7' : kind === 'pvp' ? 'Print PVP Rep' : 'Print FDOS Rep'}
+                      </span>
+                      <span className="block text-[11px] text-slate-400">
+                        {kind === 'form7'
+                          ? 'PAYFORM7 — by station, attendance A'
+                          : kind === 'pvp'
+                            ? 'PAYPVP4 — proportional vacation pay'
+                            : 'PAYPVP1 — first day of service'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           {canWrite && (
             <button
               onClick={openAdd}
@@ -1632,6 +2189,115 @@ export default function Employees({ highlightEmpId, onConsumedHighlight, profile
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+      {/* Legacy masterfile prints — station + report date, then the form */}
+      {legacyPrompt && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+            <div className="flex items-start justify-between px-6 py-4 border-b border-slate-100">
+              <div>
+                <h2 className="font-semibold text-slate-800 text-sm">{LEGACY_REPORT_TITLES[legacyPrompt.kind]}</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Enter a station code, or leave it blank to print every station.</p>
+              </div>
+              <button
+                onClick={() => { setLegacyPrompt(null); setLegacyPrintError(''); }}
+                className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"
+                title="Quit"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <label className="block">
+                <span className="block text-[11px] text-slate-500 mb-1">Code of Station for printing (blank = ALL STATIONS)</span>
+                <input
+                  value={legacyPrompt.station}
+                  onChange={(e) => setLegacyPrompt({ ...legacyPrompt, station: e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 3) })}
+                  placeholder="999"
+                  className={inputCls}
+                />
+              </label>
+              <p className="text-xs">
+                {legacyPrompt.station
+                  ? stationNameByCode.has(legacyPrompt.station)
+                    ? <span className="text-slate-600">Printing for <span className="font-medium text-slate-800">{stationNameByCode.get(legacyPrompt.station)}</span></span>
+                    : <span className="text-rose-600">Invalid Station Code</span>
+                  : <span className="text-slate-600">Printing for <span className="font-medium text-slate-800">ALL STATIONS</span></span>}
+              </p>
+              <label className="block">
+                <span className="block text-[11px] text-slate-500 mb-1">Report date [mm/dd/yyyy]</span>
+                <input
+                  type="date"
+                  value={legacyPrompt.date}
+                  onChange={(e) => setLegacyPrompt({ ...legacyPrompt, date: e.target.value })}
+                  className={inputCls}
+                />
+              </label>
+              {legacyPrintError && <p className="text-xs text-rose-600">{legacyPrintError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
+              <button
+                onClick={() => { setLegacyPrompt(null); setLegacyPrintError(''); }}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                Quit
+              </button>
+              <button
+                onClick={runLegacyReport}
+                disabled={legacyBusy || (!!legacyPrompt.station && !stationNameByCode.has(legacyPrompt.station))}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 transition-colors"
+              >
+                {legacyBusy ? 'Building…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* The printed sheet as the original formatted it: 133-column Courier pages. */}
+      {legacyReport && (
+        <div className="fixed inset-0 z-[100] bg-slate-200 overflow-auto print:bg-white">
+          <style>{`
+            /* 133 columns at 8pt Courier is 8.9in wide and 60 lines is 7.6in tall:
+               the sheet is the legacy continuous form, so it lands on legal
+               landscape one page per sheet. The family is repeated on the <pre>
+               because the app's global "pre" rule would otherwise win over the
+               inherited one. */
+            @page { size: legal landscape; margin: 6mm; }
+            .legacy-print-sheet { font-family: 'Courier New', Courier, monospace; font-size: 8pt; line-height: 1.15; color: #000; }
+            .legacy-print-page { white-space: pre; break-after: page; page-break-after: always; font-family: 'Courier New', Courier, monospace; font-size: 8pt; line-height: 1.15; }
+            .legacy-print-page:last-child { break-after: auto; page-break-after: auto; }
+            @media print {
+              .legacy-print-sheet { margin: 0 !important; padding: 0 !important; box-shadow: none !important; }
+              * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            }
+          `}</style>
+          <div className="sticky top-0 z-10 bg-slate-900 text-white px-4 py-2.5 flex items-center gap-3 print:hidden">
+            <button
+              onClick={() => setLegacyReport(null)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-sm font-medium transition-colors"
+            >
+              <X className="w-4 h-4" /> Back to Employee Records
+            </button>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold truncate">{LEGACY_REPORT_TITLES[legacyReport.kind]}</p>
+              <p className="text-[11px] text-slate-400 font-mono">
+                {legacyReport.station ? `STATION ${legacyReport.station}` : 'ALL STATIONS'} · {legacyReport.rows.toLocaleString()} employee(s) · {legacyReport.pages.length} page(s) · legal landscape · Courier
+              </p>
+            </div>
+            <button
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-semibold transition-colors"
+            >
+              <Printer className="w-4 h-4" /> Print / Save as PDF
+            </button>
+          </div>
+          <div className="mx-auto my-6 bg-white shadow-2xl px-6 py-4 legacy-print-sheet print:my-0 print:shadow-none">
+            {legacyReport.pages.map((lines, i) => (
+              <pre key={i} className="legacy-print-page">{lines.join('\n')}</pre>
+            ))}
           </div>
         </div>
       )}

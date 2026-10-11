@@ -515,6 +515,10 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
   }
 
   const FIELDS_MAP: Record<string, string[]> = {
+    // FoxPro system/timestamp columns — carried verbatim from the file so a
+    // Restore stays byte-identical to the selected DEDFILE (COPY FILE
+    // semantics): never regenerated from the current clock.
+    p: ['P'], yy: ['YY'], mm: ['MM'], dd: ['DD'], hr: ['HR'], min: ['MIN'], sec: ['SEC'],
     empno: ['EMPNO'], dedcode: ['DEDCODE'], dedid: ['DEDID'], policyno: ['POLICYNO'],
     effmm: ['EFFMM'], effyy: ['EFFYY'], termm: ['TERMM'], teryy: ['TERYY'],
     dedamt: ['DEDAMT'], principal: ['PRINCIPAL'], interest: ['INTEREST'],
@@ -620,6 +624,15 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
       qs: r['qs'] ?? '',
       paydate: r['paydate'] ?? '',
       editor: r['editor'] ?? '',
+      // Original file values — restored as-is, never re-stamped.
+      p: r['p'] ?? '',
+      yy: r['yy'] ?? '',
+      mm: r['mm'] ?? '',
+      dd: r['dd'] ?? '',
+      hr: r['hr'] ?? '',
+      min: r['min'] ?? '',
+      sec: r['sec'] ?? '',
+      dbf_id: r['dbf_id'] ?? '',
     });
     importedEmpIds.add(empId);
     // DEDFILE masterfile row (payroll_deductions) — consumed by Run Payroll's
@@ -651,6 +664,15 @@ export async function syncDedfile(bytes: Uint8Array, category?: PayrollCategory 
       hiredate: r['hiredate'] ?? '', birthdate: r['birthdate'] ?? '',
       gsis_bpn: r['gsis_bpn'] ?? '', qs: r['qs'] ?? '',
       paydate: r['paydate'] ?? '', editor: r['editor'] ?? '',
+      // Original file values — restored as-is, never re-stamped.
+      p: r['p'] ?? '',
+      yy: r['yy'] ?? '',
+      mm: r['mm'] ?? '',
+      dd: r['dd'] ?? '',
+      hr: r['hr'] ?? '',
+      min: r['min'] ?? '',
+      sec: r['sec'] ?? '',
+      dbf_id: r['dbf_id'] ?? '',
       created_by: 'system',
     });
   }
